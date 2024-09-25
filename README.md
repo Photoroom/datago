@@ -36,10 +36,10 @@ client = datago.GetClient(
             downloads_concurrency=64,
         )
 
-client.Start()  # This will load up CPU and take ram until the pre-fetching is done
+client.Start()  # This can be done early for convenience, not mandatory (can fetch samples while models are instanciated for intance)
 
 for _ in range(10):
-    sample = client.GetSample() # This will warn and return an empty sample if the client was not Start()
+    sample = client.GetSample() # This start the client if not previously done, in that case latency for the first sample is higher
 ```
 
 Please note that the image buffers will be passed around as raw pointers, they can be re-interpreted in python with the attached helpers
