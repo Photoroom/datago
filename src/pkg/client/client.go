@@ -66,7 +66,7 @@ type LatentPayload struct {
 }
 
 type ImagePayload struct {
-	Data           []uint8
+	Data           []byte
 	OriginalHeight int // Good indicator of the image frequency response at the current resolution
 	OriginalWidth  int
 	Height         int // Useful to decode the current payload
@@ -126,18 +126,105 @@ type DataroomClient struct {
 	chanSamples        chan Sample
 }
 
-// Create a new Dataroom Client
-func GetClient(
-	sources string,
-	require_images, require_embeddings bool,
-	tags, tags__ne string,
-	has_attributes, lacks_attributes, has_masks, lacks_masks, has_latents, lacks_latents string,
-	crop_and_resize bool, default_image_size, downsampling_ratio int,
-	pre_encode_images bool,
-	rank, world_size uint32,
-	prefetch_buffer_size, samples_buffer_size, downloads_concurrency int) *DataroomClient {
+type DataroomClientConfig struct {
+	Sources             string
+	RequireImages       bool
+	RequireEmbeddings   bool
+	Tags                string
+	TagsNE              string
+	HasAttributes       string
+	LacksAttributes     string
+	HasMasks            string
+	LacksMasks          string
+	HasLatents          string
+	LacksLatents        string
+	CropAndResize       bool
+	DefaultImageSize    int
+	DownsamplingRatio   int
+	MinAspectRatio      float64
+	MaxAspectRatio      float64
+	PreEncodeImages     bool
+	Rank                uint32
+	WorldSize           uint32
+	PrefetchBufferSize  int
+	SamplesBufferSize   int
+	ConcurrentDownloads int
+	PageSize            int
+}
 
-	const PAGE_SIZE = "1000"
+// -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+func GetDefaultConfig() DataroomClientConfig {
+	return DataroomClientConfig{
+		Sources:             "",
+		RequireImages:       true,
+		RequireEmbeddings:   false,
+		Tags:                "",
+		TagsNE:              "",
+		HasAttributes:       "",
+		LacksAttributes:     "",
+		HasMasks:            "",
+		LacksMasks:          "",
+		HasLatents:          "",
+		LacksLatents:        "",
+		CropAndResize:       false,
+		DefaultImageSize:    512,
+		DownsamplingRatio:   16,
+		MinAspectRatio:      0.5,
+		MaxAspectRatio:      2.0,
+		PreEncodeImages:     false,
+		Rank:                0,
+		WorldSize:           1,
+		PrefetchBufferSize:  8,
+		SamplesBufferSize:   8,
+		ConcurrentDownloads: 2,
+		PageSize:            1000,
+	}
+}
+
+func (c *DataroomClientConfig) getPageRequest() PageRequest {
+
+	fields := "attributes,image_direct_url"
+	if c.HasLatents != "" || c.HasMasks != "" {
+		fields += ",latents"
+		fmt.Println("Including some latents:", c.HasLatents, c.HasMasks)
+	}
+
+	if c.Tags != "" {
+		fields += ",tags"
+		fmt.Println("Including some tags:", c.Tags)
+	}
+
+	if c.HasLatents != "" {
+		fmt.Println("Including some attributes:", c.HasLatents)
+	}
+
+	if c.RequireEmbeddings {
+		fields += ",coca_embedding"
+		fmt.Println("Including embeddings")
+	}
+
+	// Report some config data
+	fmt.Println("Rank | World size:", c.Rank, c.WorldSize)
+	fmt.Println("Sources:", c.Sources, "| Fields:", fields)
+
+	return PageRequest{
+		fields:          fields,
+		sources:         sanitizeStr(&c.Sources),
+		pageSize:        fmt.Sprintf("%d", c.PageSize),
+		tags:            sanitizeStr(&c.Tags),
+		tagsNE:          sanitizeStr(&c.TagsNE),
+		hasAttributes:   sanitizeStr(&c.HasAttributes),
+		lacksAttributes: sanitizeStr(&c.LacksAttributes),
+		hasMasks:        sanitizeStr(&c.HasMasks),
+		lacksMasks:      sanitizeStr(&c.LacksMasks),
+		hasLatents:      sanitizeStr(&c.HasLatents),
+		lacksLatents:    sanitizeStr(&c.LacksLatents),
+	}
+}
+
+// Create a new Dataroom Client
+func GetClient(config DataroomClientConfig) *DataroomClient {
 
 	api_key := os.Getenv("DATAROOM_API_KEY")
 	if api_key == "" {
@@ -151,64 +238,29 @@ func GetClient(
 
 	fmt.Println("Dataroom API URL:", api_url)
 	fmt.Println("Dataroom API KEY last characters:", getLast5Chars(api_key))
-	fmt.Println("Rank | World size:", rank, world_size)
-
-	fields := "attributes,image_direct_url"
-	if has_latents != "" || has_masks != "" {
-		fields += ",latents"
-		fmt.Println("Including some latents:", has_latents, has_masks)
-	}
-
-	if tags != "" {
-		fields += ",tags"
-		fmt.Println("Including some tags:", tags)
-	}
-
-	if has_attributes != "" {
-		fmt.Println("Including some attributes:", has_attributes)
-	}
-
-	if require_embeddings {
-		fields += ",coca_embedding"
-		fmt.Println("Including embeddings")
-	}
-
-	fmt.Println("Sources:", sources, "| Fields:", fields)
 
 	// Define the query which will be the backbone of this DataroomClient instance
-	request := PageRequest{
-		fields:          fields,
-		sources:         sanitizeStr(&sources),
-		pageSize:        PAGE_SIZE,
-		tags:            sanitizeStr(&tags),
-		tagsNE:          sanitizeStr(&tags__ne),
-		hasAttributes:   sanitizeStr(&has_attributes),
-		lacksAttributes: sanitizeStr(&lacks_attributes),
-		hasMasks:        sanitizeStr(&has_masks),
-		lacksMasks:      sanitizeStr(&lacks_masks),
-		hasLatents:      sanitizeStr(&has_latents),
-		lacksLatents:    sanitizeStr(&lacks_latents),
-	}
+	request := config.getPageRequest()
 
 	client := &DataroomClient{
-		concurrency:        downloads_concurrency,
+		concurrency:        config.ConcurrentDownloads,
 		baseRequest:        *getHTTPRequest(api_url, api_key, request),
 		chanPageResults:    make(chan Response, 2),
-		chanSampleMetadata: make(chan SampleMetadata, prefetch_buffer_size),
-		chanSamples:        make(chan Sample, samples_buffer_size),
-		require_images:     require_images,
-		require_embeddings: require_embeddings,
-		has_masks:          strings.Split(has_masks, ","),
-		has_latents:        strings.Split(has_latents, ","),
-		crop_and_resize:    crop_and_resize,
-		default_image_size: default_image_size,
-		downsampling_ratio: downsampling_ratio,
-		pre_encode_images:  pre_encode_images,
-		min_aspect_ratio:   0.5,
-		max_aspect_ratio:   2.0,
-		sources:            sources,
-		rank:               rank,
-		world_size:         world_size,
+		chanSampleMetadata: make(chan SampleMetadata, config.PrefetchBufferSize),
+		chanSamples:        make(chan Sample, config.SamplesBufferSize),
+		require_images:     config.RequireImages,
+		require_embeddings: config.RequireEmbeddings,
+		has_masks:          strings.Split(config.HasMasks, ","),
+		has_latents:        strings.Split(config.HasLatents, ","),
+		crop_and_resize:    config.CropAndResize,
+		default_image_size: config.DefaultImageSize,
+		downsampling_ratio: config.DownsamplingRatio,
+		min_aspect_ratio:   config.MinAspectRatio,
+		max_aspect_ratio:   config.MaxAspectRatio,
+		pre_encode_images:  config.PreEncodeImages,
+		sources:            config.Sources,
+		rank:               config.Rank,
+		world_size:         config.WorldSize,
 		context:            nil,
 		cancel:             nil,
 		waitGroup:          nil,
