@@ -1,4 +1,4 @@
-![Build & Test](https://github.com/github/docs/actions/workflows/go.yml/badge.svg)
+[![Build & Test](https://github.com/Photoroom/datago/actions/workflows/go.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/go.yml)
 
 datago
 ======
