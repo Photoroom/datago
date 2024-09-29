@@ -59,6 +59,8 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 		}
 	}
 
+	width, height := img.Width(), img.Height()
+
 	// If the image is 4 channels, we need to drop the alpha channel
 	if img.Bands() == 4 {
 		err = img.Flatten(&vips.Color{R: 255, G: 255, B: 255}) // Flatten with white background
@@ -69,7 +71,7 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 		fmt.Println("Image flattened")
 	}
 
-	// If the image is not a mask, but is 1 channel, we want to convert it to 3 channels
+	// If the image is not a mask but is 1 channel, we want to convert it to 3 channels
 	if (img.Bands() == 1) && !is_mask {
 		err = img.ToColorSpace(vips.InterpretationSRGB)
 		if err != nil {
@@ -82,6 +84,10 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 	var img_bytes []byte
 	var channels int
 	if pre_encode_image {
+		if err != nil {
+			return nil, -1., err
+		}
+
 		if img.Bands() == 3 {
 			// Re-encode the image to a jpg
 			img_bytes, _, err = img.ExportJpeg(&vips.JpegExportParams{Quality: 95})
@@ -104,18 +110,14 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 		channels = img.Bands()
 	}
 
-	// Lifetimes are not well managed within vips, which is why we copy the buffer
-	img_buffer := make([]uint8, len(img_bytes))
-	copy(img_buffer, img_bytes)
-
 	img_payload := ImagePayload{
-		Data:           img_buffer,
+		Data:           img_bytes,
 		OriginalHeight: original_height,
 		OriginalWidth:  original_width,
-		Height:         img.Height(),
-		Width:          img.Width(),
+		Height:         height,
+		Width:          width,
 		Channels:       channels,
-		DataPtr:        dataPtrFromSlice(img_buffer),
+		DataPtr:        dataPtrFromSlice(img_bytes),
 	}
 
 	return &img_payload, aspect_ratio, nil

@@ -7,12 +7,6 @@ import (
 	"github.com/davidbyttow/govips/v2/vips"
 )
 
-func checkError(error error) {
-	if error != nil {
-		fmt.Println(error)
-	}
-}
-
 type ImageSize struct {
 	// Making it explicit how we store width and height, guarding against potential confusion
 	Width  int
@@ -113,8 +107,7 @@ func (t *ARAwareTransform) cropAndResizeToClosestAspectRatio(image *vips.ImageRe
 	// Desired target size is a lookup away, this is pre-computed/bucketed
 	targetSize := t.aspectRatioToSize[referenceAR]
 
-	// Trust libvips to do resize and crop in one go.
-	// Note that jpg decoding happens here and can fail
+	// Trust libvips to do resize and crop in one go. Note that jpg decoding happens here and can fail
 	err := image.ThumbnailWithSize(targetSize.Width, targetSize.Height, vips.InterestingCentre, vips.SizeBoth)
 	return referenceAR, err
 }
