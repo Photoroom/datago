@@ -30,4 +30,8 @@ jobs:
       run: cd src/cmd/main && go build -v main.go
 
     - name: Test
+      env: 
+        DATAROOM_API_KEY: ${{ secrets.DATAROOM_API_KEY }}
+        DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
+        
       run: cd src/tests && go test -v .
