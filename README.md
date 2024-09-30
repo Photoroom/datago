@@ -1,20 +1,21 @@
 [![Build & Test](https://github.com/Photoroom/datago/actions/workflows/go.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/go.yml)
+[![Gopy](https://github.com/Photoroom/datago/actions/workflows/gopy.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/gopy.yml)
 
 datago
 ======
 
 A golang-based data loader which can be used from Python. Compatible with a soon-to-be open sourced VectorDB-enabled data stack, which exposes HTTP requests.
 
-Datago will handle, outside of the Python GIL
+Datago handles, outside of the Python GIL
 - per sample IO from object storage
-- deserialization
+- deserialization (jpg and png decompression)
 - some optional vision processing (aligning different image payloads)
-- serialization
+- optional serialization
 
-Samples are then exposed in the Python scope and ready for consumption, typically using PIL and Numpy base types.
-Speed will be network dependent, but GB/s is relatively easily possible
+Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types.
+Speed will be network dependent, but GB/s is typical.
 
-Datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
+Datago is rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
 
 <img width="922" alt="Screenshot 2024-09-24 at 9 39 44 PM" src="https://github.com/user-attachments/assets/b58002ce-f961-438b-af72-9e1338527365">
 
@@ -27,22 +28,10 @@ Use the package from Python
 ```python
 from datago import datago
 
-# source, has/lacks attributes, has/lacks masks, has/lacks latents, metadata prefetch, sample prefetch, concurrent download
-client = datago.GetClient(
-            source="SOURCE",
-            require_images=True,
-            has_attributes="",
-            lacks_attributes="",
-            has_masks="",
-            lacks_masks="",
-            has_latents="",
-            lacks_latents="",
-            crop_and_resize=True,
-            prefetch_buffer_size=64,
-            samples_buffer_size=64,
-            downloads_concurrency=64,
-        )
+config = datago.GetDefaultConfig()
+# Check out the config fields, plenty of option to specify your DB query and optimize performance
 
+client = datago.GetClient(config)
 client.Start()  # This can be done early for convenience, not mandatory (can fetch samples while models are instanciated for intance)
 
 for _ in range(10):
