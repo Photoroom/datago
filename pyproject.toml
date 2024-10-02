@@ -1,12 +1,12 @@
 [project]
-name = "datago_blefaudeux"
+name = "datago"
 version = "0.0.1"
 authors = [
   { name="Photoroom", email="team@photoroom.com" },
 ]
-description = "A high performance python module to access data ressources through HTTP, written in Golang"
+description = "A high performance dataloader for Python, written in Golang"
 readme = "README.md"
-requires-python = "==3.11"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
