@@ -8,13 +8,19 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
 // Interact with a DB to get payloads and process them
-// Define a frontend and a backend goroutine
+// Define a generator and a backend goroutine
 
 // --- DB Communication structures ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+type urlPayload struct {
+	url     string
+	content []byte
+}
+
 type urlLatent struct {
 	URL        string `json:"file_direct_url"`
 	LatentType string `json:"latent_type"`
@@ -97,11 +103,23 @@ func (c *DatagoConfig) getDbRequest() dbRequest {
 }
 
 // -- Define the front end goroutine ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-type datagoFrontendDB struct {
-	baseRequest http.Request
+type datagoGeneratorDBConfig struct {
+	// Request parameters
+	sources            string
+	require_images     bool
+	require_embeddings bool
+	has_masks          []string
+	has_latents        []string
+	rank               uint32
+	world_size         uint32
 }
 
-func newDatagoFrontendDB(config DatagoConfig) datagoFrontendDB {
+type datagoGeneratorDB struct {
+	baseRequest http.Request
+	config      datagoGeneratorDBConfig
+}
+
+func newDatagoGeneratorDB(config DatagoConfig) datagoGeneratorDB {
 	// Define the base request once and for all
 	request := config.getDbRequest()
 
@@ -118,10 +136,20 @@ func newDatagoFrontendDB(config DatagoConfig) datagoFrontendDB {
 	fmt.Println("Dataroom API URL:", api_url)
 	fmt.Println("Dataroom API KEY last characters:", getLast5Chars(api_key))
 
-	return datagoFrontendDB{baseRequest: *getHTTPRequest(api_url, api_key, request)}
+	generatorDBConfig := datagoGeneratorDBConfig{
+		require_images:     config.RequireImages,
+		require_embeddings: config.RequireEmbeddings,
+		has_masks:          strings.Split(config.HasMasks, ","),
+		has_latents:        strings.Split(config.HasLatents, ","),
+		sources:            config.Sources,
+		rank:               config.Rank,
+		world_size:         config.WorldSize,
+	}
+
+	return datagoGeneratorDB{baseRequest: *getHTTPRequest(api_url, api_key, request), config: generatorDBConfig}
 }
 
-func (f datagoFrontendDB) collectPages(ctx context.Context, chanPageResults chan dbResponse) {
+func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pages) {
 	// Fetch pages from the API, and feed the results to the items channel
 	// This is meant to be run in a goroutine
 	http_client := http.Client{Timeout: 30 * time.Second}
@@ -176,13 +204,20 @@ func (f datagoFrontendDB) collectPages(ctx context.Context, chanPageResults chan
 
 				// Commit the possible results to the downstream goroutines
 				if len(data.DBSampleMetadata) > 0 {
-					chanPageResults <- *data
+					// TODO: There's probably a better way to do this
+					samplesDataPointers := make([]SampleDataPointers, len(data.DBSampleMetadata))
+
+					for i, sample := range data.DBSampleMetadata {
+						samplesDataPointers[i] = sample
+					}
+
+					chanPages <- Pages{samplesDataPointers}
 				}
 
 				// Check if there are more pages to fetch
 				if data.Next == "" {
 					fmt.Println("No more pages to fetch, wrapping up")
-					close(chanPageResults)
+					close(chanPages)
 					return
 				}
 
@@ -200,7 +235,7 @@ func (f datagoFrontendDB) collectPages(ctx context.Context, chanPageResults chan
 			// Check if we consumed all the retries
 			if !valid_page {
 				fmt.Println("Too many errors fetching new pages, wrapping up")
-				close(chanPageResults)
+				close(chanPages)
 				return
 			}
 		}

@@ -123,7 +123,7 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 	return &img_payload, aspect_ratio, nil
 }
 
-func fetchURL(client *http.Client, url string, retries int) (URLPayload, error) {
+func fetchURL(client *http.Client, url string, retries int) (urlPayload, error) {
 	// Helper to fetch a binary payload from a URL
 	err_msg := ""
 
@@ -144,10 +144,10 @@ func fetchURL(client *http.Client, url string, retries int) (URLPayload, error) 
 			continue
 		}
 
-		return URLPayload{url: url, content: body_bytes}, nil
+		return urlPayload{url: url, content: body_bytes}, nil
 	}
 
-	return URLPayload{url: url, content: nil}, fmt.Errorf(err_msg)
+	return urlPayload{url: url, content: nil}, fmt.Errorf(err_msg)
 }
 
 func fetchImage(client *http.Client, url string, retries int, transform *ARAwareTransform, aspect_ratio float64, pre_encode_image bool, is_mask bool) (*ImagePayload, float64, error) {

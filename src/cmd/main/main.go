@@ -13,6 +13,8 @@ import (
 func main() {
 	// Define flags
 	client_config := datago.GetDefaultConfig()
+	client_config.SourceType = datago.SourceTypeFileSystem
+	client_config.Sources = os.Getenv("DATAROOM_TEST_FILESYSTEM")
 	client_config.DefaultImageSize = 1024
 	client_config.DownsamplingRatio = 32
 
@@ -21,7 +23,6 @@ func main() {
 	client_config.PrefetchBufferSize = *flag.Int("item_fetch_buffer", 256, "The number of items to pre-load")
 	client_config.SamplesBufferSize = *flag.Int("item_ready_buffer", 128, "The number of items ready to be served")
 
-	client_config.Sources = *flag.String("source", "GETTY", "The source for the items")
 	client_config.RequireImages = *flag.Bool("require_images", true, "Whether the items require images")
 	client_config.RequireEmbeddings = *flag.Bool("require_embeddings", false, "Whether the items require the DB embeddings")
 
