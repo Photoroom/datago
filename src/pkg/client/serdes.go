@@ -181,7 +181,7 @@ func fetchImage(client *http.Client, url string, retries int, transform *ARAware
 	return nil, -1., err_report
 }
 
-func fetchSample(config *DataroomClientConfig, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform) *Sample {
+func fetchSample(config *DatagoConfig, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform) *Sample {
 	// Per sample work:
 	// - fetch the raw payloads
 	// - deserialize / decode, depending on the types
