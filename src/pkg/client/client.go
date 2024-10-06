@@ -59,7 +59,7 @@ const (
 	// incoming: object storage
 )
 
-type DataroomClientConfig struct {
+type DatagoConfig struct {
 	Sources             string
 	SourceType          DatagoSourceType
 	RequireImages       bool
@@ -86,7 +86,7 @@ type DataroomClientConfig struct {
 	PageSize            int
 }
 
-type DataroomClient struct {
+type DatagoClient struct {
 	concurrency int
 	baseRequest http.Request
 
@@ -138,8 +138,8 @@ type Backend interface {
 
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-func GetDefaultConfig() DataroomClientConfig {
-	return DataroomClientConfig{
+func GetDefaultConfig() DatagoConfig {
+	return DatagoConfig{
 		Sources:             "",
 		SourceType:          SourceTypeDB,
 		RequireImages:       true,
@@ -168,7 +168,7 @@ func GetDefaultConfig() DataroomClientConfig {
 }
 
 // Create a new Dataroom Client
-func GetClient(config DataroomClientConfig) *DataroomClient {
+func GetClient(config DatagoConfig) *DatagoClient {
 
 	// Create the frontend and backend
 	var frontend Frontend
@@ -183,7 +183,7 @@ func GetClient(config DataroomClientConfig) *DataroomClient {
 	}
 
 	// Create the client
-	client := &DataroomClient{
+	client := &DatagoClient{
 		concurrency:        config.ConcurrentDownloads,
 		chanPageResults:    make(chan dbResponse, 2),
 		chanSampleMetadata: make(chan dbSampleMetadata, config.PrefetchBufferSize),
@@ -209,7 +209,7 @@ func GetClient(config DataroomClientConfig) *DataroomClient {
 	}
 
 	// Make sure that the client will be Stopped() upon destruction
-	runtime.SetFinalizer(client, func(r *DataroomClient) {
+	runtime.SetFinalizer(client, func(r *DatagoClient) {
 		r.Stop()
 	})
 
@@ -217,7 +217,7 @@ func GetClient(config DataroomClientConfig) *DataroomClient {
 }
 
 // Start the background downloads, make it ready to serve samples. Will grow the memory and CPU footprint
-func (c *DataroomClient) Start() {
+func (c *DatagoClient) Start() {
 	if c.context == nil || c.cancel == nil {
 		// Get a context and a cancel function to stop the background goroutines and gracefully handle
 		// interruptions at during http round trips
@@ -279,7 +279,7 @@ func (c *DataroomClient) Start() {
 }
 
 // Get a deserialized sample from the client
-func (c *DataroomClient) GetSample() Sample {
+func (c *DatagoClient) GetSample() Sample {
 	if c.cancel == nil {
 		fmt.Println("Dataroom client not started. Starting it on the first sample, this adds some initial latency")
 		fmt.Println("Please consider starting the client in anticipation by calling .Start()")
@@ -294,7 +294,7 @@ func (c *DataroomClient) GetSample() Sample {
 }
 
 // Stop the background downloads, will clear the memory and CPU footprint
-func (c *DataroomClient) Stop() {
+func (c *DatagoClient) Stop() {
 	fmt.Println("Stopping the dataroom client")
 
 	// Signal the coroutines that next round should be a stop
@@ -321,7 +321,7 @@ func (c *DataroomClient) Stop() {
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Coroutines which will be running in the background
 
-func (c *DataroomClient) asyncDispatch() {
+func (c *DatagoClient) asyncDispatch() {
 	// Break down the page results and maintain a list of individual items to be processed
 
 	for {

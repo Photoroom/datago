@@ -7,7 +7,7 @@ import (
 )
 
 type BackendHTTP struct {
-	config *DataroomClientConfig
+	config *DatagoConfig
 }
 
 func (b BackendHTTP) collectSamples(chanSampleMetadata chan dbSampleMetadata, chanSamples chan Sample, transform *ARAwareTransform) {

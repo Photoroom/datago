@@ -55,7 +55,7 @@ type dbRequest struct {
 	lacksLatents string
 }
 
-func (c *DataroomClientConfig) getDbRequest() dbRequest {
+func (c *DatagoConfig) getDbRequest() dbRequest {
 
 	fields := "attributes,image_direct_url"
 	if c.HasLatents != "" || c.HasMasks != "" {
@@ -101,7 +101,7 @@ type datagoFrontendDB struct {
 	baseRequest http.Request
 }
 
-func newDatagoFrontendDB(config DataroomClientConfig) datagoFrontendDB {
+func newDatagoFrontendDB(config DatagoConfig) datagoFrontendDB {
 	// Define the base request once and for all
 	request := config.getDbRequest()
 
