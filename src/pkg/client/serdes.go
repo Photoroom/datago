@@ -181,7 +181,7 @@ func fetchImage(client *http.Client, url string, retries int, transform *ARAware
 	return nil, -1., err_report
 }
 
-func fetchSample(client *DataroomClient, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform) *Sample {
+func fetchSample(config *DataroomClientConfig, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform) *Sample {
 	// Per sample work:
 	// - fetch the raw payloads
 	// - deserialize / decode, depending on the types
@@ -193,8 +193,8 @@ func fetchSample(client *DataroomClient, http_client *http.Client, sample_result
 	aspect_ratio := -1. // Not initialized to begin with
 
 	// Base image
-	if client.require_images {
-		base_image, new_aspect_ratio, err := fetchImage(http_client, sample_result.ImageDirectURL, retries, transform, aspect_ratio, client.pre_encode_images, false)
+	if config.RequireImages {
+		base_image, new_aspect_ratio, err := fetchImage(http_client, sample_result.ImageDirectURL, retries, transform, aspect_ratio, config.PreEncodeImages, false)
 
 		if err != nil {
 			fmt.Println("Error fetching image:", sample_result.Id)
@@ -213,7 +213,7 @@ func fetchSample(client *DataroomClient, http_client *http.Client, sample_result
 	for _, latent := range sample_result.Latents {
 		if strings.Contains(latent.LatentType, "image") && !strings.Contains(latent.LatentType, "latent_") {
 			// Image types, registered as latents but they need to be jpg-decoded
-			new_image, _, err := fetchImage(http_client, latent.URL, retries, transform, aspect_ratio, client.pre_encode_images, false)
+			new_image, _, err := fetchImage(http_client, latent.URL, retries, transform, aspect_ratio, config.PreEncodeImages, false)
 			if err != nil {
 				fmt.Println("Error fetching masked image:", sample_result.Id, latent.LatentType)
 				return nil
@@ -222,7 +222,7 @@ func fetchSample(client *DataroomClient, http_client *http.Client, sample_result
 			additional_images[latent.LatentType] = *new_image
 		} else if latent.IsMask {
 			// Mask types, registered as latents but they need to be png-decoded
-			mask_ptr, _, err := fetchImage(http_client, latent.URL, retries, transform, aspect_ratio, client.pre_encode_images, true)
+			mask_ptr, _, err := fetchImage(http_client, latent.URL, retries, transform, aspect_ratio, config.PreEncodeImages, true)
 			if err != nil {
 				fmt.Println("Error fetching mask:", sample_result.Id, latent.LatentType)
 				return nil
@@ -246,12 +246,12 @@ func fetchSample(client *DataroomClient, http_client *http.Client, sample_result
 
 	// Optional embeddings
 	var cocaEmbedding []float32
-	if client.require_embeddings {
+	if config.RequireEmbeddings {
 		cocaEmbedding = sample_result.CocaEmbedding.Vector
 	}
 
 	return &Sample{ID: sample_result.Id,
-		Source:           client.sources,
+		Source:           config.Sources,
 		Attributes:       sample_result.Attributes,
 		Image:            *img_payload,
 		Latents:          latents,
