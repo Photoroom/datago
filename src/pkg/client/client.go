@@ -10,7 +10,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/davidbyttow/govips/v2/vips"
 )
@@ -114,21 +113,27 @@ type DataroomClient struct {
 
 	// Flexible frontend, backend and dispatch goroutines
 	frontend Frontend
+	backend  Backend
 
 	// Channels	- these will be used to communicate between the background goroutines
-	chanPageResults      chan dbResponse
-	chandbSampleMetadata chan dbSampleMetadata
-	chanSamples          chan Sample
+	chanPageResults    chan dbResponse       // TODO: Make this a generic type
+	chanSampleMetadata chan dbSampleMetadata // TODO: Make this a generic type
+	chanSamples        chan Sample
 }
 
 // -----------------------------------------------------------------------------------------------------------------
 // Define the interfaces that the different features will needd to follow
 
-// The asyncFrontend will be responsible for producing pages of metadata which can be dispatched
-// to the asyncDispatch goroutine. The metadata will be used to fetch the actual payloads
+// The frontend will be responsible for producing pages of metadata which can be dispatched
+// to the dispatch goroutine. The metadata will be used to fetch the actual payloads
 
 type Frontend interface {
 	collectPages(ctx context.Context, chanPageResults chan dbResponse)
+}
+
+// The backend will be responsible for fetching the payloads and deserializing them
+type Backend interface {
+	collectSamples(chanSampleMetadata chan dbSampleMetadata, chanSamples chan Sample, transform *ARAwareTransform)
 }
 
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -165,10 +170,13 @@ func GetDefaultConfig() DataroomClientConfig {
 // Create a new Dataroom Client
 func GetClient(config DataroomClientConfig) *DataroomClient {
 
-	// Create the frontend
+	// Create the frontend and backend
 	var frontend Frontend
+	var backend Backend
+
 	if config.SourceType == SourceTypeDB {
 		frontend = newDatagoFrontendDB(config)
+		backend = BackendHTTP{config: &config}
 	} else {
 		// TODO: Handle other sources
 		log.Panic("Unsupported source type at the moment")
@@ -176,27 +184,28 @@ func GetClient(config DataroomClientConfig) *DataroomClient {
 
 	// Create the client
 	client := &DataroomClient{
-		concurrency:          config.ConcurrentDownloads,
-		chanPageResults:      make(chan dbResponse, 2),
-		chandbSampleMetadata: make(chan dbSampleMetadata, config.PrefetchBufferSize),
-		chanSamples:          make(chan Sample, config.SamplesBufferSize),
-		require_images:       config.RequireImages,
-		require_embeddings:   config.RequireEmbeddings,
-		has_masks:            strings.Split(config.HasMasks, ","),
-		has_latents:          strings.Split(config.HasLatents, ","),
-		crop_and_resize:      config.CropAndResize,
-		default_image_size:   config.DefaultImageSize,
-		downsampling_ratio:   config.DownsamplingRatio,
-		min_aspect_ratio:     config.MinAspectRatio,
-		max_aspect_ratio:     config.MaxAspectRatio,
-		pre_encode_images:    config.PreEncodeImages,
-		sources:              config.Sources,
-		rank:                 config.Rank,
-		world_size:           config.WorldSize,
-		context:              nil,
-		cancel:               nil,
-		waitGroup:            nil,
-		frontend:             frontend,
+		concurrency:        config.ConcurrentDownloads,
+		chanPageResults:    make(chan dbResponse, 2),
+		chanSampleMetadata: make(chan dbSampleMetadata, config.PrefetchBufferSize),
+		chanSamples:        make(chan Sample, config.SamplesBufferSize),
+		require_images:     config.RequireImages,
+		require_embeddings: config.RequireEmbeddings,
+		has_masks:          strings.Split(config.HasMasks, ","),
+		has_latents:        strings.Split(config.HasLatents, ","),
+		crop_and_resize:    config.CropAndResize,
+		default_image_size: config.DefaultImageSize,
+		downsampling_ratio: config.DownsamplingRatio,
+		min_aspect_ratio:   config.MinAspectRatio,
+		max_aspect_ratio:   config.MaxAspectRatio,
+		pre_encode_images:  config.PreEncodeImages,
+		sources:            config.Sources,
+		rank:               config.Rank,
+		world_size:         config.WorldSize,
+		context:            nil,
+		cancel:             nil,
+		waitGroup:          nil,
+		frontend:           frontend,
+		backend:            backend,
 	}
 
 	// Make sure that the client will be Stopped() upon destruction
@@ -263,7 +272,7 @@ func (c *DataroomClient) Start() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.asyncBackend(arAwareTransform) // Fetch the payloads and and deserialize them
+		c.backend.collectSamples(c.chanSampleMetadata, c.chanSamples, arAwareTransform) // Fetch the payloads and and deserialize them
 	}()
 
 	c.waitGroup = &wg
@@ -296,7 +305,7 @@ func (c *DataroomClient) Stop() {
 
 	// Clear the channels, in case a commit is blocking
 	go consumeChannel(c.chanPageResults)
-	go consumeChannel(c.chandbSampleMetadata)
+	go consumeChannel(c.chanSampleMetadata)
 	go consumeChannel(c.chanSamples)
 
 	// Wait for all goroutines to finish
@@ -312,10 +321,6 @@ func (c *DataroomClient) Stop() {
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Coroutines which will be running in the background
 
-func (c *DataroomClient) asyncFrontend() {
-
-}
-
 func (c *DataroomClient) asyncDispatch() {
 	// Break down the page results and maintain a list of individual items to be processed
 
@@ -323,12 +328,12 @@ func (c *DataroomClient) asyncDispatch() {
 		select {
 		case <-c.context.Done():
 			fmt.Println("Metadata fetch goroutine wrapping up")
-			close(c.chandbSampleMetadata)
+			close(c.chanSampleMetadata)
 			return
 		case page, open := <-c.chanPageResults:
 			if !open {
 				fmt.Println("No more metadata to fetch, wrapping up")
-				close(c.chandbSampleMetadata)
+				close(c.chanSampleMetadata)
 				return
 			}
 
@@ -343,46 +348,12 @@ func (c *DataroomClient) asyncDispatch() {
 				select {
 				case <-c.context.Done():
 					fmt.Println("Metadata fetch goroutine wrapping up")
-					close(c.chandbSampleMetadata)
+					close(c.chanSampleMetadata)
 					return
-				case c.chandbSampleMetadata <- item:
+				case c.chanSampleMetadata <- item:
 					// Item sent to the channel
 				}
 			}
 		}
 	}
-}
-
-func (c *DataroomClient) asyncBackend(transform *ARAwareTransform) {
-	ack_channel := make(chan bool)
-
-	sampleWorker := func(client *DataroomClient, transform *ARAwareTransform) {
-		// One HHTP client per goroutine, make sure we don't run into racing conditions when renewing
-		http_client := http.Client{Timeout: 30 * time.Second}
-
-		for {
-			item_to_fetch, open := <-client.chandbSampleMetadata
-			if !open {
-				ack_channel <- true
-				return
-			}
-
-			sample := fetchSample(client, &http_client, item_to_fetch, transform)
-			if sample != nil {
-				client.chanSamples <- *sample
-			}
-		}
-	}
-
-	// Start the workers and work on the metadata channel
-	for i := 0; i < c.concurrency; i++ {
-		go sampleWorker(c, transform)
-	}
-
-	// Wait for all the workers to be done or overall context to be cancelled
-	for i := 0; i < c.concurrency; i++ {
-		<-ack_channel
-	}
-	close(c.chanSamples)
-	fmt.Println("No more items to serve, wrapping up")
 }
