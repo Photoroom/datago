@@ -2,9 +2,7 @@ package datago
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,47 +14,6 @@ import (
 
 	"github.com/davidbyttow/govips/v2/vips"
 )
-
-// --- DB Communication structures ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-type urlLatent struct {
-	URL        string `json:"file_direct_url"`
-	LatentType string `json:"latent_type"`
-	IsMask     bool   `json:"is_mask"`
-}
-
-type dbSampleMetadata struct {
-	Id             string                 `json:"id"`
-	Attributes     map[string]interface{} `json:"attributes"`
-	ImageDirectURL string                 `json:"image_direct_url"`
-	Latents        []urlLatent            `json:"latents"`
-	Tags           []string               `json:"tags"`
-	CocaEmbedding  struct {
-		Vector []float32 `json:"vector"`
-	} `json:"coca_embedding"`
-}
-
-type dbResponse struct {
-	Next             string             `json:"next"`
-	DBSampleMetadata []dbSampleMetadata `json:"results"`
-}
-
-type dbRequest struct {
-	fields   string
-	sources  string
-	pageSize string
-
-	tags   string
-	tagsNE string
-
-	hasAttributes   string
-	lacksAttributes string
-
-	hasMasks   string
-	lacksMasks string
-
-	hasLatents   string
-	lacksLatents string
-}
 
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 type LatentPayload struct {
@@ -95,6 +52,41 @@ type URLPayload struct {
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Public interface for this package, will be reflected in the python bindings
 
+type DatagoSourceType string
+
+const (
+	SourceTypeDB           DatagoSourceType = "DB"
+	SourceTypeLocalStorage DatagoSourceType = "LocalStorage"
+	// incoming: object storage
+)
+
+type DataroomClientConfig struct {
+	Sources             string
+	SourceType          DatagoSourceType
+	RequireImages       bool
+	RequireEmbeddings   bool
+	Tags                string
+	TagsNE              string
+	HasAttributes       string
+	LacksAttributes     string
+	HasMasks            string
+	LacksMasks          string
+	HasLatents          string
+	LacksLatents        string
+	CropAndResize       bool
+	DefaultImageSize    int
+	DownsamplingRatio   int
+	MinAspectRatio      float64
+	MaxAspectRatio      float64
+	PreEncodeImages     bool
+	Rank                uint32
+	WorldSize           uint32
+	PrefetchBufferSize  int
+	SamplesBufferSize   int
+	ConcurrentDownloads int
+	PageSize            int
+}
+
 type DataroomClient struct {
 	concurrency int
 	baseRequest http.Request
@@ -120,36 +112,23 @@ type DataroomClient struct {
 	max_aspect_ratio   float64
 	pre_encode_images  bool
 
+	// Flexible frontend, backend and dispatch goroutines
+	frontend Frontend
+
 	// Channels	- these will be used to communicate between the background goroutines
 	chanPageResults      chan dbResponse
 	chandbSampleMetadata chan dbSampleMetadata
 	chanSamples          chan Sample
 }
 
-type DataroomClientConfig struct {
-	Sources             string
-	RequireImages       bool
-	RequireEmbeddings   bool
-	Tags                string
-	TagsNE              string
-	HasAttributes       string
-	LacksAttributes     string
-	HasMasks            string
-	LacksMasks          string
-	HasLatents          string
-	LacksLatents        string
-	CropAndResize       bool
-	DefaultImageSize    int
-	DownsamplingRatio   int
-	MinAspectRatio      float64
-	MaxAspectRatio      float64
-	PreEncodeImages     bool
-	Rank                uint32
-	WorldSize           uint32
-	PrefetchBufferSize  int
-	SamplesBufferSize   int
-	ConcurrentDownloads int
-	PageSize            int
+// -----------------------------------------------------------------------------------------------------------------
+// Define the interfaces that the different features will needd to follow
+
+// The asyncFrontend will be responsible for producing pages of metadata which can be dispatched
+// to the asyncDispatch goroutine. The metadata will be used to fetch the actual payloads
+
+type Frontend interface {
+	collectPages(ctx context.Context, chanPageResults chan dbResponse)
 }
 
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -157,6 +136,7 @@ type DataroomClientConfig struct {
 func GetDefaultConfig() DataroomClientConfig {
 	return DataroomClientConfig{
 		Sources:             "",
+		SourceType:          SourceTypeDB,
 		RequireImages:       true,
 		RequireEmbeddings:   false,
 		Tags:                "",
@@ -182,69 +162,21 @@ func GetDefaultConfig() DataroomClientConfig {
 	}
 }
 
-func (c *DataroomClientConfig) getdbRequest() dbRequest {
-
-	fields := "attributes,image_direct_url"
-	if c.HasLatents != "" || c.HasMasks != "" {
-		fields += ",latents"
-		fmt.Println("Including some latents:", c.HasLatents, c.HasMasks)
-	}
-
-	if c.Tags != "" {
-		fields += ",tags"
-		fmt.Println("Including some tags:", c.Tags)
-	}
-
-	if c.HasLatents != "" {
-		fmt.Println("Including some attributes:", c.HasLatents)
-	}
-
-	if c.RequireEmbeddings {
-		fields += ",coca_embedding"
-		fmt.Println("Including embeddings")
-	}
-
-	// Report some config data
-	fmt.Println("Rank | World size:", c.Rank, c.WorldSize)
-	fmt.Println("Sources:", c.Sources, "| Fields:", fields)
-
-	return dbRequest{
-		fields:          fields,
-		sources:         sanitizeStr(&c.Sources),
-		pageSize:        fmt.Sprintf("%d", c.PageSize),
-		tags:            sanitizeStr(&c.Tags),
-		tagsNE:          sanitizeStr(&c.TagsNE),
-		hasAttributes:   sanitizeStr(&c.HasAttributes),
-		lacksAttributes: sanitizeStr(&c.LacksAttributes),
-		hasMasks:        sanitizeStr(&c.HasMasks),
-		lacksMasks:      sanitizeStr(&c.LacksMasks),
-		hasLatents:      sanitizeStr(&c.HasLatents),
-		lacksLatents:    sanitizeStr(&c.LacksLatents),
-	}
-}
-
 // Create a new Dataroom Client
 func GetClient(config DataroomClientConfig) *DataroomClient {
 
-	api_key := os.Getenv("DATAROOM_API_KEY")
-	if api_key == "" {
-		log.Panic("DATAROOM_API_KEY is not set")
+	// Create the frontend
+	var frontend Frontend
+	if config.SourceType == SourceTypeDB {
+		frontend = newDatagoFrontendDB(config)
+	} else {
+		// TODO: Handle other sources
+		log.Panic("Unsupported source type at the moment")
 	}
 
-	api_url := os.Getenv("DATAROOM_API_URL")
-	if api_url == "" {
-		log.Panic("DATAROOM_API_URL is not set")
-	}
-
-	fmt.Println("Dataroom API URL:", api_url)
-	fmt.Println("Dataroom API KEY last characters:", getLast5Chars(api_key))
-
-	// Define the query which will be the backbone of this DataroomClient instance
-	request := config.getdbRequest()
-
+	// Create the client
 	client := &DataroomClient{
 		concurrency:          config.ConcurrentDownloads,
-		baseRequest:          *getHTTPRequest(api_url, api_key, request),
 		chanPageResults:      make(chan dbResponse, 2),
 		chandbSampleMetadata: make(chan dbSampleMetadata, config.PrefetchBufferSize),
 		chanSamples:          make(chan Sample, config.SamplesBufferSize),
@@ -264,6 +196,7 @@ func GetClient(config DataroomClientConfig) *DataroomClient {
 		context:              nil,
 		cancel:               nil,
 		waitGroup:            nil,
+		frontend:             frontend,
 	}
 
 	// Make sure that the client will be Stopped() upon destruction
@@ -318,19 +251,19 @@ func (c *DataroomClient) Start() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.collectPages() // Fetch pages from the DB in the background
+		c.frontend.collectPages(c.context, c.chanPageResults) // Collect the root data source pages
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.collectMetadata() // Dispatch the content of the pages to the items channel
+		c.asyncDispatch() // Dispatch the content of the pages to the items channel
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.collectItems(arAwareTransform) // Fetch the payloads and and deserialize them
+		c.asyncBackend(arAwareTransform) // Fetch the payloads and and deserialize them
 	}()
 
 	c.waitGroup = &wg
@@ -379,95 +312,12 @@ func (c *DataroomClient) Stop() {
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Coroutines which will be running in the background
 
-func (c *DataroomClient) collectPages() {
-	// Fetch pages from the API, and feed the results to the items channel
-	// This is meant to be run in a goroutine
-	http_client := http.Client{Timeout: 30 * time.Second}
-	max_retries := 10
+func (c *DataroomClient) asyncFrontend() {
 
-	fetch_new_page := func() (*dbResponse, error) {
-		resp, err := http_client.Do(&c.baseRequest)
-
-		if err != nil {
-			return nil, err
-		}
-
-		if resp.StatusCode != 200 {
-			return nil, fmt.Errorf("error fetching page: %s", resp.Status)
-		}
-
-		defer resp.Body.Close()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			// Renew the HTTP client, server closed the connection
-			http_client = http.Client{Timeout: 30 * time.Second}
-			return nil, fmt.Errorf("error reading dbResponse body - renewing HTTP client. %s", err)
-		}
-
-		// Unmarshal JSON dbResponse
-		var data dbResponse
-		if err = json.Unmarshal(body, &data); err != nil {
-			return nil, err
-		}
-		return &data, nil
-	}
-
-	for {
-		select {
-		case <-c.context.Done():
-			fmt.Println("Pages fetch goroutine wrapping up")
-			return
-
-		default:
-			valid_page := false
-
-			for i := 0; i < max_retries; i++ {
-				// Try to fetch a new page, could go wrong in many ways
-				data, err := fetch_new_page()
-
-				if err != nil {
-					// Retry loop
-					log.Print("Error fetching page: ", err)
-					continue
-				}
-
-				// Commit the possible results to the downstream goroutines
-				if len(data.DBSampleMetadata) > 0 {
-					c.chanPageResults <- *data
-				}
-
-				// Check if there are more pages to fetch
-				if data.Next == "" {
-					fmt.Println("No more pages to fetch, wrapping up")
-					close(c.chanPageResults)
-					return
-				}
-
-				// Else fetch the next page
-				authentication := c.baseRequest.Header.Get("Authorization")
-				nextURL, _ := http.NewRequest("GET", data.Next, nil)
-				nextURL.Header.Add("Authorization", authentication)
-				c.baseRequest = *nextURL
-
-				// Break the loop on success, gives us the opportunity to check whether the context has closed
-				valid_page = true
-				break
-			}
-
-			// Check if we consumed all the retries
-			if !valid_page {
-				fmt.Println("Too many errors fetching new pages, wrapping up")
-				close(c.chanPageResults)
-				return
-			}
-		}
-	}
 }
 
-func (c *DataroomClient) collectMetadata() {
-	// Break down the page results and maintain a list of individual items to be downloaded
-	// This is meant to be run in a goroutine
+func (c *DataroomClient) asyncDispatch() {
+	// Break down the page results and maintain a list of individual items to be processed
 
 	for {
 		select {
@@ -484,6 +334,8 @@ func (c *DataroomClient) collectMetadata() {
 
 			for _, item := range page.DBSampleMetadata {
 				// Skip the sample if multi-rank is enabled and the rank is not the one we're interested in
+				// NOTE: if the front end is a DB, this is a wasteful way to distribute the work
+				//       since we waste most of the page we fetched
 				if c.world_size > 1 && computeFNVHash32(item.Id)%c.world_size != c.rank {
 					continue
 				}
@@ -501,7 +353,7 @@ func (c *DataroomClient) collectMetadata() {
 	}
 }
 
-func (c *DataroomClient) collectItems(transform *ARAwareTransform) {
+func (c *DataroomClient) asyncBackend(transform *ARAwareTransform) {
 	ack_channel := make(chan bool)
 
 	sampleWorker := func(client *DataroomClient, transform *ARAwareTransform) {
