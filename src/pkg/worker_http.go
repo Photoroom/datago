@@ -7,10 +7,10 @@ import (
 )
 
 type BackendHTTP struct {
-	config *DatagoConfig
+	config *GeneratorDBConfig
 }
 
-func (b BackendHTTP) collectSamples(chanSampleMetadata chan dbSampleMetadata, chanSamples chan Sample, transform *ARAwareTransform) {
+func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, pre_encode_images bool) {
 
 	ack_channel := make(chan bool)
 
@@ -25,7 +25,13 @@ func (b BackendHTTP) collectSamples(chanSampleMetadata chan dbSampleMetadata, ch
 				return
 			}
 
-			sample := fetchSample(b.config, &http_client, item_to_fetch, transform)
+			// Cast the item to fetch to the correct type
+			http_sample, ok := item_to_fetch.(dbSampleMetadata)
+			if !ok {
+				panic("Failed to cast the item to fetch to dbSampleMetadata. This worker is probably misconfigured")
+			}
+
+			sample := fetchSample(b.config, &http_client, http_sample, transform, pre_encode_images)
 			if sample != nil {
 				chanSamples <- *sample
 			}

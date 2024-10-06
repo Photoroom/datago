@@ -26,7 +26,7 @@ jobs:
           sudo apt-get -y install libvips-dev
 
       - name: Build
-        run: cd src/cmd/main && go build -v main.go
+        run: cd src/cmd && go build -v main.go
 
       - name: Test
         env:
