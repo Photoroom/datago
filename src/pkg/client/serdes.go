@@ -181,7 +181,7 @@ func fetchImage(client *http.Client, url string, retries int, transform *ARAware
 	return nil, -1., err_report
 }
 
-func fetchSample(client *DataroomClient, http_client *http.Client, sample_result SampleMetadata, transform *ARAwareTransform) *Sample {
+func fetchSample(client *DataroomClient, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform) *Sample {
 	// Per sample work:
 	// - fetch the raw payloads
 	// - deserialize / decode, depending on the types
@@ -261,7 +261,7 @@ func fetchSample(client *DataroomClient, http_client *http.Client, sample_result
 		CocaEmbedding:    cocaEmbedding}
 }
 
-func getHTTPRequest(api_url string, api_key string, request PageRequest) *http.Request {
+func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Request {
 	request_url, _ := http.NewRequest("GET", api_url+"images/", nil)
 	request_url.Header.Add("Authorization", "Token  "+api_key)
 	req := request_url.URL.Query()
