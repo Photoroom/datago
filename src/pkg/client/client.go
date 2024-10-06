@@ -18,29 +18,29 @@ import (
 )
 
 // --- DB Communication structures ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-type URLLatent struct {
+type urlLatent struct {
 	URL        string `json:"file_direct_url"`
 	LatentType string `json:"latent_type"`
 	IsMask     bool   `json:"is_mask"`
 }
 
-type SampleMetadata struct {
+type dbSampleMetadata struct {
 	Id             string                 `json:"id"`
 	Attributes     map[string]interface{} `json:"attributes"`
 	ImageDirectURL string                 `json:"image_direct_url"`
-	Latents        []URLLatent            `json:"latents"`
+	Latents        []urlLatent            `json:"latents"`
 	Tags           []string               `json:"tags"`
 	CocaEmbedding  struct {
 		Vector []float32 `json:"vector"`
 	} `json:"coca_embedding"`
 }
 
-type Response struct {
-	Next           string           `json:"next"`
-	SampleMetadata []SampleMetadata `json:"results"`
+type dbResponse struct {
+	Next             string             `json:"next"`
+	DBSampleMetadata []dbSampleMetadata `json:"results"`
 }
 
-type PageRequest struct {
+type dbRequest struct {
 	fields   string
 	sources  string
 	pageSize string
@@ -67,7 +67,7 @@ type LatentPayload struct {
 
 type ImagePayload struct {
 	Data           []byte
-	OriginalHeight int // Good indicator of the image frequency response at the current resolution
+	OriginalHeight int // Good indicator of the image frequency dbResponse at the current resolution
 	OriginalWidth  int
 	Height         int // Useful to decode the current payload
 	Width          int
@@ -121,9 +121,9 @@ type DataroomClient struct {
 	pre_encode_images  bool
 
 	// Channels	- these will be used to communicate between the background goroutines
-	chanPageResults    chan Response
-	chanSampleMetadata chan SampleMetadata
-	chanSamples        chan Sample
+	chanPageResults      chan dbResponse
+	chandbSampleMetadata chan dbSampleMetadata
+	chanSamples          chan Sample
 }
 
 type DataroomClientConfig struct {
@@ -182,7 +182,7 @@ func GetDefaultConfig() DataroomClientConfig {
 	}
 }
 
-func (c *DataroomClientConfig) getPageRequest() PageRequest {
+func (c *DataroomClientConfig) getdbRequest() dbRequest {
 
 	fields := "attributes,image_direct_url"
 	if c.HasLatents != "" || c.HasMasks != "" {
@@ -208,7 +208,7 @@ func (c *DataroomClientConfig) getPageRequest() PageRequest {
 	fmt.Println("Rank | World size:", c.Rank, c.WorldSize)
 	fmt.Println("Sources:", c.Sources, "| Fields:", fields)
 
-	return PageRequest{
+	return dbRequest{
 		fields:          fields,
 		sources:         sanitizeStr(&c.Sources),
 		pageSize:        fmt.Sprintf("%d", c.PageSize),
@@ -240,30 +240,30 @@ func GetClient(config DataroomClientConfig) *DataroomClient {
 	fmt.Println("Dataroom API KEY last characters:", getLast5Chars(api_key))
 
 	// Define the query which will be the backbone of this DataroomClient instance
-	request := config.getPageRequest()
+	request := config.getdbRequest()
 
 	client := &DataroomClient{
-		concurrency:        config.ConcurrentDownloads,
-		baseRequest:        *getHTTPRequest(api_url, api_key, request),
-		chanPageResults:    make(chan Response, 2),
-		chanSampleMetadata: make(chan SampleMetadata, config.PrefetchBufferSize),
-		chanSamples:        make(chan Sample, config.SamplesBufferSize),
-		require_images:     config.RequireImages,
-		require_embeddings: config.RequireEmbeddings,
-		has_masks:          strings.Split(config.HasMasks, ","),
-		has_latents:        strings.Split(config.HasLatents, ","),
-		crop_and_resize:    config.CropAndResize,
-		default_image_size: config.DefaultImageSize,
-		downsampling_ratio: config.DownsamplingRatio,
-		min_aspect_ratio:   config.MinAspectRatio,
-		max_aspect_ratio:   config.MaxAspectRatio,
-		pre_encode_images:  config.PreEncodeImages,
-		sources:            config.Sources,
-		rank:               config.Rank,
-		world_size:         config.WorldSize,
-		context:            nil,
-		cancel:             nil,
-		waitGroup:          nil,
+		concurrency:          config.ConcurrentDownloads,
+		baseRequest:          *getHTTPRequest(api_url, api_key, request),
+		chanPageResults:      make(chan dbResponse, 2),
+		chandbSampleMetadata: make(chan dbSampleMetadata, config.PrefetchBufferSize),
+		chanSamples:          make(chan Sample, config.SamplesBufferSize),
+		require_images:       config.RequireImages,
+		require_embeddings:   config.RequireEmbeddings,
+		has_masks:            strings.Split(config.HasMasks, ","),
+		has_latents:          strings.Split(config.HasLatents, ","),
+		crop_and_resize:      config.CropAndResize,
+		default_image_size:   config.DefaultImageSize,
+		downsampling_ratio:   config.DownsamplingRatio,
+		min_aspect_ratio:     config.MinAspectRatio,
+		max_aspect_ratio:     config.MaxAspectRatio,
+		pre_encode_images:    config.PreEncodeImages,
+		sources:              config.Sources,
+		rank:                 config.Rank,
+		world_size:           config.WorldSize,
+		context:              nil,
+		cancel:               nil,
+		waitGroup:            nil,
 	}
 
 	// Make sure that the client will be Stopped() upon destruction
@@ -363,7 +363,7 @@ func (c *DataroomClient) Stop() {
 
 	// Clear the channels, in case a commit is blocking
 	go consumeChannel(c.chanPageResults)
-	go consumeChannel(c.chanSampleMetadata)
+	go consumeChannel(c.chandbSampleMetadata)
 	go consumeChannel(c.chanSamples)
 
 	// Wait for all goroutines to finish
@@ -385,7 +385,7 @@ func (c *DataroomClient) collectPages() {
 	http_client := http.Client{Timeout: 30 * time.Second}
 	max_retries := 10
 
-	fetch_new_page := func() (*Response, error) {
+	fetch_new_page := func() (*dbResponse, error) {
 		resp, err := http_client.Do(&c.baseRequest)
 
 		if err != nil {
@@ -402,11 +402,11 @@ func (c *DataroomClient) collectPages() {
 		if err != nil {
 			// Renew the HTTP client, server closed the connection
 			http_client = http.Client{Timeout: 30 * time.Second}
-			return nil, fmt.Errorf("error reading response body - renewing HTTP client. %s", err)
+			return nil, fmt.Errorf("error reading dbResponse body - renewing HTTP client. %s", err)
 		}
 
-		// Unmarshal JSON response
-		var data Response
+		// Unmarshal JSON dbResponse
+		var data dbResponse
 		if err = json.Unmarshal(body, &data); err != nil {
 			return nil, err
 		}
@@ -433,7 +433,7 @@ func (c *DataroomClient) collectPages() {
 				}
 
 				// Commit the possible results to the downstream goroutines
-				if len(data.SampleMetadata) > 0 {
+				if len(data.DBSampleMetadata) > 0 {
 					c.chanPageResults <- *data
 				}
 
@@ -473,16 +473,16 @@ func (c *DataroomClient) collectMetadata() {
 		select {
 		case <-c.context.Done():
 			fmt.Println("Metadata fetch goroutine wrapping up")
-			close(c.chanSampleMetadata)
+			close(c.chandbSampleMetadata)
 			return
 		case page, open := <-c.chanPageResults:
 			if !open {
 				fmt.Println("No more metadata to fetch, wrapping up")
-				close(c.chanSampleMetadata)
+				close(c.chandbSampleMetadata)
 				return
 			}
 
-			for _, item := range page.SampleMetadata {
+			for _, item := range page.DBSampleMetadata {
 				// Skip the sample if multi-rank is enabled and the rank is not the one we're interested in
 				if c.world_size > 1 && computeFNVHash32(item.Id)%c.world_size != c.rank {
 					continue
@@ -491,9 +491,9 @@ func (c *DataroomClient) collectMetadata() {
 				select {
 				case <-c.context.Done():
 					fmt.Println("Metadata fetch goroutine wrapping up")
-					close(c.chanSampleMetadata)
+					close(c.chandbSampleMetadata)
 					return
-				case c.chanSampleMetadata <- item:
+				case c.chandbSampleMetadata <- item:
 					// Item sent to the channel
 				}
 			}
@@ -509,7 +509,7 @@ func (c *DataroomClient) collectItems(transform *ARAwareTransform) {
 		http_client := http.Client{Timeout: 30 * time.Second}
 
 		for {
-			item_to_fetch, open := <-client.chanSampleMetadata
+			item_to_fetch, open := <-client.chandbSampleMetadata
 			if !open {
 				ack_channel <- true
 				return
