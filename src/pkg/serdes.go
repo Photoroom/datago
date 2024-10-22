@@ -123,7 +123,7 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 	return &img_payload, aspect_ratio, nil
 }
 
-func fetchURL(client *http.Client, url string, retries int) (URLPayload, error) {
+func fetchURL(client *http.Client, url string, retries int) (urlPayload, error) {
 	// Helper to fetch a binary payload from a URL
 	err_msg := ""
 
@@ -144,10 +144,10 @@ func fetchURL(client *http.Client, url string, retries int) (URLPayload, error) 
 			continue
 		}
 
-		return URLPayload{url: url, content: body_bytes}, nil
+		return urlPayload{url: url, content: body_bytes}, nil
 	}
 
-	return URLPayload{url: url, content: nil}, fmt.Errorf(err_msg)
+	return urlPayload{url: url, content: nil}, fmt.Errorf(err_msg)
 }
 
 func fetchImage(client *http.Client, url string, retries int, transform *ARAwareTransform, aspect_ratio float64, pre_encode_image bool, is_mask bool) (*ImagePayload, float64, error) {
@@ -181,7 +181,7 @@ func fetchImage(client *http.Client, url string, retries int, transform *ARAware
 	return nil, -1., err_report
 }
 
-func fetchSample(config *DatagoConfig, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform) *Sample {
+func fetchSample(config *GeneratorDBConfig, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform, pre_encode_image bool) *Sample {
 	// Per sample work:
 	// - fetch the raw payloads
 	// - deserialize / decode, depending on the types
@@ -194,7 +194,7 @@ func fetchSample(config *DatagoConfig, http_client *http.Client, sample_result d
 
 	// Base image
 	if config.RequireImages {
-		base_image, new_aspect_ratio, err := fetchImage(http_client, sample_result.ImageDirectURL, retries, transform, aspect_ratio, config.PreEncodeImages, false)
+		base_image, new_aspect_ratio, err := fetchImage(http_client, sample_result.ImageDirectURL, retries, transform, aspect_ratio, pre_encode_image, false)
 
 		if err != nil {
 			fmt.Println("Error fetching image:", sample_result.Id)
@@ -213,7 +213,7 @@ func fetchSample(config *DatagoConfig, http_client *http.Client, sample_result d
 	for _, latent := range sample_result.Latents {
 		if strings.Contains(latent.LatentType, "image") && !strings.Contains(latent.LatentType, "latent_") {
 			// Image types, registered as latents but they need to be jpg-decoded
-			new_image, _, err := fetchImage(http_client, latent.URL, retries, transform, aspect_ratio, config.PreEncodeImages, false)
+			new_image, _, err := fetchImage(http_client, latent.URL, retries, transform, aspect_ratio, pre_encode_image, false)
 			if err != nil {
 				fmt.Println("Error fetching masked image:", sample_result.Id, latent.LatentType)
 				return nil
@@ -222,7 +222,7 @@ func fetchSample(config *DatagoConfig, http_client *http.Client, sample_result d
 			additional_images[latent.LatentType] = *new_image
 		} else if latent.IsMask {
 			// Mask types, registered as latents but they need to be png-decoded
-			mask_ptr, _, err := fetchImage(http_client, latent.URL, retries, transform, aspect_ratio, config.PreEncodeImages, true)
+			mask_ptr, _, err := fetchImage(http_client, latent.URL, retries, transform, aspect_ratio, pre_encode_image, true)
 			if err != nil {
 				fmt.Println("Error fetching mask:", sample_result.Id, latent.LatentType)
 				return nil

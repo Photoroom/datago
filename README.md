@@ -107,7 +107,7 @@ NOTE:
 - - Either `export PATH=$PATH:~/go/bin` or add it to your .bashrc
 - you may need this to make sure that LDD looks at the current folder `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.`
 
-then from the /pkg/client folder:
+then from the /pkg folder:
 
 ```bash
 $ gopy pkg -author="Photoroom" -email="team@photoroom.com" -url="" -name="datago" -version="0.0.1" .
