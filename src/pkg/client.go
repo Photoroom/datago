@@ -99,8 +99,13 @@ func GetClient(config DatagoConfig) *DatagoClient {
 		backend = BackendHTTP{config: &db_config}
 	} else if config.SourceType == SourceTypeFileSystem {
 		fmt.Println("Creating a FileSystem-backed dataloader")
+<<<<<<< Updated upstream
 		db_config := config.SourceConfig.(GeneratorFileSystemConfig)
 		generator = newDatagoGeneratorFileSystem(db_config)
+=======
+		fs_config := config.SourceConfig.(DatagoGeneratorFileSystemConfig)
+		generator = newDatagoGeneratorFileSystem(fs_config)
+>>>>>>> Stashed changes
 		backend = BackendFileSystem{config: &config}
 	} else {
 		// TODO: Handle other sources
