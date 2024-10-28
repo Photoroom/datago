@@ -22,5 +22,3 @@ rm LICENSE
 rm MANIFEST.in
 
 cd ../../..
-
-
