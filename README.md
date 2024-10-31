@@ -1,12 +1,12 @@
 [![Build & Test](https://github.com/Photoroom/datago/actions/workflows/go.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/go.yml)
 [![Gopy](https://github.com/Photoroom/datago/actions/workflows/gopy.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/gopy.yml)
 
-datago
-======
+# datago
 
 A golang-based data loader which can be used from Python. Compatible with a soon-to-be open sourced VectorDB-enabled data stack, which exposes HTTP requests.
 
 Datago handles, outside of the Python GIL
+
 - per sample IO from object storage
 - deserialization (jpg and png decompression)
 - some optional vision processing (aligning different image payloads)
@@ -19,11 +19,9 @@ Datago is rank and world-size aware, in which case the samples are dispatched de
 
 <img width="922" alt="Screenshot 2024-09-24 at 9 39 44 PM" src="https://github.com/user-attachments/assets/b58002ce-f961-438b-af72-9e1338527365">
 
-
 <details> <summary><strong>Use it</strong></summary>
 
-Use the package from Python
----------------------------
+## Use the package from Python
 
 ```python
 from datago import datago
@@ -40,26 +38,22 @@ for _ in range(10):
 
 Please note that the image buffers will be passed around as raw pointers, they can be re-interpreted in python with the attached helpers
 
-
-Match the raw exported buffers with typical python types
---------------------------------------------------------
+## Match the raw exported buffers with typical python types
 
 See helper functions provided in `polyglot.py`, should be self explanatory
 
 </details><details> <summary><strong>Build it</strong></summary>
 
-Install deps
-------------
+## Install deps
 
 ```bash
 $ sudo apt install golang libjpeg-turbo8-dev libvips-dev
 $ sudo ldconfig
 ```
 
-Build a benchmark CLI
----------------------
+## Build a benchmark CLI
 
-From the root of this project `datago_src`:
+From the root of this project:
 
 ```bash
 $ go build cmd/main/main.go
@@ -77,23 +71,20 @@ Running it with additional sanity checks
 $ go run -race cmd/main/main.go
 ```
 
-Run the go test suite
----------------------
+## Run the go test suite
 
-From the src folder
+From the root folder
 
 ```bash
 $ go test -v tests/client_test.go
 ```
 
-Refresh the python package and its binaries
--------------------------------------------
+## Refresh the python package and its binaries
 
 - Install the dependencies as detailed in the next point
 - Run the `generate_python_package.sh` script
 
-Generate the python package binaries manually
----------------------------------------------
+## Generate the python package binaries manually
 
 ```bash
 $ python3 -m pip install pybindgen
@@ -103,11 +94,12 @@ $ go install golang.org/x/image/draw
 ```
 
 NOTE:
+
 - you may need to add `~/go/bin` to your PATH so that gopy is found.
 - - Either `export PATH=$PATH:~/go/bin` or add it to your .bashrc
 - you may need this to make sure that LDD looks at the current folder `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.`
 
-then from the /pkg/client folder:
+then from the /pkg folder:
 
 ```bash
 $ gopy pkg -author="Photoroom" -email="team@photoroom.com" -url="" -name="datago" -version="0.0.1" .
@@ -115,18 +107,17 @@ $ gopy pkg -author="Photoroom" -email="team@photoroom.com" -url="" -name="datago
 
 then you can `pip install -e .` from here.
 
+## Update the pypi release (maintainers)
 
-Update the pypi release (maintainers)
--------------------------------------
 ```
 python3 setup.py sdist
 python3 -m twine upload dist/* --verbose
 ```
+
 </details>
 
+# License
 
-License
-=======
     MIT License
 
     Copyright (c) 2024 Photoroom

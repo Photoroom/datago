@@ -9,6 +9,3 @@ repos:
     rev: v0.5.1
     hooks:
       - id: go-fmt
-      - id: go-imports
-      - id: golangci-lint
-        args: ["run", "src"]

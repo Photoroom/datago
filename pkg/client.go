@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -88,7 +87,6 @@ type DatagoConfig struct {
 
 type DatagoClient struct {
 	concurrency int
-	baseRequest http.Request
 
 	context   context.Context
 	waitGroup *sync.WaitGroup

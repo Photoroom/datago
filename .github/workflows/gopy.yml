@@ -38,7 +38,7 @@ jobs:
 
       - name: Build python module
         run: |
-          cd src/pkg/client
+          cd pkg
           gopy pkg -author="Photoroom" -email="team@photoroom.com" -name="datago" .
           export DESTINATION="../../../build"
           mkdir -p $DESTINATION/datago
@@ -47,7 +47,7 @@ jobs:
           mv Makefile $DESTINATION/.
           mv README.md $DESTINATION/.
           rm LICENSE MANIFEST.in
-          cd ../../../build
+          cd ../build
 
       - name: Install python module
         run: |

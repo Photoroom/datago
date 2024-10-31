@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	datago "datago/pkg/client"
+	datago "datago/pkg"
 
 	"github.com/davidbyttow/govips/v2/vips"
 )
