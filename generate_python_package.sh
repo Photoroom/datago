@@ -11,7 +11,7 @@ DESTINATION="../../../python_$python_version"
 rm -rf $DESTINATION
 
 # Build the python package via the gopy toolchain
-cd src/pkg/client
+cd pkg
 gopy pkg -author="Photoroom" -email="team@photoroom.com" -url="" -name="datago" -version="0.3" .
 mkdir -p $DESTINATION/datago
 mv datago/* $DESTINATION/datago/.
@@ -21,6 +21,4 @@ mv README.md $DESTINATION/.
 rm LICENSE
 rm MANIFEST.in
 
-cd ../../..
-
-
+cd ..

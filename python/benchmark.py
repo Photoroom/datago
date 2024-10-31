@@ -3,13 +3,15 @@ import time
 import typer
 from tqdm import tqdm
 import numpy as np
-from polyglot import go_array_to_pil_image, go_array_to_numpy
+from python.polyglot import go_array_to_pil_image, go_array_to_numpy
 
 
 def benchmark(
     source: str = typer.Option("SOURCE", help="The source to test out"),
     limit: int = typer.Option(2000, help="The number of samples to test on"),
-    crop_and_resize: bool = typer.Option(True, help="Crop and resize the images on the fly"),
+    crop_and_resize: bool = typer.Option(
+        True, help="Crop and resize the images on the fly"
+    ),
     require_images: bool = typer.Option(True, help="Request the original images"),
     require_embeddings: bool = typer.Option(False, help="Request embeddings"),
     test_masks: bool = typer.Option(True, help="Test masks"),
@@ -49,8 +51,13 @@ def benchmark(
                 for _, mask_buffer in sample.Masks.items():
                     mask = go_array_to_pil_image(mask_buffer)
 
-            if hasattr(sample, "AdditionalImages") and "masked_image" in sample.AdditionalImages:
-                masked_image = go_array_to_pil_image(sample.AdditionalImages["masked_image"])
+            if (
+                hasattr(sample, "AdditionalImages")
+                and "masked_image" in sample.AdditionalImages
+            ):
+                masked_image = go_array_to_pil_image(
+                    sample.AdditionalImages["masked_image"]
+                )
 
             # Bring the latents to numpy
             if hasattr(sample, "Latents"):
