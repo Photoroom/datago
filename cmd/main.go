@@ -41,13 +41,19 @@ func main() {
 			f, _ := os.Create("trace.out")
 			// read with go tool trace trace.out
 
-			trace.Start(f)
+			err := trace.Start(f)
+			if err != nil {
+				panic(err)
+			}
 			defer trace.Stop()
 		}
 		{
 			f, _ := os.Create("cpu.prof")
 			// read with go tool pprof cpu.prof
-			pprof.StartCPUProfile(f)
+			err := pprof.StartCPUProfile(f)
+			if err != nil {
+				panic(err)
+			}
 			defer pprof.StopCPUProfile()
 		}
 	}

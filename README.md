@@ -53,7 +53,7 @@ $ sudo ldconfig
 
 ## Build a benchmark CLI
 
-From the root of this project `datago_src`:
+From the root of this project:
 
 ```bash
 $ go build cmd/main/main.go
@@ -73,7 +73,7 @@ $ go run -race cmd/main/main.go
 
 ## Run the go test suite
 
-From the src folder
+From the root folder
 
 ```bash
 $ go test -v tests/client_test.go

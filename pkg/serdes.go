@@ -133,6 +133,7 @@ func fetchURL(client *http.Client, url string, retries int) (urlPayload, error) 
 			if i == retries-1 {
 				err_msg = fmt.Sprintf("failed to fetch %s %s", url, err)
 			}
+			exponentialBackoffWait(i)
 			continue
 		}
 		defer resp.Body.Close()
@@ -141,13 +142,14 @@ func fetchURL(client *http.Client, url string, retries int) (urlPayload, error) 
 		if err != nil {
 			// Renew the http client, not a shared resource
 			client = &http.Client{Timeout: 30 * time.Second}
+			exponentialBackoffWait(i)
 			continue
 		}
 
 		return urlPayload{url: url, content: body_bytes}, nil
 	}
 
-	return urlPayload{url: url, content: nil}, fmt.Errorf(err_msg)
+	return urlPayload{url: url, content: nil}, fmt.Errorf("%s", err_msg)
 }
 
 func fetchImage(client *http.Client, url string, retries int, transform *ARAwareTransform, aspect_ratio float64, pre_encode_image bool, is_mask bool) (*ImagePayload, float64, error) {
@@ -158,6 +160,7 @@ func fetchImage(client *http.Client, url string, retries int, transform *ARAware
 		resp, err := client.Get(url)
 		if err != nil {
 			err_report = err
+			exponentialBackoffWait(i)
 
 			// Renew the client in case the connection was closed
 			client = &http.Client{Timeout: 30 * time.Second}
@@ -168,6 +171,7 @@ func fetchImage(client *http.Client, url string, retries int, transform *ARAware
 		body_bytes, err := readBodyBuffered(resp)
 		if err != nil {
 			err_report = err
+			exponentialBackoffWait(i)
 			continue
 		}
 

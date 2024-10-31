@@ -38,17 +38,17 @@ jobs:
 
       - name: Build python module
         run: |
-          cd src/pkg
+          cd pkg
           gopy pkg -author="Photoroom" -email="team@photoroom.com" -name="datago" .
-          export DESTINATION="../../build"
+          export DESTINATION="../build"
           mkdir -p $DESTINATION/datago
           mv datago/* $DESTINATION/datago/.
           mv setup.py $DESTINATION/.
           mv Makefile $DESTINATION/.
           mv README.md $DESTINATION/.
           rm LICENSE MANIFEST.in
-          ls ../..
-          cd ../../build
+          ls
+          cd ../build
 
       - name: Install python module
         run: |
@@ -65,4 +65,4 @@ jobs:
         run: |
           ls
           python3 -m pip install -r requirements.txt
-          pytest -xv python_tests/*
+          pytest -xv python/tests/*
