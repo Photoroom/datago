@@ -12,14 +12,18 @@ import (
 
 func main() {
 	// Define flags
-	client_config := datago.GetDefaultConfig()
+	client_config := datago.DatagoConfig{}
+	client_config.SetDefaults()
+
 	client_config.SourceType = datago.SourceTypeFileSystem
 	client_config.SourceConfig = datago.GeneratorFileSystemConfig{RootPath: os.Getenv("DATAROOM_TEST_FILESYSTEM"), PageSize: 10}
-	client_config.DefaultImageSize = 1024
-	client_config.DownsamplingRatio = 32
+	client_config.ImageConfig = datago.ImageTransformConfig{
+		DefaultImageSize:  1024,
+		DownsamplingRatio: 32,
+		CropAndResize:     *flag.Bool("crop_and_resize", false, "Whether to crop and resize the images and masks"),
+	}
 
-	client_config.CropAndResize = *flag.Bool("crop_and_resize", false, "Whether to crop and resize the images and masks")
-	client_config.ConcurrentDownloads = *flag.Int("concurrency", 64, "The number of concurrent http requests to make")
+	client_config.Concurrency = *flag.Int("concurrency", 64, "The number of concurrent http requests to make")
 	client_config.PrefetchBufferSize = *flag.Int("item_fetch_buffer", 256, "The number of items to pre-load")
 	client_config.SamplesBufferSize = *flag.Int("item_ready_buffer", 128, "The number of items ready to be served")
 

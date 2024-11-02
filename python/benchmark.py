@@ -3,7 +3,7 @@ import time
 import typer
 from tqdm import tqdm
 import numpy as np
-from python.polyglot import go_array_to_pil_image, go_array_to_numpy
+from polyglot import go_array_to_pil_image, go_array_to_numpy
 
 
 def benchmark(
@@ -18,21 +18,10 @@ def benchmark(
     test_latents: bool = typer.Option(True, help="Test latents"),
 ):
     print(f"Running benchmark for {source} - {limit} samples")
-    client = datago.GetClient(
-        source=source,
-        require_images=require_images,
-        require_embeddings=require_embeddings,
-        has_attributes="",
-        lacks_attributes="",
-        has_masks="segmentation_mask" if test_masks else "",
-        lacks_masks="",
-        has_latents="masked_image,my_test_latents" if test_latents else "",
-        lacks_latents="",
-        crop_and_resize=crop_and_resize,
-        prefetch_buffer_size=256,
-        samples_buffer_size=256,
-        downloads_concurrency=64,
-    )
+    config = datago.DatagoConfig()
+    config.SetDefaults()
+
+    client = datago.GetClient(config)
     client.Start()
     start = time.time()
 

@@ -6,10 +6,11 @@ import (
 )
 
 type BackendFileSystem struct {
-	config *DatagoConfig
+	config      *DatagoConfig
+	concurrency int
 }
 
-func loadSample(config *DatagoConfig, filesystem_sample fsSampleMetadata, transform *ARAwareTransform, _pre_encode_images bool) *Sample {
+func loadSample(config *DatagoConfig, filesystem_sample fsSampleMetadata, transform *ARAwareTransform, pre_encode_images bool) *Sample {
 	// Load the file into []bytes
 	bytes_buffer, err := os.ReadFile(filesystem_sample.filePath)
 	if err != nil {
@@ -17,7 +18,7 @@ func loadSample(config *DatagoConfig, filesystem_sample fsSampleMetadata, transf
 		return nil
 	}
 
-	img_payload, _, err := imageFromBuffer(bytes_buffer, transform, -1., config.PreEncodeImages, false)
+	img_payload, _, err := imageFromBuffer(bytes_buffer, transform, -1., pre_encode_images, false)
 	if err != nil {
 		fmt.Println("Error loading image:", filesystem_sample.fileName)
 		return nil
@@ -54,12 +55,12 @@ func (b BackendFileSystem) collectSamples(chanSampleMetadata chan SampleDataPoin
 	}
 
 	// Start the workers and work on the metadata channel
-	for i := 0; i < b.config.ConcurrentDownloads; i++ {
+	for i := 0; i < b.concurrency; i++ {
 		go sampleWorker()
 	}
 
 	// Wait for all the workers to be done or overall context to be cancelled
-	for i := 0; i < b.config.ConcurrentDownloads; i++ {
+	for i := 0; i < b.concurrency; i++ {
 		<-ack_channel
 	}
 	close(chanSamples)

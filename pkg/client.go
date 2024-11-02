@@ -25,35 +25,51 @@ const (
 
 type DataSourceConfig interface{}
 
+type ImageTransformConfig struct {
+	CropAndResize     bool
+	DefaultImageSize  int
+	DownsamplingRatio int
+	MinAspectRatio    float64
+	MaxAspectRatio    float64
+	PreEncodeImages   bool
+}
+
+func (c *ImageTransformConfig) SetDefaults() {
+	c.DefaultImageSize = 512
+	c.DownsamplingRatio = 16
+	c.MinAspectRatio = 0.5
+	c.MaxAspectRatio = 2.0
+	c.PreEncodeImages = false
+}
+
 type DatagoConfig struct {
-	SourceType          DatagoSourceType
-	SourceConfig        DataSourceConfig
-	CropAndResize       bool
-	DefaultImageSize    int
-	DownsamplingRatio   int
-	MinAspectRatio      float64
-	MaxAspectRatio      float64
-	PreEncodeImages     bool
-	PrefetchBufferSize  int
-	SamplesBufferSize   int
-	ConcurrentDownloads int
-	PageSize            int
+	SourceType         DatagoSourceType `default:"DB"`
+	SourceConfig       DataSourceConfig
+	ImageConfig        ImageTransformConfig
+	PrefetchBufferSize int
+	SamplesBufferSize  int
+	Concurrency        int
+}
+
+func (c *DatagoConfig) SetDefaults() {
+	c.SourceType = SourceTypeDB
+
+	dbConfig := GeneratorDBConfig{}
+	dbConfig.SetDefaults()
+	c.SourceConfig = dbConfig
+
+	c.ImageConfig.SetDefaults()
+	c.PrefetchBufferSize = 64
+	c.SamplesBufferSize = 32
+	c.Concurrency = 64
 }
 
 type DatagoClient struct {
-	concurrency int
-
 	context   context.Context
 	waitGroup *sync.WaitGroup
 	cancel    context.CancelFunc
 
-	// Online transform parameters
-	crop_and_resize    bool
-	default_image_size int
-	downsampling_ratio int
-	min_aspect_ratio   float64
-	max_aspect_ratio   float64
-	pre_encode_images  bool
+	ImageConfig ImageTransformConfig
 
 	// Flexible generator, backend and dispatch goroutines
 	generator Generator
@@ -67,27 +83,8 @@ type DatagoClient struct {
 
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-func GetDefaultConfig() DatagoConfig {
-	dbConfig := GetDefaultDBConfig()
-
-	return DatagoConfig{
-		SourceType:         SourceTypeDB,
-		SourceConfig:       dbConfig,
-		CropAndResize:      false,
-		DefaultImageSize:   512,
-		DownsamplingRatio:  16,
-		MinAspectRatio:     0.5,
-		MaxAspectRatio:     2.0,
-		PreEncodeImages:    false,
-		PrefetchBufferSize: 8,
-		SamplesBufferSize:  8,
-		PageSize:           20, // 1000 for a vectorDB, make this a default which depends on the source type
-	}
-}
-
 // Create a new Dataroom Client
 func GetClient(config DatagoConfig) *DatagoClient {
-
 	// Create the generator and backend
 	var generator Generator
 	var backend Backend
@@ -96,12 +93,12 @@ func GetClient(config DatagoConfig) *DatagoClient {
 		fmt.Println("Creating a DB-backed dataloader")
 		db_config := config.SourceConfig.(GeneratorDBConfig)
 		generator = newDatagoGeneratorDB(db_config)
-		backend = BackendHTTP{config: &db_config}
+		backend = BackendHTTP{config: &db_config, concurrency: config.Concurrency}
 	} else if config.SourceType == SourceTypeFileSystem {
 		fmt.Println("Creating a FileSystem-backed dataloader")
 		fs_config := config.SourceConfig.(GeneratorFileSystemConfig)
 		generator = newDatagoGeneratorFileSystem(fs_config)
-		backend = BackendFileSystem{config: &config}
+		backend = BackendFileSystem{config: &config, concurrency: config.Concurrency}
 	} else {
 		// TODO: Handle other sources
 		log.Panic("Unsupported source type at the moment")
@@ -109,17 +106,10 @@ func GetClient(config DatagoConfig) *DatagoClient {
 
 	// Create the client
 	client := &DatagoClient{
-		concurrency:        config.ConcurrentDownloads,
 		chanPages:          make(chan Pages, 2),
 		chanSampleMetadata: make(chan SampleDataPointers, config.PrefetchBufferSize),
 		chanSamples:        make(chan Sample, config.SamplesBufferSize),
-
-		crop_and_resize:    config.CropAndResize,
-		default_image_size: config.DefaultImageSize,
-		downsampling_ratio: config.DownsamplingRatio,
-		min_aspect_ratio:   config.MinAspectRatio,
-		max_aspect_ratio:   config.MaxAspectRatio,
-		pre_encode_images:  config.PreEncodeImages,
+		ImageConfig:        config.ImageConfig,
 		context:            nil,
 		cancel:             nil,
 		waitGroup:          nil,
@@ -162,13 +152,13 @@ func (c *DatagoClient) Start() {
 	// Optionally crop and resize the images and masks on the fly
 	var arAwareTransform *ARAwareTransform = nil
 
-	if c.crop_and_resize {
+	if c.ImageConfig.CropAndResize {
 		fmt.Println("Cropping and resizing images")
-		fmt.Println("Base image size | downsampling ratio | min | max:", c.default_image_size, c.downsampling_ratio, c.min_aspect_ratio, c.max_aspect_ratio)
-		arAwareTransform = newARAwareTransform(c.default_image_size, c.downsampling_ratio, c.min_aspect_ratio, c.max_aspect_ratio)
+		fmt.Println("Base image size | downsampling ratio | min | max:", c.ImageConfig.DefaultImageSize, c.ImageConfig.DownsamplingRatio, c.ImageConfig.MinAspectRatio, c.ImageConfig.MaxAspectRatio)
+		arAwareTransform = newARAwareTransform(c.ImageConfig)
 	}
 
-	if c.pre_encode_images {
+	if c.ImageConfig.PreEncodeImages {
 		fmt.Println("Pre-encoding images, we'll return serialized JPG and PNG bytes")
 	}
 
@@ -191,7 +181,7 @@ func (c *DatagoClient) Start() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.backend.collectSamples(c.chanSampleMetadata, c.chanSamples, arAwareTransform, c.pre_encode_images) // Fetch the payloads and and deserialize them
+		c.backend.collectSamples(c.chanSampleMetadata, c.chanSamples, arAwareTransform, c.ImageConfig.PreEncodeImages) // Fetch the payloads and and deserialize them
 	}()
 
 	c.waitGroup = &wg

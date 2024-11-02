@@ -7,7 +7,8 @@ import (
 )
 
 type BackendHTTP struct {
-	config *GeneratorDBConfig
+	config      *GeneratorDBConfig
+	concurrency int
 }
 
 func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, pre_encode_images bool) {
@@ -39,12 +40,12 @@ func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, 
 	}
 
 	// Start the workers and work on the metadata channel
-	for i := 0; i < b.config.ConcurrentDownloads; i++ {
+	for i := 0; i < b.concurrency; i++ {
 		go sampleWorker()
 	}
 
 	// Wait for all the workers to be done or overall context to be cancelled
-	for i := 0; i < b.config.ConcurrentDownloads; i++ {
+	for i := 0; i < b.concurrency; i++ {
 		<-ack_channel
 	}
 	close(chanSamples)

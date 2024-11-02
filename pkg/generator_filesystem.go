@@ -17,15 +17,14 @@ type fsSampleMetadata struct {
 }
 
 // -- Define the front end goroutine ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-type datagoGeneratorFileSystem struct {
-	root_directory string
-	extensions     set
-	page_size      int
-}
-
 type GeneratorFileSystemConfig struct {
 	RootPath string
 	PageSize int
+}
+
+type datagoGeneratorFileSystem struct {
+	extensions set
+	config     GeneratorFileSystemConfig
 }
 
 func newDatagoGeneratorFileSystem(config GeneratorFileSystemConfig) datagoGeneratorFileSystem {
@@ -37,7 +36,7 @@ func newDatagoGeneratorFileSystem(config GeneratorFileSystemConfig) datagoGenera
 	fmt.Println("File system root directory", config.RootPath)
 	fmt.Println("Supported image extensions", supported_img_extensions)
 
-	return datagoGeneratorFileSystem{root_directory: config.RootPath, extensions: extensionsMap, page_size: config.PageSize}
+	return datagoGeneratorFileSystem{config: config, extensions: extensionsMap}
 }
 
 func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages chan Pages) {
@@ -46,7 +45,7 @@ func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages 
 
 	var samples []SampleDataPointers
 
-	err := filepath.Walk(f.root_directory, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(f.config.RootPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -56,7 +55,7 @@ func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages 
 		}
 
 		// Check if we have enough files to send a page
-		if len(samples) >= f.page_size {
+		if len(samples) >= f.config.PageSize {
 			chanPages <- Pages{samples}
 			samples = nil
 		}
@@ -64,7 +63,8 @@ func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages 
 	})
 
 	if err != nil {
-		fmt.Println("Error walking the path", f.root_directory)
+		fmt.Println("Error walking the path", f.config.RootPath)
+		panic(err)
 	} else {
 		// Send the last page
 		if len(samples) > 0 {

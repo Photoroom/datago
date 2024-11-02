@@ -26,7 +26,9 @@ Datago is rank and world-size aware, in which case the samples are dispatched de
 ```python
 from datago import datago
 
-config = datago.GetDefaultConfig()
+config = datago.DatagoConfig()
+config.SetDefaults()
+
 # Check out the config fields, plenty of option to specify your DB query and optimize performance
 
 client = datago.GetClient(config)

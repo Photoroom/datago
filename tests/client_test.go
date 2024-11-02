@@ -14,8 +14,11 @@ func get_test_source() string {
 }
 
 func get_default_test_config() datago.DatagoConfig {
-	config := datago.GetDefaultConfig()
-	db_config := datago.GetDefaultDBConfig()
+	config := datago.DatagoConfig{}
+	config.SetDefaults()
+
+	db_config := datago.GeneratorDBConfig{}
+	db_config.SetDefaults()
 	db_config.Sources = get_test_source()
 	db_config.PageSize = 32
 	config.SourceConfig = db_config
@@ -133,7 +136,7 @@ func TestExtraFields(t *testing.T) {
 func TestCropAndResize(t *testing.T) {
 	config := get_default_test_config()
 	config.SamplesBufferSize = 1
-	config.CropAndResize = true
+	config.ImageConfig.CropAndResize = true
 	db_config := config.SourceConfig.(datago.GeneratorDBConfig)
 	db_config.RequireImages = true
 	db_config.PageSize = 32
@@ -175,8 +178,7 @@ func TestImageBufferCompression(t *testing.T) {
 	// Check that the image buffer is compressed, and that we can decode it properly
 	config := get_default_test_config()
 	config.SamplesBufferSize = 1
-	config.CropAndResize = true
-	config.PreEncodeImages = true
+	config.ImageConfig.PreEncodeImages = true
 
 	db_config := config.SourceConfig.(datago.GeneratorDBConfig)
 	db_config.RequireImages = true

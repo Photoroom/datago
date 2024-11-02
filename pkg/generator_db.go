@@ -63,22 +63,37 @@ type dbRequest struct {
 
 // -- Define the front end goroutine ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 type GeneratorDBConfig struct {
-	// Request parameters
-	Sources             string
-	RequireImages       bool
-	RequireEmbeddings   bool
-	Tags                []string
-	TagsNE              []string
-	HasAttributes       []string
-	LacksAttributes     []string
-	HasMasks            []string
-	LacksMasks          []string
-	HasLatents          []string
-	LacksLatents        []string
-	ConcurrentDownloads int
-	PageSize            int
-	Rank                uint32
-	WorldSize           uint32
+	Sources           string
+	RequireImages     bool
+	RequireEmbeddings bool
+	Tags              []string
+	TagsNE            []string
+	HasAttributes     []string
+	LacksAttributes   []string
+	HasMasks          []string
+	LacksMasks        []string
+	HasLatents        []string
+	LacksLatents      []string
+	Rank              uint32
+	WorldSize         uint32
+	PageSize          uint32
+}
+
+func (c *GeneratorDBConfig) SetDefaults() {
+	c.Sources = ""
+	c.RequireImages = true
+	c.RequireEmbeddings = false
+	c.Tags = []string{}
+	c.TagsNE = []string{}
+	c.HasAttributes = []string{}
+	c.LacksAttributes = []string{}
+	c.HasMasks = []string{}
+	c.LacksMasks = []string{}
+	c.HasLatents = []string{}
+	c.LacksLatents = []string{}
+	c.Rank = 0
+	c.WorldSize = 0
+	c.PageSize = 512
 }
 
 func (c *GeneratorDBConfig) getDbRequest() dbRequest {
@@ -119,26 +134,6 @@ func (c *GeneratorDBConfig) getDbRequest() dbRequest {
 		lacksMasks:      strings.Join(c.LacksMasks, ","),
 		hasLatents:      strings.Join(c.HasLatents, ","),
 		lacksLatents:    strings.Join(c.LacksLatents, ","),
-	}
-}
-
-func GetDefaultDBConfig() GeneratorDBConfig {
-	return GeneratorDBConfig{
-		Sources:             "",
-		RequireImages:       true,
-		RequireEmbeddings:   false,
-		Tags:                []string{},
-		TagsNE:              []string{},
-		HasAttributes:       []string{},
-		LacksAttributes:     []string{},
-		HasMasks:            []string{},
-		LacksMasks:          []string{},
-		HasLatents:          []string{},
-		LacksLatents:        []string{},
-		Rank:                0,
-		WorldSize:           0,
-		ConcurrentDownloads: 1,
-		PageSize:            1000,
 	}
 }
 
