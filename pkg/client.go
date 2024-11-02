@@ -23,7 +23,7 @@ const (
 	// incoming: object storage
 )
 
-type DataSourceConfig interface{}
+type DataSourceConfig interface{} // FIXME: This is not compatible with python bindings
 
 type ImageTransformConfig struct {
 	CropAndResize     bool
