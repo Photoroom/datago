@@ -22,23 +22,24 @@ func get_default_test_config() datago.DatagoConfig {
 	db_config.Sources = get_test_source()
 	db_config.PageSize = 32
 	config.SourceConfig = db_config
+
 	return config
 }
 
 func TestClientStartStop(t *testing.T) {
-	config := get_default_test_config()
+	clientConfig := get_default_test_config()
 
 	// Check that we can start, do nothing and stop the client immediately
-	client := datago.GetClient(config)
+	client := datago.GetClient(clientConfig)
 	client.Start()
 	client.Stop()
 }
 
 func TestClientNoStart(t *testing.T) {
-	config := get_default_test_config()
+	clientConfig := get_default_test_config()
 
 	// Check that we can get a sample without starting the client
-	client := datago.GetClient(config)
+	client := datago.GetClient(clientConfig)
 	sample := client.GetSample()
 	if sample.ID == "" {
 		t.Errorf("GetSample returned an unexpected error")
@@ -48,10 +49,10 @@ func TestClientNoStart(t *testing.T) {
 func TestClientNoStop(t *testing.T) {
 	// Check that we can start, get a sample, and destroy the client immediately
 	// In that case Stop() should be called in the background, and everything should work just fine
-	config := get_default_test_config()
-	config.SamplesBufferSize = 1
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
 
-	client := datago.GetClient(config)
+	client := datago.GetClient(clientConfig)
 	client.Start()
 	_ = client.GetSample()
 
@@ -60,10 +61,10 @@ func TestClientNoStop(t *testing.T) {
 func TestMoreThanBufferSize(t *testing.T) {
 	// Check that we can start, get a sample, and destroy the client immediately
 	// In that case Stop() should be called in the background, and everything should work just fine
-	config := get_default_test_config()
-	config.SamplesBufferSize = 1
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
 
-	client := datago.GetClient(config)
+	client := datago.GetClient(clientConfig)
 	client.Start()
 	_ = client.GetSample()
 
@@ -73,14 +74,11 @@ func TestMoreThanBufferSize(t *testing.T) {
 }
 
 func TestFetchImage(t *testing.T) {
-	config := get_default_test_config()
-	config.SamplesBufferSize = 1
-	db_config := config.SourceConfig.(datago.GeneratorDBConfig)
-	db_config.RequireImages = true
-	config.SourceConfig = db_config
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
 
 	// Check that we can get an image
-	client := datago.GetClient(config)
+	client := datago.GetClient(clientConfig)
 	sample := client.GetSample()
 
 	// Assert that no error occurred
@@ -102,17 +100,16 @@ func TestFetchImage(t *testing.T) {
 }
 
 func TestExtraFields(t *testing.T) {
-	config := get_default_test_config()
-	config.SamplesBufferSize = 1
-	db_config := config.SourceConfig.(datago.GeneratorDBConfig)
-	db_config.RequireImages = true
-	db_config.PageSize = 32
-	db_config.HasLatents = []string{"masked_image"}
-	db_config.HasMasks = []string{"segmentation_mask"}
-	config.SourceConfig = db_config
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+
+	dbConfig := clientConfig.SourceConfig.(datago.GeneratorDBConfig)
+	dbConfig.HasLatents = "masked_image"
+	dbConfig.HasMasks = "segmentation_mask"
+	clientConfig.SourceConfig = dbConfig
 
 	// Check that we can get an image
-	client := datago.GetClient(config)
+	client := datago.GetClient(clientConfig)
 	sample := client.GetSample()
 
 	// Assert that no error occurred
@@ -134,15 +131,11 @@ func TestExtraFields(t *testing.T) {
 }
 
 func TestCropAndResize(t *testing.T) {
-	config := get_default_test_config()
-	config.SamplesBufferSize = 1
-	config.ImageConfig.CropAndResize = true
-	db_config := config.SourceConfig.(datago.GeneratorDBConfig)
-	db_config.RequireImages = true
-	db_config.PageSize = 32
-	config.SourceConfig = db_config
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+	clientConfig.ImageConfig.CropAndResize = true
 
-	client := datago.GetClient(config)
+	client := datago.GetClient(clientConfig)
 	client.Start()
 
 	for i := 0; i < 10; i++ {
@@ -176,18 +169,16 @@ func TestCropAndResize(t *testing.T) {
 
 func TestImageBufferCompression(t *testing.T) {
 	// Check that the image buffer is compressed, and that we can decode it properly
-	config := get_default_test_config()
-	config.SamplesBufferSize = 1
-	config.ImageConfig.PreEncodeImages = true
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+	clientConfig.ImageConfig.PreEncodeImages = true
 
-	db_config := config.SourceConfig.(datago.GeneratorDBConfig)
-	db_config.RequireImages = true
-	db_config.PageSize = 32
-	db_config.HasLatents = []string{"masked_image"}
-	db_config.HasMasks = []string{"segmentation_mask"}
-	config.SourceConfig = db_config
+	dbConfig := clientConfig.SourceConfig.(datago.GeneratorDBConfig)
+	dbConfig.HasLatents = "masked_image"
+	dbConfig.HasMasks = "segmentation_mask"
+	clientConfig.SourceConfig = dbConfig
 
-	client := datago.GetClient(config)
+	client := datago.GetClient(clientConfig)
 	sample := client.GetSample()
 
 	// Check that no error occurred

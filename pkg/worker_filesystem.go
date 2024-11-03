@@ -12,19 +12,19 @@ type BackendFileSystem struct {
 
 func loadSample(config *DatagoConfig, filesystem_sample fsSampleMetadata, transform *ARAwareTransform, pre_encode_images bool) *Sample {
 	// Load the file into []bytes
-	bytes_buffer, err := os.ReadFile(filesystem_sample.filePath)
+	bytes_buffer, err := os.ReadFile(filesystem_sample.FilePath)
 	if err != nil {
-		fmt.Println("Error reading file:", filesystem_sample.filePath)
+		fmt.Println("Error reading file:", filesystem_sample.FilePath)
 		return nil
 	}
 
 	img_payload, _, err := imageFromBuffer(bytes_buffer, transform, -1., pre_encode_images, false)
 	if err != nil {
-		fmt.Println("Error loading image:", filesystem_sample.fileName)
+		fmt.Println("Error loading image:", filesystem_sample.FileName)
 		return nil
 	}
 
-	return &Sample{ID: filesystem_sample.fileName,
+	return &Sample{ID: filesystem_sample.FileName,
 		Image: *img_payload,
 	}
 }

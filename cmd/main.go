@@ -12,28 +12,27 @@ import (
 
 func main() {
 	// Define flags
-	client_config := datago.DatagoConfig{}
-	client_config.SetDefaults()
+	config := datago.DatagoConfig{}
+	config.SetDefaults()
 
-	client_config.SourceType = datago.SourceTypeFileSystem
-	client_config.SourceConfig = datago.GeneratorFileSystemConfig{RootPath: os.Getenv("DATAROOM_TEST_FILESYSTEM"), PageSize: 10}
-	client_config.ImageConfig = datago.ImageTransformConfig{
+	sourceConfig := datago.GeneratorFileSystemConfig{RootPath: os.Getenv("DATAROOM_TEST_FILESYSTEM")}
+	sourceConfig.PageSize = 10
+	config.ImageConfig = datago.ImageTransformConfig{
 		DefaultImageSize:  1024,
 		DownsamplingRatio: 32,
 		CropAndResize:     *flag.Bool("crop_and_resize", false, "Whether to crop and resize the images and masks"),
 	}
-
-	client_config.Concurrency = *flag.Int("concurrency", 64, "The number of concurrent http requests to make")
-	client_config.PrefetchBufferSize = *flag.Int("item_fetch_buffer", 256, "The number of items to pre-load")
-	client_config.SamplesBufferSize = *flag.Int("item_ready_buffer", 128, "The number of items ready to be served")
+	config.SourceConfig = sourceConfig
+	config.Concurrency = *flag.Int("concurrency", 64, "The number of concurrent http requests to make")
+	config.PrefetchBufferSize = *flag.Int("item_fetch_buffer", 256, "The number of items to pre-load")
+	config.SamplesBufferSize = *flag.Int("item_ready_buffer", 128, "The number of items ready to be served")
 
 	limit := flag.Int("limit", 2000, "The number of items to fetch")
 	profile := flag.Bool("profile", false, "Whether to profile the code")
 
 	// Parse the flags and instantiate the client
 	flag.Parse()
-
-	dataroom_client := datago.GetClient(client_config)
+	dataroom_client := datago.GetClient(config)
 
 	// Go-routine which will feed the sample data to the workers
 	// and fetch the next page

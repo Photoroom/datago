@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -63,36 +62,36 @@ type dbRequest struct {
 
 // -- Define the front end goroutine ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 type GeneratorDBConfig struct {
-	Sources           string
-	RequireImages     bool
-	RequireEmbeddings bool
-	Tags              []string
-	TagsNE            []string
-	HasAttributes     []string
-	LacksAttributes   []string
-	HasMasks          []string
-	LacksMasks        []string
-	HasLatents        []string
-	LacksLatents      []string
-	Rank              uint32
-	WorldSize         uint32
-	PageSize          uint32
+	DataSourceConfig
+	Sources           string `json:"sources"`
+	RequireImages     bool   `json:"require_images"`
+	RequireEmbeddings bool   `json:"require_embeddings"`
+	Tags              string `json:"tags"`
+	TagsNE            string `json:"tags_ne"`
+	HasAttributes     string `json:"has_attributes"`
+	LacksAttributes   string `json:"lacks_attributes"`
+	HasMasks          string `json:"has_masks"`
+	LacksMasks        string `json:"lacks_masks"`
+	HasLatents        string `json:"has_latents"`
+	LacksLatents      string `json:"lacks_latents"`
+	Rank              uint32 `json:"rank"`
+	WorldSize         uint32 `json:"world_size"`
 }
 
 func (c *GeneratorDBConfig) SetDefaults() {
 	c.Sources = ""
 	c.RequireImages = true
 	c.RequireEmbeddings = false
-	c.Tags = []string{}
-	c.TagsNE = []string{}
-	c.HasAttributes = []string{}
-	c.LacksAttributes = []string{}
-	c.HasMasks = []string{}
-	c.LacksMasks = []string{}
-	c.HasLatents = []string{}
-	c.LacksLatents = []string{}
+	c.Tags = ""
+	c.TagsNE = ""
+	c.HasAttributes = ""
+	c.LacksAttributes = ""
+	c.HasMasks = ""
+	c.LacksMasks = ""
+	c.HasLatents = ""
+	c.LacksLatents = ""
 	c.Rank = 0
-	c.WorldSize = 0
+	c.WorldSize = 1
 	c.PageSize = 512
 }
 
@@ -126,14 +125,14 @@ func (c *GeneratorDBConfig) getDbRequest() dbRequest {
 		fields:          fields,
 		sources:         c.Sources,
 		pageSize:        fmt.Sprintf("%d", c.PageSize),
-		tags:            strings.Join(c.Tags, ","),
-		tagsNE:          strings.Join(c.TagsNE, ","),
-		hasAttributes:   strings.Join(c.HasAttributes, ","),
-		lacksAttributes: strings.Join(c.LacksAttributes, ","),
-		hasMasks:        strings.Join(c.HasMasks, ","),
-		lacksMasks:      strings.Join(c.LacksMasks, ","),
-		hasLatents:      strings.Join(c.HasLatents, ","),
-		lacksLatents:    strings.Join(c.LacksLatents, ","),
+		tags:            c.Tags,
+		tagsNE:          c.TagsNE,
+		hasAttributes:   c.HasAttributes,
+		lacksAttributes: c.LacksAttributes,
+		hasMasks:        c.HasMasks,
+		lacksMasks:      c.LacksMasks,
+		hasLatents:      c.HasLatents,
+		lacksLatents:    c.LacksLatents,
 	}
 }
 

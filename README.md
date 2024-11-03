@@ -25,24 +25,44 @@ Datago is rank and world-size aware, in which case the samples are dispatched de
 
 ```python
 from datago import datago
+import json
 
-config = datago.DatagoConfig()
-config.SetDefaults()
+client_config = {
+    # two sources are supported at the moment, DB (API and stack to be shared) & local filesystem
+    # in the case of the filesystem, datago will serve the jpg/png files, ID being filepath
+    "source_type": datago.SourceTypeFileSystem,
+    "source_config": {
+        "page_size": 512,
+        "root_path": root_path,
+    },
+    # this governs the image pre-processing, which will resize and crop to aspect ratio buckets
+    # resizing is high quality by default
+    "image_config": {
+        "crop_and_resize": crop_and_resize,
+        "default_image_size": 512,
+        "downsampling_ratio": 16,
+        "min_aspect_ratio": 0.5,
+        "max_aspect_ratio": 2.0,
+        "pre_encode_images": False,
+    },
+    # some performance options, best settings will depend on your machine
+    "prefetch_buffer_size": 64,
+    "samples_buffer_size": 128,
+    "concurrency": concurrency,
+}
 
-# Check out the config fields, plenty of option to specify your DB query and optimize performance
-
-client = datago.GetClient(config)
-client.Start()  # This can be done early for convenience, not mandatory (can fetch samples while models are instanciated for intance)
+client = datago.GetClientFromJSON(config)
+client.Start()  # This can be done early for convenience, not mandatory
 
 for _ in range(10):
-    sample = client.GetSample() # This start the client if not previously done, in that case latency for the first sample is higher
+    sample = client.GetSample()
 ```
 
-Please note that the image buffers will be passed around as raw pointers, they can be re-interpreted in python with the attached helpers
+Please note that the image buffers will be passed around as raw pointers, they can be re-interpreted in python with the attached helpers. Check python benchmarks for examples.
 
 ## Match the raw exported buffers with typical python types
 
-See helper functions provided in `polyglot.py`, should be self explanatory
+See helper functions provided in `types.py`, should be self explanatory
 
 </details><details> <summary><strong>Build it</strong></summary>
 

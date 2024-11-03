@@ -2,9 +2,11 @@ package datago
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -15,23 +17,26 @@ import (
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Public interface for this package, will be reflected in the python bindings
 
+// All the supported source types
 type DatagoSourceType string
 
 const (
 	SourceTypeDB         DatagoSourceType = "DB"
-	SourceTypeFileSystem DatagoSourceType = "FileSystem"
-	// incoming: object storage
+	SourceTypeFileSystem DatagoSourceType = "filesystem"
 )
 
-type DataSourceConfig interface{} // FIXME: This is not compatible with python bindings
+// Nested configuration structures for the client
+type DataSourceConfig struct {
+	PageSize int `json:"page_size"`
+}
 
 type ImageTransformConfig struct {
-	CropAndResize     bool
-	DefaultImageSize  int
-	DownsamplingRatio int
-	MinAspectRatio    float64
-	MaxAspectRatio    float64
-	PreEncodeImages   bool
+	CropAndResize     bool    `json:"crop_and_resize"`
+	DefaultImageSize  int     `json:"default_image_size"`
+	DownsamplingRatio int     `json:"downsampling_ratio"`
+	MinAspectRatio    float64 `json:"min_aspect_ratio"`
+	MaxAspectRatio    float64 `json:"max_aspect_ratio"`
+	PreEncodeImages   bool    `json:"pre_encode_images"`
 }
 
 func (c *ImageTransformConfig) SetDefaults() {
@@ -42,18 +47,17 @@ func (c *ImageTransformConfig) SetDefaults() {
 	c.PreEncodeImages = false
 }
 
+// DatagoConfig is the main configuration structure for the datago client
 type DatagoConfig struct {
-	SourceType         DatagoSourceType `default:"DB"`
-	SourceConfig       DataSourceConfig
-	ImageConfig        ImageTransformConfig
-	PrefetchBufferSize int
-	SamplesBufferSize  int
-	Concurrency        int
+	SourceType         DatagoSourceType     `json:"source_type"`
+	SourceConfig       interface{}          `json:"source_config"`
+	ImageConfig        ImageTransformConfig `json:"image_config"`
+	PrefetchBufferSize int                  `json:"prefetch_buffer_size"`
+	SamplesBufferSize  int                  `json:"samples_buffer_size"`
+	Concurrency        int                  `json:"concurrency"`
 }
 
 func (c *DatagoConfig) SetDefaults() {
-	c.SourceType = SourceTypeDB
-
 	dbConfig := GeneratorDBConfig{}
 	dbConfig.SetDefaults()
 	c.SourceConfig = dbConfig
@@ -64,6 +68,58 @@ func (c *DatagoConfig) SetDefaults() {
 	c.Concurrency = 64
 }
 
+func DatagoConfigFromJSON(jsonString string) DatagoConfig {
+	config := DatagoConfig{}
+	var tempConfig map[string]interface{}
+	err := json.Unmarshal([]byte(jsonString), &tempConfig)
+	if err != nil {
+		log.Panicf("Error unmarshalling JSON: %v", err)
+	}
+
+	sourceConfig, err := json.Marshal(tempConfig["source_config"])
+	if err != nil {
+		log.Panicf("Error marshalling source_config: %v", err)
+	}
+
+	switch tempConfig["source_type"] {
+	case string(SourceTypeDB):
+		var dbConfig GeneratorDBConfig
+		err = json.Unmarshal(sourceConfig, &dbConfig)
+		if err != nil {
+			log.Panicf("Error unmarshalling DB config: %v", err)
+		}
+		config.SourceConfig = dbConfig
+	case string(SourceTypeFileSystem):
+		var fsConfig GeneratorFileSystemConfig
+		err = json.Unmarshal(sourceConfig, &fsConfig)
+		if err != nil {
+			log.Panicf("Error unmarshalling FileSystem config: %v", err)
+		}
+		config.SourceConfig = fsConfig
+	default:
+		fmt.Println(tempConfig["source_type"] == SourceTypeFileSystem, tempConfig["source_type"], SourceTypeFileSystem)
+		log.Panic("Unsupported source type ", tempConfig["source_type"])
+	}
+
+	imageConfig, err := json.Marshal(tempConfig["image_config"])
+	if err != nil {
+		log.Panicf("Error marshalling image_config: %v", err)
+	}
+	err = json.Unmarshal(imageConfig, &config.ImageConfig)
+	if err != nil {
+		log.Panicf("Error unmarshalling Image config: %v", err)
+	}
+
+	config.PrefetchBufferSize = int(tempConfig["prefetch_buffer_size"].(float64))
+	config.SamplesBufferSize = int(tempConfig["samples_buffer_size"].(float64))
+	config.Concurrency = int(tempConfig["concurrency"].(float64))
+	if err != nil {
+		log.Panicf("Error unmarshalling JSON: %v", err)
+	}
+	return config
+}
+
+// DatagoClient is the main client structure, will be instantiated by the user
 type DatagoClient struct {
 	context   context.Context
 	waitGroup *sync.WaitGroup
@@ -83,25 +139,31 @@ type DatagoClient struct {
 
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-// Create a new Dataroom Client
+// GetClient is a constructor for the DatagoClient, given a JSON configuration string
 func GetClient(config DatagoConfig) *DatagoClient {
 	// Create the generator and backend
 	var generator Generator
 	var backend Backend
 
-	if config.SourceType == SourceTypeDB {
+	// Pedestrial, but we'll just switch over all the options for now
+	// the source type will determine the generator and backend
+	// the client will eventually expose the samples to the user
+	fmt.Println(reflect.TypeOf(config.SourceConfig))
+
+	switch config.SourceConfig.(type) {
+	case GeneratorDBConfig:
 		fmt.Println("Creating a DB-backed dataloader")
-		db_config := config.SourceConfig.(GeneratorDBConfig)
-		generator = newDatagoGeneratorDB(db_config)
-		backend = BackendHTTP{config: &db_config, concurrency: config.Concurrency}
-	} else if config.SourceType == SourceTypeFileSystem {
+		dbConfig := config.SourceConfig.(GeneratorDBConfig)
+		generator = newDatagoGeneratorDB(dbConfig)
+		backend = BackendHTTP{config: &dbConfig, concurrency: config.Concurrency}
+	case GeneratorFileSystemConfig:
 		fmt.Println("Creating a FileSystem-backed dataloader")
-		fs_config := config.SourceConfig.(GeneratorFileSystemConfig)
-		generator = newDatagoGeneratorFileSystem(fs_config)
+		fsConfig := config.SourceConfig.(GeneratorFileSystemConfig)
+		generator = newDatagoGeneratorFileSystem(fsConfig)
 		backend = BackendFileSystem{config: &config, concurrency: config.Concurrency}
-	} else {
-		// TODO: Handle other sources
-		log.Panic("Unsupported source type at the moment")
+	default:
+		fmt.Println("Unsupported source type")
+		log.Panic("Unsupported source type")
 	}
 
 	// Create the client
@@ -123,6 +185,11 @@ func GetClient(config DatagoConfig) *DatagoClient {
 	})
 
 	return client
+}
+
+func GetClientFromJSON(jsonString string) *DatagoClient {
+	config := DatagoConfigFromJSON(jsonString)
+	return GetClient(config)
 }
 
 // Start the background downloads, make it ready to serve samples. Will grow the memory and CPU footprint

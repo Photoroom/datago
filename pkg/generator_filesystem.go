@@ -12,14 +12,19 @@ import (
 
 // --- File system walk structures ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 type fsSampleMetadata struct {
-	filePath string
-	fileName string
+	FilePath string `json:"file_path"`
+	FileName string `json:"file_name"`
 }
 
 // -- Define the front end goroutine ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 type GeneratorFileSystemConfig struct {
-	RootPath string
-	PageSize int
+	DataSourceConfig
+	RootPath string `json:"root_path"`
+}
+
+func (c *GeneratorFileSystemConfig) SetDefaults() {
+	c.PageSize = 512
+	c.RootPath = os.Getenv("DATAROOM_TEST_FILESYSTEM")
 }
 
 type datagoGeneratorFileSystem struct {
@@ -50,7 +55,7 @@ func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages 
 			return err
 		}
 		if !info.IsDir() && f.extensions.Contains(filepath.Ext(path)) {
-			new_sample := fsSampleMetadata{filePath: path, fileName: info.Name()}
+			new_sample := fsSampleMetadata{FilePath: path, FileName: info.Name()}
 			samples = append(samples, SampleDataPointers(new_sample))
 		}
 
