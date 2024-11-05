@@ -3,11 +3,11 @@
 
 # datago
 
-A golang-based data loader which can be used from Python. Compatible with a soon-to-be open sourced VectorDB-enabled data stack, which exposes HTTP requests.
+A golang-based data loader which can be used from Python. Compatible with a [soon-to-be open sourced](https://github.com/Photoroom/dataroom) VectorDB-enabled data stack, which exposes HTTP requests, and with a local filesystem, more front-ends are possible. Focused on image data at the moment, could also easily be more generic.
 
 Datago handles, outside of the Python GIL
 
-- per sample IO from object storage
+- per sample IO
 - deserialization (jpg and png decompression)
 - some optional vision processing (aligning different image payloads)
 - optional serialization
@@ -15,7 +15,7 @@ Datago handles, outside of the Python GIL
 Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types.
 Speed will be network dependent, but GB/s is typical.
 
-Datago is rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
+Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash. Only an iterator is exposed at the moment, but a map interface wouldn't be too hard.
 
 <img width="922" alt="Screenshot 2024-09-24 at 9 39 44 PM" src="https://github.com/user-attachments/assets/b58002ce-f961-438b-af72-9e1338527365">
 
@@ -51,18 +51,18 @@ client_config = {
     "concurrency": concurrency,
 }
 
-client = datago.GetClientFromJSON(config)
+client = datago.GetClientFromJSON(json.dumps(config))
 client.Start()  # This can be done early for convenience, not mandatory
 
 for _ in range(10):
     sample = client.GetSample()
 ```
 
-Please note that the image buffers will be passed around as raw pointers, they can be re-interpreted in python with the attached helpers. Check python benchmarks for examples.
+Please note that the image buffers will be passed around as raw pointers, see below.
 
 ## Match the raw exported buffers with typical python types
 
-See helper functions provided in `types.py`, should be self explanatory
+See helper functions provided in `types.py`, should be self explanatory. Check python benchmarks for examples.
 
 </details><details> <summary><strong>Build it</strong></summary>
 
