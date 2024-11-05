@@ -14,12 +14,22 @@ def uint8_array_to_numpy(go_array):
     # We export them from Go with a Channels dimension of -1 to mark them as dimensionless.
     # Anything else is a valid number of channels and will thus lead to a reshape
     num_final_channels = max(go_array.Channels, 1)
-    length = go_array.Width * go_array.Height * num_final_channels if go_array.Channels > 0 else len(go_array.Data)
-    shape = (go_array.Height, go_array.Width, go_array.Channels) if go_array.Channels > 0 else (length,)
+    length = (
+        go_array.Width * go_array.Height * num_final_channels
+        if go_array.Channels > 0
+        else len(go_array.Data)
+    )
+    shape = (
+        (go_array.Height, go_array.Width, go_array.Channels)
+        if go_array.Channels > 0
+        else (length,)
+    )
 
     # Wrap the buffer around to create a numpy array. Strangely, shape needs to be passed twice
     # This is a zero-copy operation
-    return np.ctypeslib.as_array((ctypes.c_uint8 * length).from_address(go_array.DataPtr), shape=shape).reshape(shape)
+    return np.ctypeslib.as_array(
+        (ctypes.c_uint8 * length).from_address(go_array.DataPtr), shape=shape
+    ).reshape(shape)
 
 
 def go_array_to_numpy(go_array) -> Optional[np.ndarray]:
@@ -30,7 +40,8 @@ def go_array_to_numpy(go_array) -> Optional[np.ndarray]:
         return None
 
     np_bytes = np.ctypeslib.as_array(
-        (ctypes.c_uint8 * go_array.Len).from_address(go_array.DataPtr), shape=(go_array.Len,)
+        (ctypes.c_uint8 * go_array.Len).from_address(go_array.DataPtr),
+        shape=(go_array.Len,),
     )
     bytes_io = io.BytesIO(np_bytes.tobytes())
     try:

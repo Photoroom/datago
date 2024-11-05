@@ -1,21 +1,9 @@
 package datago
 
 import (
-	"hash/fnv"
 	"time"
 	"unsafe"
 )
-
-func computeFNVHash32(input string) uint32 {
-	// Create a new FNV-1a 32-bit hash
-	hasher := fnv.New32a()
-
-	// Write data to the hash
-	hasher.Write([]byte(input))
-
-	// Compute the hash and return it as an integer
-	return hasher.Sum32()
-}
 
 func dataPtrFromSlice(a []uint8) uintptr {
 	if len(a) == 0 {
@@ -42,13 +30,6 @@ func getLast5Chars(s string) string {
 		return s
 	}
 	return string(runes[len(runes)-5:])
-}
-
-func sanitizeStr(optional_str *string) string {
-	if optional_str == nil {
-		return ""
-	}
-	return *optional_str
 }
 
 func consumeChannel[T any](ch <-chan T) {

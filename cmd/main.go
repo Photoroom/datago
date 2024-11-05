@@ -12,36 +12,27 @@ import (
 
 func main() {
 	// Define flags
-	client_config := datago.GetDefaultConfig()
-	client_config.DefaultImageSize = 1024
-	client_config.DownsamplingRatio = 32
+	config := datago.DatagoConfig{}
+	config.SetDefaults()
 
-	client_config.CropAndResize = *flag.Bool("crop_and_resize", false, "Whether to crop and resize the images and masks")
-	client_config.ConcurrentDownloads = *flag.Int("concurrency", 64, "The number of concurrent http requests to make")
-	client_config.PrefetchBufferSize = *flag.Int("item_fetch_buffer", 256, "The number of items to pre-load")
-	client_config.SamplesBufferSize = *flag.Int("item_ready_buffer", 128, "The number of items ready to be served")
-
-	client_config.Sources = *flag.String("source", "GETTY", "The source for the items")
-	client_config.RequireImages = *flag.Bool("require_images", true, "Whether the items require images")
-	client_config.RequireEmbeddings = *flag.Bool("require_embeddings", false, "Whether the items require the DB embeddings")
-
-	client_config.Tags = *flag.String("tags", "", "The tags to filter for")
-	client_config.TagsNE = *flag.String("tags__ne", "", "The tags that the samples should not have")
-	client_config.HasMasks = *flag.String("has_masks", "", "The masks to filter for")
-	client_config.HasLatents = *flag.String("has_latents", "", "The masks to filter for")
-	client_config.HasAttributes = *flag.String("has_attributes", "", "The attributes to filter for")
-
-	client_config.LacksMasks = *flag.String("lacks_masks", "", "The masks to filter against")
-	client_config.LacksLatents = *flag.String("lacks_latents", "", "The masks to filter against")
-	client_config.LacksAttributes = *flag.String("lacks_attributes", "", "The attributes to filter against")
+	sourceConfig := datago.GeneratorFileSystemConfig{RootPath: os.Getenv("DATAROOM_TEST_FILESYSTEM")}
+	sourceConfig.PageSize = 10
+	config.ImageConfig = datago.ImageTransformConfig{
+		DefaultImageSize:  1024,
+		DownsamplingRatio: 32,
+		CropAndResize:     *flag.Bool("crop_and_resize", false, "Whether to crop and resize the images and masks"),
+	}
+	config.SourceConfig = sourceConfig
+	config.Concurrency = *flag.Int("concurrency", 64, "The number of concurrent http requests to make")
+	config.PrefetchBufferSize = *flag.Int("item_fetch_buffer", 256, "The number of items to pre-load")
+	config.SamplesBufferSize = *flag.Int("item_ready_buffer", 128, "The number of items ready to be served")
 
 	limit := flag.Int("limit", 2000, "The number of items to fetch")
 	profile := flag.Bool("profile", false, "Whether to profile the code")
 
 	// Parse the flags and instantiate the client
 	flag.Parse()
-
-	dataroom_client := datago.GetClient(client_config)
+	dataroom_client := datago.GetClient(config)
 
 	// Go-routine which will feed the sample data to the workers
 	// and fetch the next page
@@ -77,7 +68,7 @@ func main() {
 	for i := 0; i < *limit; i++ {
 		sample := dataroom_client.GetSample()
 		if sample.ID == "" {
-			fmt.Printf("Error fetching sample")
+			fmt.Println("No more samples ", i, " samples served")
 			break
 		}
 	}
@@ -89,5 +80,5 @@ func main() {
 	elapsedTime := time.Since(startTime)
 	fps := float64(*limit) / elapsedTime.Seconds()
 	fmt.Printf("Total execution time: %.2f \n", elapsedTime.Seconds())
-	fmt.Printf("Average fetch rate: %.2f fetches per second\n", fps)
+	fmt.Printf("Average throughput: %.2f samples per second\n", fps)
 }

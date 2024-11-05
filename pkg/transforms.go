@@ -52,9 +52,9 @@ func buildImageSizeList(defaultImageSize int, downsamplingRatio int, minAspectRa
 	return image_list
 }
 
-func newARAwareTransform(defaultImageSize int, downsamplingRatio int, minAspectRatio, maxAspectRatio float64) *ARAwareTransform {
+func newARAwareTransform(imageConfig ImageTransformConfig) *ARAwareTransform {
 	// Build the image size list
-	image_list := buildImageSizeList(defaultImageSize, downsamplingRatio, minAspectRatio, maxAspectRatio)
+	image_list := buildImageSizeList(imageConfig.DefaultImageSize, imageConfig.DownsamplingRatio, imageConfig.MinAspectRatio, imageConfig.MaxAspectRatio)
 
 	// Fill in the map table to match aspect ratios and image sizes
 	aspectRatioToSize := make(map[float64]ImageSize)
@@ -64,10 +64,10 @@ func newARAwareTransform(defaultImageSize int, downsamplingRatio int, minAspectR
 
 	//
 	return &ARAwareTransform{
-		defaultImageSize:  defaultImageSize,
-		downsamplingRatio: downsamplingRatio,
-		minAspectRatio:    minAspectRatio,
-		maxAspectRatio:    maxAspectRatio,
+		defaultImageSize:  imageConfig.DefaultImageSize,
+		downsamplingRatio: imageConfig.DownsamplingRatio,
+		minAspectRatio:    imageConfig.MinAspectRatio,
+		maxAspectRatio:    imageConfig.MaxAspectRatio,
 		targetImageSizes:  image_list,
 		aspectRatioToSize: aspectRatioToSize,
 	}
