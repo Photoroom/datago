@@ -1,0 +1,86 @@
+name: Push to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  pypi-publish:
+    name: Upload release to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://pypi.org/p/datago
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install libvips-dev libjpeg-turbo8-dev
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.23"
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.11.10"
+
+      - name: Install pybindgen
+        run: |
+          python3 -m pip install pybindgen
+          go install golang.org/x/tools/cmd/goimports@latest
+          go install github.com/go-python/gopy@latest
+
+      - name: Get next version
+        uses: reecetech/version-increment@2024.10.1
+        id: version
+        with:
+          scheme: calver
+          increment: patch
+
+      - name: Build python module
+        run: |
+          cd pkg
+          gopy pkg -author="Photoroom" -email="team@photoroom.com" -name="datago" -version="${{ steps.version.outputs.version }}" .
+          export DESTINATION="../build"
+          mkdir -p $DESTINATION/datago
+          mv datago/* $DESTINATION/datago/.
+          mv setup.py $DESTINATION/.
+          mv Makefile $DESTINATION/.
+          mv README.md $DESTINATION/.
+          rm LICENSE MANIFEST.in
+          ls
+          cd ../build
+
+      - name: Install python module
+        run: |
+          ls
+          cd build
+          python3 -m pip install --user -v -e .
+
+      - name: Run the python unit tests
+        env:
+          DATAROOM_API_KEY: ${{ secrets.DATAROOM_API_KEY }}
+          DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
+          DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
+        run: |
+          ls
+          python3 -m pip install -r requirements.txt
+          pytest -xv python/tests/*
+
+      - name: Build the package
+        run: |
+          cd build
+          python3 setup.py sdist
+          mv dist ../.
+          cd ..
+          ls
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

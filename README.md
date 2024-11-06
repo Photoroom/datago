@@ -78,7 +78,7 @@ $ sudo ldconfig
 From the root of this project:
 
 ```bash
-$ go build cmd/main/main.go
+$ go build cmd/main.go
 ```
 
 Running it:
