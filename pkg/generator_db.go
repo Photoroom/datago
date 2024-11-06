@@ -56,8 +56,20 @@ type dbRequest struct {
 	hasMasks   string
 	lacksMasks string
 
-	hasLatents   string
-	lacksLatents string
+	hasLatents    string
+	lacksLatents  string
+	returnLatents string
+
+	minShortEdge string
+	maxShortEdge string
+
+	minPixelCount string
+	maxPixelCount string
+
+	randomSampling bool
+
+	partitionsCount string
+	partition       string
 }
 
 // -- Define the front end goroutine ---------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -74,11 +86,20 @@ type GeneratorDBConfig struct {
 	LacksMasks        string `json:"lacks_masks"`
 	HasLatents        string `json:"has_latents"`
 	LacksLatents      string `json:"lacks_latents"`
-	Rank              uint32 `json:"rank"`
-	WorldSize         uint32 `json:"world_size"`
+	ReturnLatents     string `json:"return_latents"`
+
+	MinShortEdge   int  `json:"min_short_edge"`
+	MaxShortEdge   int  `json:"max_short_edge"`
+	MinPixelCount  int  `json:"min_pixel_count"`
+	MaxPixelCount  int  `json:"max_pixel_count"`
+	RandomSampling bool `json:"random_sampling"`
 }
 
 func (c *GeneratorDBConfig) SetDefaults() {
+	c.PageSize = 512
+	c.Rank = -1
+	c.WorldSize = -1
+
 	c.Sources = ""
 	c.RequireImages = true
 	c.RequireEmbeddings = false
@@ -90,9 +111,13 @@ func (c *GeneratorDBConfig) SetDefaults() {
 	c.LacksMasks = ""
 	c.HasLatents = ""
 	c.LacksLatents = ""
-	c.Rank = 0
-	c.WorldSize = 1
-	c.PageSize = 512
+	c.ReturnLatents = ""
+
+	c.MinShortEdge = -1
+	c.MaxShortEdge = -1
+	c.MinPixelCount = -1
+	c.MaxPixelCount = -1
+	c.RandomSampling = false
 }
 
 func (c *GeneratorDBConfig) getDbRequest() dbRequest {
@@ -121,6 +146,13 @@ func (c *GeneratorDBConfig) getDbRequest() dbRequest {
 	fmt.Println("Rank | World size:", c.Rank, c.WorldSize)
 	fmt.Println("Sources:", c.Sources, "| Fields:", fields)
 
+	sanitizeInt := func(val int) string {
+		if val == -1 {
+			return ""
+		}
+		return fmt.Sprintf("%d", val)
+	}
+
 	return dbRequest{
 		fields:          fields,
 		sources:         c.Sources,
@@ -133,6 +165,14 @@ func (c *GeneratorDBConfig) getDbRequest() dbRequest {
 		lacksMasks:      c.LacksMasks,
 		hasLatents:      c.HasLatents,
 		lacksLatents:    c.LacksLatents,
+		returnLatents:   c.HasLatents, // Could be exposed as it's done internally
+		minShortEdge:    sanitizeInt(c.MinShortEdge),
+		maxShortEdge:    sanitizeInt(c.MaxShortEdge),
+		minPixelCount:   sanitizeInt(c.MinPixelCount),
+		maxPixelCount:   sanitizeInt(c.MaxPixelCount),
+		randomSampling:  c.RandomSampling,
+		partitionsCount: sanitizeInt(c.WorldSize),
+		partition:       sanitizeInt(c.Rank),
 	}
 }
 
@@ -157,19 +197,7 @@ func newDatagoGeneratorDB(config GeneratorDBConfig) datagoGeneratorDB {
 	fmt.Println("Dataroom API URL:", api_url)
 	fmt.Println("Dataroom API KEY last characters:", getLast5Chars(api_key))
 
-	generatorDBConfig := GeneratorDBConfig{
-		RequireImages:     config.RequireImages,
-		RequireEmbeddings: config.RequireEmbeddings,
-		HasMasks:          config.HasMasks,
-		LacksMasks:        config.LacksMasks,
-		HasLatents:        config.HasLatents,
-		LacksLatents:      config.LacksLatents,
-		Sources:           config.Sources,
-		Rank:              config.Rank,
-		WorldSize:         config.WorldSize,
-	}
-
-	return datagoGeneratorDB{baseRequest: *getHTTPRequest(api_url, api_key, request), config: generatorDBConfig}
+	return datagoGeneratorDB{baseRequest: *getHTTPRequest(api_url, api_key, request), config: config}
 }
 
 func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pages) {

@@ -27,7 +27,9 @@ const (
 
 // Nested configuration structures for the client
 type DataSourceConfig struct {
-	PageSize int `json:"page_size"`
+	PageSize  int `json:"page_size"`
+	Rank      int `json:"rank"`
+	WorldSize int `json:"world_size"`
 }
 
 type ImageTransformConfig struct {
