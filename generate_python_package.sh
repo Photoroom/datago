@@ -12,7 +12,7 @@ rm -rf $DESTINATION
 
 # Build the python package via the gopy toolchain
 cd pkg
-gopy pkg -author="Photoroom" -email="team@photoroom.com" -url="" -name="datago" -version="0.3" .
+gopy pkg -author="Photoroom" -email="team@photoroom.com" -url="" -name="datago" -version="0.0.1".
 mkdir -p $DESTINATION/datago
 mv datago/* $DESTINATION/datago/.
 mv setup.py $DESTINATION/.
