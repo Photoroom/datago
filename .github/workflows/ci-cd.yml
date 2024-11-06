@@ -47,7 +47,7 @@ jobs:
       - name: Build python module
         run: |
           cd pkg
-          gopy pkg -author="Photoroom" -email="team@photoroom.com" -name="datago" -version="${{ steps.version.outputs.version }}" .
+          gopy pkg -author="Photoroom" -email="team@photoroom.com" -name="datago" -version="${{ steps.version.outputs.major-version }}.${{ steps.version.outputs.minor-version }}.${{ steps.version.outputs.patch-version }}" .
           export DESTINATION="../build"
           mkdir -p $DESTINATION/datago
           mv datago/* $DESTINATION/datago/.
