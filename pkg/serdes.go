@@ -298,6 +298,15 @@ func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Req
 	maybeAddField(&req, "has_latents", request.hasLatents)
 	maybeAddField(&req, "lacks_latents", request.lacksLatents)
 	maybeAddField(&req, "return_latents", return_latents)
+
+	maybeAddField(&req, "short_edge__gte", request.minShortEdge)
+	maybeAddField(&req, "short_edge__lte", request.maxShortEdge)
+	maybeAddField(&req, "pixel_count__gte", request.minPixelCount)
+	maybeAddField(&req, "pixel_count__lte", request.maxPixelCount)
+
+	maybeAddField(&req, "partitions_count", request.partitionsCount)
+	maybeAddField(&req, "partition", request.partition)
+
 	request_url.URL.RawQuery = req.Encode()
 	fmt.Println("Request URL:", request_url.URL.String())
 	fmt.Println()

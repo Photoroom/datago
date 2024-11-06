@@ -1,6 +1,7 @@
 package datago_test
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -220,3 +221,72 @@ func TestImageBufferCompression(t *testing.T) {
 		t.Errorf("Error decoding mask buffer")
 	}
 }
+
+func TestStrings(t *testing.T) {
+	clientConfig := get_default_test_config()
+	client := datago.GetClient(clientConfig)
+	client.Start()
+
+	for i := 0; i < 10; i++ {
+		sample := client.GetSample()
+
+		// Assert that no error occurred
+		if sample.ID == "" {
+			t.Errorf("GetSample returned an unexpected error")
+		}
+
+		// Check that we can decode all the strings
+		if string(sample.ID) == "" {
+			t.Errorf("Expected non-empty string")
+		}
+
+		fmt.Println(string(sample.ID))
+	}
+	client.Stop()
+}
+
+func TestRanks(t *testing.T) {
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+
+	dbConfig := clientConfig.SourceConfig.(datago.GeneratorDBConfig)
+	dbConfig.WorldSize = 2
+	dbConfig.Rank = 0
+	clientConfig.SourceConfig = dbConfig
+
+	client_0 := datago.GetClient(clientConfig)
+	client_0.Start()
+
+	dbConfig.Rank = 1
+	clientConfig.SourceConfig = dbConfig
+	client_1 := datago.GetClient(clientConfig)
+	client_1.Start()
+
+	samples_0 := make(map[string]int)
+	samples_1 := make(map[string]int)
+
+	for i := 0; i < 10; i++ {
+		sample_0 := client_0.GetSample()
+		sample_1 := client_1.GetSample()
+
+		if sample_0.ID == "" || sample_1.ID == "" {
+			t.Errorf("GetSample returned an unexpected error")
+		}
+
+		samples_0[sample_0.ID] = 1
+		samples_1[sample_1.ID] = 1
+
+	}
+
+	// Check that there are no keys in common in between the two samples
+	for k := range samples_0 {
+		if _, exists := samples_1[k]; exists {
+			t.Errorf("Samples are not distributed across ranks")
+		}
+	}
+
+	client_0.Stop()
+	client_1.Stop()
+}
+
+// FIXME: Could do with a lot of tests on the filesystem side

@@ -2,6 +2,7 @@ package datago
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,9 @@ type GeneratorFileSystemConfig struct {
 
 func (c *GeneratorFileSystemConfig) SetDefaults() {
 	c.PageSize = 512
+	c.Rank = 0
+	c.WorldSize = 1
+
 	c.RootPath = os.Getenv("DATAROOM_TEST_FILESYSTEM")
 }
 
@@ -44,6 +48,12 @@ func newDatagoGeneratorFileSystem(config GeneratorFileSystemConfig) datagoGenera
 	return datagoGeneratorFileSystem{config: config, extensions: extensionsMap}
 }
 
+// hash function to distribute files across ranks
+func hash(s string) int {
+	h := sha256.Sum256([]byte(s))
+	return int(h[0]) // Convert the first byte of the hash to an integer
+}
+
 func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages chan Pages) {
 	// Walk over the directory and feed the results to the items channel
 	// This is meant to be run in a goroutine
@@ -54,9 +64,12 @@ func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages 
 		if err != nil {
 			return err
 		}
+
 		if !info.IsDir() && f.extensions.Contains(filepath.Ext(path)) {
-			new_sample := fsSampleMetadata{FilePath: path, FileName: info.Name()}
-			samples = append(samples, SampleDataPointers(new_sample))
+			if f.config.WorldSize > 1 && hash(path)%f.config.WorldSize != f.config.Rank || f.config.WorldSize == 1 {
+				new_sample := fsSampleMetadata{FilePath: path, FileName: info.Name()}
+				samples = append(samples, SampleDataPointers(new_sample))
+			}
 		}
 
 		// Check if we have enough files to send a page
