@@ -54,7 +54,9 @@ jobs:
           mv setup.py $DESTINATION/.
           mv Makefile $DESTINATION/.
           mv README.md $DESTINATION/.
-          rm LICENSE MANIFEST.in
+          cat MANIFEST.in
+          mv MANIFEST.in $DESTINATION/.
+          rm LICENSE
           ls
           cd ../build
 
