@@ -41,4 +41,4 @@ jobs:
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
 
-        run: cd tests && go test -v .
+        run: cd tests && go test -race -v .

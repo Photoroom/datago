@@ -56,7 +56,6 @@ func TestClientNoStop(t *testing.T) {
 	client := datago.GetClient(clientConfig)
 	client.Start()
 	_ = client.GetSample()
-
 }
 
 func TestMoreThanBufferSize(t *testing.T) {
@@ -72,6 +71,7 @@ func TestMoreThanBufferSize(t *testing.T) {
 	if client.GetSample().ID == "" {
 		t.Errorf("GetSample returned an unexpected error")
 	}
+	client.Stop()
 }
 
 func TestFetchImage(t *testing.T) {
@@ -220,6 +220,7 @@ func TestImageBufferCompression(t *testing.T) {
 	if err != nil {
 		t.Errorf("Error decoding mask buffer")
 	}
+	client.Stop()
 }
 
 func TestStrings(t *testing.T) {
@@ -255,11 +256,12 @@ func TestRanks(t *testing.T) {
 	clientConfig.SourceConfig = dbConfig
 
 	client_0 := datago.GetClient(clientConfig)
-	client_0.Start()
 
 	dbConfig.Rank = 1
 	clientConfig.SourceConfig = dbConfig
 	client_1 := datago.GetClient(clientConfig)
+
+	client_0.Start()
 	client_1.Start()
 
 	samples_0 := make(map[string]int)

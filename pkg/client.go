@@ -143,6 +143,10 @@ type DatagoClient struct {
 
 // GetClient is a constructor for the DatagoClient, given a JSON configuration string
 func GetClient(config DatagoConfig) *DatagoClient {
+	// Initialize the vips library
+	vips.LoggingSettings(nil, vips.LogLevelWarning)
+	vips.Startup(nil)
+
 	// Create the generator and backend
 	var generator Generator
 	var backend Backend
@@ -201,13 +205,6 @@ func (c *DatagoClient) Start() {
 		// interruptions at during http round trips
 		c.context, c.cancel = context.WithCancel(context.Background())
 	}
-
-	debug.SetGCPercent(10) // Invoke GC 10x more often
-
-	vips.LoggingSettings(func(domain string, level vips.LogLevel, msg string) {
-		fmt.Println(domain, level, msg)
-	}, vips.LogLevelWarning)
-	vips.Startup(nil) // Initialize the vips library, image processing backend
 
 	// Report panics in the background goroutines
 	defer func() {
