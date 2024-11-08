@@ -6,7 +6,6 @@ import os
 import json
 import typer
 
-
 def benchmark(
     root_path: str = typer.Option(
         os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"

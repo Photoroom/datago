@@ -5,7 +5,6 @@ import numpy as np
 from go_types import go_array_to_pil_image, go_array_to_numpy
 import typer
 
-
 def benchmark(
     source: str = typer.Option("DATAGO_TEST_SOURCE", help="The source to test out"),
     limit: int = typer.Option(2000, help="The number of samples to test on"),
