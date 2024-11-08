@@ -1,11 +1,10 @@
 from datago import datago  # type: ignore
 import time
-import typer
 from tqdm import tqdm
 from go_types import go_array_to_pil_image
 import os
 import json
-
+import typer
 
 def benchmark(
     root_path: str = typer.Option(
@@ -15,7 +14,7 @@ def benchmark(
     crop_and_resize: bool = typer.Option(
         True, help="Crop and resize the images on the fly"
     ),
-    concurrency: int = typer.Option(32, help="The number of concurrent workers"),
+    concurrency: int = typer.Option(64, help="The number of coroutines"),
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
 ):
     print(f"Running benchmark for {root_path} - {limit} samples")
@@ -38,11 +37,13 @@ def benchmark(
         "prefetch_buffer_size": 64,
         "samples_buffer_size": 128,
         "concurrency": concurrency,
+        "limit": limit,
     }
 
     client = datago.GetClientFromJSON(json.dumps(client_config))
-    client.Start()
+
     start = time.time()
+    client.Start()
 
     # Make sure in the following that we compare apples to apples, meaning in that case
     # that we materialize the payloads in the python scope in the expected format
@@ -52,6 +53,10 @@ def benchmark(
         sample = client.GetSample()
         if sample.ID and hasattr(sample, "Image"):
             img = go_array_to_pil_image(sample.Image)
+
+        if sample.ID is None:
+            print("No more samples")
+            break
 
     fps = limit / (time.time() - start)
     print(f"Datago FPS {fps:.2f}")
@@ -71,7 +76,7 @@ def benchmark(
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize((512, 512)),
+                    transforms.Resize((512, 512), interpolation=transforms.InterpolationMode.BICUBIC),
                 ]
             )
             if crop_and_resize
@@ -79,11 +84,11 @@ def benchmark(
         )
 
         # Create the ImageFolder dataset
-        dataset = datasets.ImageFolder(root=root_path, transform=transform)
+        dataset = datasets.ImageFolder(root=root_path, transform=transform, allow_empty=True)
 
-        # Create a DataLoader to load the images in batches
+        # Create a DataLoader to allow for multiple workers
         dataloader = DataLoader(
-            dataset, batch_size=32, shuffle=False, num_workers=8, collate_fn=lambda x: x
+            dataset, batch_size=1, shuffle=False, num_workers=8, collate_fn=lambda x: x
         )
 
         # Iterate over the DataLoader

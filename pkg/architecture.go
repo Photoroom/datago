@@ -23,6 +23,7 @@ type Sample struct {
 	ID               string
 	Source           string
 	Attributes       map[string]interface{}
+	DuplicateState   int
 	Image            ImagePayload
 	Masks            map[string]ImagePayload
 	AdditionalImages map[string]ImagePayload

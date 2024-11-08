@@ -12,11 +12,13 @@ import (
 
 func main() {
 	// Define flags
-	config := datago.DatagoConfig{}
-	config.SetDefaults()
+	config := datago.GetDatagoConfig()
 
-	sourceConfig := datago.GeneratorFileSystemConfig{RootPath: os.Getenv("DATAROOM_TEST_FILESYSTEM")}
+	sourceConfig := datago.SourceFileSystemConfig{RootPath: os.Getenv("DATAROOM_TEST_FILESYSTEM")}
 	sourceConfig.PageSize = 10
+	sourceConfig.Rank = 0
+	sourceConfig.WorldSize = 1
+
 	config.ImageConfig = datago.ImageTransformConfig{
 		DefaultImageSize:  1024,
 		DownsamplingRatio: 32,
@@ -26,8 +28,8 @@ func main() {
 	config.Concurrency = *flag.Int("concurrency", 64, "The number of concurrent http requests to make")
 	config.PrefetchBufferSize = *flag.Int("item_fetch_buffer", 256, "The number of items to pre-load")
 	config.SamplesBufferSize = *flag.Int("item_ready_buffer", 128, "The number of items ready to be served")
+	config.Limit = *flag.Int("limit", 2000, "The number of items to fetch")
 
-	limit := flag.Int("limit", 2000, "The number of items to fetch")
 	profile := flag.Bool("profile", false, "Whether to profile the code")
 
 	// Parse the flags and instantiate the client
@@ -65,10 +67,10 @@ func main() {
 
 	// Fetch all of the binary payloads as they become available
 	// NOTE: This is useless, just making sure that we empty the payloads channel
-	for i := 0; i < *limit; i++ {
+	for {
 		sample := dataroom_client.GetSample()
 		if sample.ID == "" {
-			fmt.Println("No more samples ", i, " samples served")
+			fmt.Println("No more samples")
 			break
 		}
 	}
@@ -78,7 +80,7 @@ func main() {
 
 	// Calculate the elapsed time
 	elapsedTime := time.Since(startTime)
-	fps := float64(*limit) / elapsedTime.Seconds()
+	fps := float64(config.Limit) / elapsedTime.Seconds()
 	fmt.Printf("Total execution time: %.2f \n", elapsedTime.Seconds())
 	fmt.Printf("Average throughput: %.2f samples per second\n", fps)
 }

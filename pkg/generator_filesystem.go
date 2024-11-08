@@ -18,12 +18,12 @@ type fsSampleMetadata struct {
 }
 
 // -- Define the front end goroutine ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-type GeneratorFileSystemConfig struct {
+type SourceFileSystemConfig struct {
 	DataSourceConfig
 	RootPath string `json:"root_path"`
 }
 
-func (c *GeneratorFileSystemConfig) SetDefaults() {
+func (c *SourceFileSystemConfig) setDefaults() {
 	c.PageSize = 512
 	c.Rank = 0
 	c.WorldSize = 1
@@ -31,12 +31,18 @@ func (c *GeneratorFileSystemConfig) SetDefaults() {
 	c.RootPath = os.Getenv("DATAROOM_TEST_FILESYSTEM")
 }
 
-type datagoGeneratorFileSystem struct {
-	extensions set
-	config     GeneratorFileSystemConfig
+func GetSourceFileSystemConfig() SourceFileSystemConfig {
+	config := SourceFileSystemConfig{}
+	config.setDefaults()
+	return config
 }
 
-func newDatagoGeneratorFileSystem(config GeneratorFileSystemConfig) datagoGeneratorFileSystem {
+type datagoGeneratorFileSystem struct {
+	extensions set
+	config     SourceFileSystemConfig
+}
+
+func newDatagoGeneratorFileSystem(config SourceFileSystemConfig) datagoGeneratorFileSystem {
 	supported_img_extensions := []string{".jpg", ".jpeg", ".png", ".JPEG", ".JPG", ".PNG"}
 	var extensionsMap = make(set)
 	for _, ext := range supported_img_extensions {

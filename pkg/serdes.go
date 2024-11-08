@@ -185,7 +185,7 @@ func fetchImage(client *http.Client, url string, retries int, transform *ARAware
 	return nil, -1., err_report
 }
 
-func fetchSample(config *GeneratorDBConfig, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform, pre_encode_image bool) *Sample {
+func fetchSample(config *SourceDBConfig, http_client *http.Client, sample_result dbSampleMetadata, transform *ARAwareTransform, pre_encode_image bool) *Sample {
 	// Per sample work:
 	// - fetch the raw payloads
 	// - deserialize / decode, depending on the types

@@ -29,6 +29,7 @@ type urlLatent struct {
 type dbSampleMetadata struct {
 	Id             string                 `json:"id"`
 	Attributes     map[string]interface{} `json:"attributes"`
+	DuplicateState int                    `json:"duplicate_state"`
 	ImageDirectURL string                 `json:"image_direct_url"`
 	Latents        []urlLatent            `json:"latents"`
 	Tags           []string               `json:"tags"`
@@ -73,7 +74,7 @@ type dbRequest struct {
 }
 
 // -- Define the front end goroutine ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-type GeneratorDBConfig struct {
+type SourceDBConfig struct {
 	DataSourceConfig
 	Sources           string `json:"sources"`
 	RequireImages     bool   `json:"require_images"`
@@ -86,7 +87,9 @@ type GeneratorDBConfig struct {
 	LacksMasks        string `json:"lacks_masks"`
 	HasLatents        string `json:"has_latents"`
 	LacksLatents      string `json:"lacks_latents"`
-	ReturnLatents     string `json:"return_latents"`
+
+	ReturnLatents        string `json:"return_latents"`
+	ReturnDuplicateState bool   `json:"return_duplicate_state"`
 
 	MinShortEdge   int  `json:"min_short_edge"`
 	MaxShortEdge   int  `json:"max_short_edge"`
@@ -95,7 +98,7 @@ type GeneratorDBConfig struct {
 	RandomSampling bool `json:"random_sampling"`
 }
 
-func (c *GeneratorDBConfig) SetDefaults() {
+func (c *SourceDBConfig) setDefaults() {
 	c.PageSize = 512
 	c.Rank = -1
 	c.WorldSize = -1
@@ -112,15 +115,17 @@ func (c *GeneratorDBConfig) SetDefaults() {
 	c.HasLatents = ""
 	c.LacksLatents = ""
 	c.ReturnLatents = ""
+	c.ReturnDuplicateState = false
 
 	c.MinShortEdge = -1
 	c.MaxShortEdge = -1
 	c.MinPixelCount = -1
 	c.MaxPixelCount = -1
 	c.RandomSampling = false
+
 }
 
-func (c *GeneratorDBConfig) getDbRequest() dbRequest {
+func (c *SourceDBConfig) getDbRequest() dbRequest {
 
 	fields := "attributes,image_direct_url"
 	if len(c.HasLatents) > 0 || len(c.HasMasks) > 0 {
@@ -142,6 +147,11 @@ func (c *GeneratorDBConfig) getDbRequest() dbRequest {
 		fmt.Println("Including embeddings")
 	}
 
+	if c.ReturnDuplicateState {
+		fields += ",duplicate_state"
+		fmt.Println("Including duplicate state")
+	}
+
 	// Report some config data
 	fmt.Println("Rank | World size:", c.Rank, c.WorldSize)
 	fmt.Println("Sources:", c.Sources, "| Fields:", fields)
@@ -151,6 +161,13 @@ func (c *GeneratorDBConfig) getDbRequest() dbRequest {
 			return ""
 		}
 		return fmt.Sprintf("%d", val)
+	}
+
+	// Align rank and worldsize with the partitioning
+	if c.WorldSize < 2 {
+		// No partitioning
+		c.WorldSize = -1
+		c.Rank = -1
 	}
 
 	return dbRequest{
@@ -176,12 +193,18 @@ func (c *GeneratorDBConfig) getDbRequest() dbRequest {
 	}
 }
 
-type datagoGeneratorDB struct {
-	baseRequest http.Request
-	config      GeneratorDBConfig
+func GetSourceDBConfig() SourceDBConfig {
+	config := SourceDBConfig{}
+	config.setDefaults()
+	return config
 }
 
-func newDatagoGeneratorDB(config GeneratorDBConfig) datagoGeneratorDB {
+type datagoGeneratorDB struct {
+	baseRequest http.Request
+	config      SourceDBConfig
+}
+
+func newDatagoGeneratorDB(config SourceDBConfig) datagoGeneratorDB {
 	request := config.getDbRequest()
 
 	api_key := os.Getenv("DATAROOM_API_KEY")

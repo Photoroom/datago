@@ -15,15 +15,13 @@ func get_test_source() string {
 }
 
 func get_default_test_config() datago.DatagoConfig {
-	config := datago.DatagoConfig{}
-	config.SetDefaults()
+	config := datago.GetDatagoConfig()
 
-	db_config := datago.GeneratorDBConfig{}
-	db_config.SetDefaults()
+	db_config := datago.GetSourceDBConfig()
 	db_config.Sources = get_test_source()
 	db_config.PageSize = 32
-	config.SourceConfig = db_config
 
+	config.SourceConfig = db_config
 	return config
 }
 
@@ -104,7 +102,7 @@ func TestExtraFields(t *testing.T) {
 	clientConfig := get_default_test_config()
 	clientConfig.SamplesBufferSize = 1
 
-	dbConfig := clientConfig.SourceConfig.(datago.GeneratorDBConfig)
+	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
 	dbConfig.HasLatents = "masked_image"
 	dbConfig.HasMasks = "segmentation_mask"
 	clientConfig.SourceConfig = dbConfig
@@ -174,7 +172,7 @@ func TestImageBufferCompression(t *testing.T) {
 	clientConfig.SamplesBufferSize = 1
 	clientConfig.ImageConfig.PreEncodeImages = true
 
-	dbConfig := clientConfig.SourceConfig.(datago.GeneratorDBConfig)
+	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
 	dbConfig.HasLatents = "masked_image"
 	dbConfig.HasMasks = "segmentation_mask"
 	clientConfig.SourceConfig = dbConfig
@@ -250,7 +248,7 @@ func TestRanks(t *testing.T) {
 	clientConfig := get_default_test_config()
 	clientConfig.SamplesBufferSize = 1
 
-	dbConfig := clientConfig.SourceConfig.(datago.GeneratorDBConfig)
+	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
 	dbConfig.WorldSize = 2
 	dbConfig.Rank = 0
 	clientConfig.SourceConfig = dbConfig
