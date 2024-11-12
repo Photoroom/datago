@@ -24,6 +24,8 @@ def benchmark(
         "source_config": {
             "page_size": 512,
             "root_path": root_path,
+            "rank": 0,
+            "world_size": 1,
         },
         "image_config": {
             "crop_and_resize": crop_and_resize,

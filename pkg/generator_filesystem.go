@@ -42,8 +42,14 @@ func newDatagoGeneratorFileSystem(config GeneratorFileSystemConfig) datagoGenera
 	for _, ext := range supported_img_extensions {
 		extensionsMap.Add(ext)
 	}
+
+	if config.Rank >= config.WorldSize {
+		panic("Rank should be less than World Size. Maybe you forgot to define both ?")
+	}
+
 	fmt.Println("File system root directory", config.RootPath)
 	fmt.Println("Supported image extensions", supported_img_extensions)
+	fmt.Println("Rank and World Size", config.Rank, config.WorldSize)
 
 	return datagoGeneratorFileSystem{config: config, extensions: extensionsMap}
 }

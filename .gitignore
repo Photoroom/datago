@@ -25,3 +25,8 @@ go.work.sum
 .env
 
 .vscode
+
+# local builds
+build
+
+__pycache__
