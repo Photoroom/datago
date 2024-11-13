@@ -74,7 +74,7 @@ jobs:
         run: |
           ls
           python3 -m pip install -r requirements-tests.txt
-          pytest -xv python/tests/*
+          pytest -xv python/*
 
       - name: Build the package
         run: |
