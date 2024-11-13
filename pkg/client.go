@@ -30,6 +30,7 @@ type DataSourceConfig struct {
 	PageSize  int `json:"page_size"`
 	Rank      int `json:"rank"`
 	WorldSize int `json:"world_size"`
+	Limit     int `json:"limit"`
 }
 
 type ImageTransformConfig struct {
@@ -41,7 +42,7 @@ type ImageTransformConfig struct {
 	PreEncodeImages   bool    `json:"pre_encode_images"`
 }
 
-func (c *ImageTransformConfig) SetDefaults() {
+func (c *ImageTransformConfig) setDefaults() {
 	c.DefaultImageSize = 512
 	c.DownsamplingRatio = 16
 	c.MinAspectRatio = 0.5
@@ -57,17 +58,25 @@ type DatagoConfig struct {
 	PrefetchBufferSize int                  `json:"prefetch_buffer_size"`
 	SamplesBufferSize  int                  `json:"samples_buffer_size"`
 	Concurrency        int                  `json:"concurrency"`
+	Limit              int                  `json:"limit"`
 }
 
-func (c *DatagoConfig) SetDefaults() {
-	dbConfig := GeneratorDBConfig{}
-	dbConfig.SetDefaults()
+func (c *DatagoConfig) setDefaults() {
+	dbConfig := SourceDBConfig{}
+	dbConfig.setDefaults()
 	c.SourceConfig = dbConfig
 
-	c.ImageConfig.SetDefaults()
+	c.ImageConfig.setDefaults()
 	c.PrefetchBufferSize = 64
 	c.SamplesBufferSize = 32
 	c.Concurrency = 64
+	c.Limit = 0
+}
+
+func GetDatagoConfig() DatagoConfig {
+	config := DatagoConfig{}
+	config.setDefaults()
+	return config
 }
 
 func DatagoConfigFromJSON(jsonString string) DatagoConfig {
@@ -80,21 +89,30 @@ func DatagoConfigFromJSON(jsonString string) DatagoConfig {
 
 	sourceConfig, err := json.Marshal(tempConfig["source_config"])
 	if err != nil {
+		fmt.Println("Error marshalling source_config", tempConfig["source_config"], err)
 		log.Panicf("Error marshalling source_config: %v", err)
 	}
 
+	// Unmarshal the source config based on the source type
+	// NOTE: The undefined fields will follow the default values
 	switch tempConfig["source_type"] {
 	case string(SourceTypeDB):
-		var dbConfig GeneratorDBConfig
+		dbConfig := SourceDBConfig{}
+		dbConfig.setDefaults()
+
 		err = json.Unmarshal(sourceConfig, &dbConfig)
 		if err != nil {
+			fmt.Println("Error unmarshalling DB config", sourceConfig, err)
 			log.Panicf("Error unmarshalling DB config: %v", err)
 		}
 		config.SourceConfig = dbConfig
 	case string(SourceTypeFileSystem):
-		var fsConfig GeneratorFileSystemConfig
+		fsConfig := SourceFileSystemConfig{}
+		fsConfig.setDefaults()
+
 		err = json.Unmarshal(sourceConfig, &fsConfig)
 		if err != nil {
+			fmt.Println("Error unmarshalling Filesystem config", sourceConfig, err)
 			log.Panicf("Error unmarshalling FileSystem config: %v", err)
 		}
 		config.SourceConfig = fsConfig
@@ -127,7 +145,9 @@ type DatagoClient struct {
 	waitGroup *sync.WaitGroup
 	cancel    context.CancelFunc
 
-	ImageConfig ImageTransformConfig
+	imageConfig   ImageTransformConfig
+	servedSamples int
+	limit         int
 
 	// Flexible generator, backend and dispatch goroutines
 	generator Generator
@@ -157,14 +177,14 @@ func GetClient(config DatagoConfig) *DatagoClient {
 	fmt.Println(reflect.TypeOf(config.SourceConfig))
 
 	switch config.SourceConfig.(type) {
-	case GeneratorDBConfig:
+	case SourceDBConfig:
 		fmt.Println("Creating a DB-backed dataloader")
-		dbConfig := config.SourceConfig.(GeneratorDBConfig)
+		dbConfig := config.SourceConfig.(SourceDBConfig)
 		generator = newDatagoGeneratorDB(dbConfig)
 		backend = BackendHTTP{config: &dbConfig, concurrency: config.Concurrency}
-	case GeneratorFileSystemConfig:
+	case SourceFileSystemConfig:
 		fmt.Println("Creating a FileSystem-backed dataloader")
-		fsConfig := config.SourceConfig.(GeneratorFileSystemConfig)
+		fsConfig := config.SourceConfig.(SourceFileSystemConfig)
 		generator = newDatagoGeneratorFileSystem(fsConfig)
 		backend = BackendFileSystem{config: &config, concurrency: config.Concurrency}
 	default:
@@ -177,7 +197,9 @@ func GetClient(config DatagoConfig) *DatagoClient {
 		chanPages:          make(chan Pages, 2),
 		chanSampleMetadata: make(chan SampleDataPointers, config.PrefetchBufferSize),
 		chanSamples:        make(chan Sample, config.SamplesBufferSize),
-		ImageConfig:        config.ImageConfig,
+		imageConfig:        config.ImageConfig,
+		servedSamples:      0,
+		limit:              config.Limit,
 		context:            nil,
 		cancel:             nil,
 		waitGroup:          nil,
@@ -218,13 +240,13 @@ func (c *DatagoClient) Start() {
 	// Optionally crop and resize the images and masks on the fly
 	var arAwareTransform *ARAwareTransform = nil
 
-	if c.ImageConfig.CropAndResize {
+	if c.imageConfig.CropAndResize {
 		fmt.Println("Cropping and resizing images")
-		fmt.Println("Base image size | downsampling ratio | min | max:", c.ImageConfig.DefaultImageSize, c.ImageConfig.DownsamplingRatio, c.ImageConfig.MinAspectRatio, c.ImageConfig.MaxAspectRatio)
-		arAwareTransform = newARAwareTransform(c.ImageConfig)
+		fmt.Println("Base image size | downsampling ratio | min | max:", c.imageConfig.DefaultImageSize, c.imageConfig.DownsamplingRatio, c.imageConfig.MinAspectRatio, c.imageConfig.MaxAspectRatio)
+		arAwareTransform = newARAwareTransform(c.imageConfig)
 	}
 
-	if c.ImageConfig.PreEncodeImages {
+	if c.imageConfig.PreEncodeImages {
 		fmt.Println("Pre-encoding images, we'll return serialized JPG and PNG bytes")
 	}
 
@@ -247,7 +269,7 @@ func (c *DatagoClient) Start() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.backend.collectSamples(c.chanSampleMetadata, c.chanSamples, arAwareTransform, c.ImageConfig.PreEncodeImages) // Fetch the payloads and and deserialize them
+		c.backend.collectSamples(c.chanSampleMetadata, c.chanSamples, arAwareTransform, c.imageConfig.PreEncodeImages) // Fetch the payloads and and deserialize them
 	}()
 
 	c.waitGroup = &wg
@@ -255,15 +277,23 @@ func (c *DatagoClient) Start() {
 
 // Get a deserialized sample from the client
 func (c *DatagoClient) GetSample() Sample {
-	if c.cancel == nil {
+	if c.cancel == nil && c.servedSamples == 0 {
 		fmt.Println("Dataroom client not started. Starting it on the first sample, this adds some initial latency")
 		fmt.Println("Please consider starting the client in anticipation by calling .Start()")
 		c.Start()
 	}
 
+	if c.limit > 0 && c.servedSamples == c.limit {
+		fmt.Println("Reached the limit of samples to serve, stopping the client")
+		c.Stop()
+		return Sample{}
+	}
+
 	if sample, ok := <-c.chanSamples; ok {
+		c.servedSamples++
 		return sample
 	}
+
 	fmt.Println("chanSamples closed, no more samples to serve")
 	return Sample{}
 }

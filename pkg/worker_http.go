@@ -7,7 +7,7 @@ import (
 )
 
 type BackendHTTP struct {
-	config      *GeneratorDBConfig
+	config      *SourceDBConfig
 	concurrency int
 }
 

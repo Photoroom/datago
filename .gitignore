@@ -30,3 +30,4 @@ go.work.sum
 build
 
 __pycache__
+*.pyc

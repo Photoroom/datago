@@ -64,5 +64,5 @@ jobs:
 
         run: |
           ls
-          python3 -m pip install -r requirements.txt
-          pytest -xv python/tests/*
+          python3 -m pip install -r requirements-tests.txt
+          pytest -xv python/*
