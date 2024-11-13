@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/davidbyttow/govips/v2/vips"
+	_ "go.uber.org/automaxprocs/maxprocs"
 )
 
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -278,7 +279,7 @@ func (c *DatagoClient) Start() {
 // Get a deserialized sample from the client
 func (c *DatagoClient) GetSample() Sample {
 	if c.cancel == nil && c.servedSamples == 0 {
-		fmt.Println("Dataroom client not started. Starting it on the first sample, this adds some initial latency")
+		fmt.Println("Datago client not started. Starting it on the first sample, this adds some initial latency")
 		fmt.Println("Please consider starting the client in anticipation by calling .Start()")
 		c.Start()
 	}
@@ -300,7 +301,7 @@ func (c *DatagoClient) GetSample() Sample {
 
 // Stop the background downloads, will clear the memory and CPU footprint
 func (c *DatagoClient) Stop() {
-	fmt.Println("Stopping the dataroom client")
+	fmt.Println("Stopping the datago client")
 
 	// Signal the coroutines that next round should be a stop
 	if c.cancel == nil {
@@ -318,7 +319,7 @@ func (c *DatagoClient) Stop() {
 		c.waitGroup.Wait()
 	}
 
-	fmt.Println("Dataroom client stopped")
+	fmt.Println("Datago client stopped")
 	c.cancel = nil
 	c.context = nil
 }
@@ -332,7 +333,6 @@ func (c *DatagoClient) asyncDispatch() {
 	for {
 		select {
 		case <-c.context.Done():
-			fmt.Println("Metadata fetch goroutine wrapping up")
 			close(c.chanSampleMetadata)
 			return
 		case page, open := <-c.chanPages:

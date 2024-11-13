@@ -6,6 +6,7 @@ import os
 import json
 import typer
 
+
 def benchmark(
     root_path: str = typer.Option(
         os.getenv("DATAROOM_TEST_FILESYSTEM", ""), help="The source to test out"
@@ -34,7 +35,7 @@ def benchmark(
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
         },
-        "prefetch_buffer_size": 64,
+        "prefetch_buffer_size": 256,
         "samples_buffer_size": 128,
         "concurrency": concurrency,
         "limit": limit,
@@ -76,7 +77,9 @@ def benchmark(
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize((512, 512), interpolation=transforms.InterpolationMode.BICUBIC),
+                    transforms.Resize(
+                        (512, 512), interpolation=transforms.InterpolationMode.BICUBIC
+                    ),
                 ]
             )
             if crop_and_resize
@@ -84,7 +87,9 @@ def benchmark(
         )
 
         # Create the ImageFolder dataset
-        dataset = datasets.ImageFolder(root=root_path, transform=transform, allow_empty=True)
+        dataset = datasets.ImageFolder(
+            root=root_path, transform=transform, allow_empty=True
+        )
 
         # Create a DataLoader to allow for multiple workers
         dataloader = DataLoader(
