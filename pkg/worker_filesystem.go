@@ -64,5 +64,4 @@ func (b BackendFileSystem) collectSamples(chanSampleMetadata chan SampleDataPoin
 		<-ack_channel
 	}
 	close(chanSamples)
-	fmt.Println("No more items to serve, wrapping up")
 }

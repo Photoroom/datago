@@ -1,7 +1,6 @@
 package datago
 
 import (
-	"fmt"
 	"net/http"
 	"time"
 )
@@ -49,5 +48,4 @@ func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, 
 		<-ack_channel
 	}
 	close(chanSamples)
-	fmt.Println("No more items to serve, wrapping up")
 }

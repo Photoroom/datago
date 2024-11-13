@@ -7,6 +7,7 @@ require golang.org/x/image v0.18.0 // indirect
 require (
 	github.com/davidbyttow/govips/v2 v2.15.0
 	github.com/go-python/gopy v0.4.10
+	go.uber.org/automaxprocs v1.6.0
 )
 
 require (
