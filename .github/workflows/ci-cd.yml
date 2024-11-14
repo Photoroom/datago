@@ -22,12 +22,12 @@ jobs:
           sudo apt-get -y install libvips-dev libjpeg-turbo8-dev
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: "1.23"
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11.10"
 
@@ -47,7 +47,7 @@ jobs:
       - name: Build python module
         run: |
           cd pkg
-          GOAMD64=v3 gopy pkg -author="Photoroom" -email="team@photoroom.com" -name="datago" -version="${{ steps.version.outputs.major-version }}.${{ steps.version.outputs.minor-version }}.${{ steps.version.outputs.patch-version }}" .
+          GOAMD64=v3 gopy pkg -author="Photoroom" -email="team@photoroom.com" -name="datago" -vm="python3" -version="${{ steps.version.outputs.major-version }}.${{ steps.version.outputs.minor-version }}.${{ steps.version.outputs.patch-version }}" .
           export DESTINATION="../build"
           mkdir -p $DESTINATION/datago
           mv datago/* $DESTINATION/datago/.
