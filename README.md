@@ -98,7 +98,7 @@ $ go run -race cmd/main/main.go
 From the root folder
 
 ```bash
-$ go test -v tests/client_test.go
+$ go test -v tests/*
 ```
 
 ## Refresh the python package and its binaries
