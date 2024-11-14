@@ -111,8 +111,7 @@ $ go test -v tests/client_test.go
 ```bash
 $ python3 -m pip install pybindgen
 $ go install golang.org/x/tools/cmd/goimports@latest
-$ go install github.com/go-python/gopy@latest
-$ go install golang.org/x/image/draw
+$ go install github.com/go-python/gopy@v0.4.8
 ```
 
 NOTE:
