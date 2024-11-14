@@ -28,7 +28,7 @@ func (c *SourceFileSystemConfig) setDefaults() {
 	c.Rank = 0
 	c.WorldSize = 1
 
-	c.RootPath = os.Getenv("DATAROOM_TEST_FILESYSTEM")
+	c.RootPath = os.Getenv("DATAGO_TEST_FILESYSTEM")
 }
 
 func GetSourceFileSystemConfig() SourceFileSystemConfig {

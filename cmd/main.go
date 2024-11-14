@@ -14,7 +14,7 @@ func main() {
 	// Define flags
 	config := datago.GetDatagoConfig()
 
-	sourceConfig := datago.SourceFileSystemConfig{RootPath: os.Getenv("DATAROOM_TEST_FILESYSTEM")}
+	sourceConfig := datago.SourceFileSystemConfig{RootPath: os.Getenv("DATAGO_TEST_FILESYSTEM")}
 	sourceConfig.PageSize = 10
 	sourceConfig.Rank = 0
 	sourceConfig.WorldSize = 1

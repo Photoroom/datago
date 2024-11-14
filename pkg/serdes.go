@@ -117,7 +117,6 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 		Height:         height,
 		Width:          width,
 		Channels:       channels,
-		DataPtr:        dataPtrFromSlice(img_bytes),
 	}
 
 	return &img_payload, aspect_ratio, nil
@@ -243,7 +242,6 @@ func fetchSample(config *SourceDBConfig, http_client *http.Client, sample_result
 			latents[latent.LatentType] = LatentPayload{
 				latent_payload.content,
 				len(latent_payload.content),
-				dataPtrFromSlice(latent_payload.content),
 			}
 		}
 	}

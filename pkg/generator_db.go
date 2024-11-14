@@ -261,7 +261,6 @@ func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pag
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("Pages fetch goroutine wrapping up")
 			return
 
 		default:

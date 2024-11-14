@@ -6,7 +6,7 @@ from go_types import go_array_to_pil_image, go_array_to_numpy
 
 
 def get_test_source() -> str:
-    test_source = os.getenv("DATAROOM_TEST_SOURCE", "COYO")
+    test_source = os.getenv("DATAROOM_TEST_SOURCE")
     assert test_source is not None, "Please set DATAROOM_TEST_SOURCE"
     return test_source
 
