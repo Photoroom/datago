@@ -2,15 +2,7 @@ package datago
 
 import (
 	"time"
-	"unsafe"
 )
-
-func dataPtrFromSlice(a []uint8) uintptr {
-	if len(a) == 0 {
-		return 0
-	}
-	return uintptr(unsafe.Pointer(&a[0]))
-}
 
 func exponentialBackoffWait(retries int) {
 	baseDelay := time.Second

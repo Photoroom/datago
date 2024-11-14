@@ -4,9 +4,8 @@ import "context"
 
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 type LatentPayload struct {
-	Data    []byte
-	Len     int
-	DataPtr uintptr
+	Data []byte
+	Len  int
 }
 
 type ImagePayload struct {
@@ -16,7 +15,6 @@ type ImagePayload struct {
 	Height         int // Useful to decode the current payload
 	Width          int
 	Channels       int
-	DataPtr        uintptr
 }
 
 type Sample struct {

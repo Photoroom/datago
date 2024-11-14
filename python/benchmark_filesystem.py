@@ -9,7 +9,7 @@ import typer
 
 def benchmark(
     root_path: str = typer.Option(
-        os.getenv("DATAROOM_TEST_FILESYSTEM", ""), help="The source to test out"
+        os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"
     ),
     limit: int = typer.Option(2000, help="The number of samples to test on"),
     crop_and_resize: bool = typer.Option(
@@ -35,8 +35,8 @@ def benchmark(
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
         },
-        "prefetch_buffer_size": 256,
-        "samples_buffer_size": 128,
+        "prefetch_buffer_size": concurrency * 2,
+        "samples_buffer_size": concurrency * 2,
         "concurrency": concurrency,
         "limit": limit,
     }

@@ -345,7 +345,6 @@ func (c *DatagoClient) asyncDispatch() {
 			for _, item := range page.samplesDataPointers {
 				select {
 				case <-c.context.Done():
-					fmt.Println("Metadata fetch goroutine wrapping up")
 					close(c.chanSampleMetadata)
 					return
 				case c.chanSampleMetadata <- item:
