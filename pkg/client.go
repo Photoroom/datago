@@ -221,6 +221,29 @@ func GetClientFromJSON(jsonString string) *DatagoClient {
 	return GetClient(config)
 }
 
+// Get a deserialized sample from the client
+func (c *DatagoClient) GetSample() Sample {
+	if c.cancel == nil && c.servedSamples == 0 {
+		fmt.Println("Datago client not started. Starting it on the first sample, this adds some initial latency")
+		fmt.Println("Please consider starting the client in anticipation by calling .Start()")
+		c.Start()
+	}
+
+	if c.limit > 0 && c.servedSamples == c.limit {
+		fmt.Println("Reached the limit of samples to serve, stopping the client")
+		c.Stop()
+		return Sample{}
+	}
+
+	if sample, ok := <-c.chanSamples; ok {
+		c.servedSamples++
+		return sample
+	}
+
+	fmt.Println("chanSamples closed, no more samples to serve")
+	return Sample{}
+}
+
 // Start the background downloads, make it ready to serve samples. Will grow the memory and CPU footprint
 func (c *DatagoClient) Start() {
 	if c.context == nil || c.cancel == nil {
@@ -274,29 +297,6 @@ func (c *DatagoClient) Start() {
 	}()
 
 	c.waitGroup = &wg
-}
-
-// Get a deserialized sample from the client
-func (c *DatagoClient) GetSample() Sample {
-	if c.cancel == nil && c.servedSamples == 0 {
-		fmt.Println("Datago client not started. Starting it on the first sample, this adds some initial latency")
-		fmt.Println("Please consider starting the client in anticipation by calling .Start()")
-		c.Start()
-	}
-
-	if c.limit > 0 && c.servedSamples == c.limit {
-		fmt.Println("Reached the limit of samples to serve, stopping the client")
-		c.Stop()
-		return Sample{}
-	}
-
-	if sample, ok := <-c.chanSamples; ok {
-		c.servedSamples++
-		return sample
-	}
-
-	fmt.Println("chanSamples closed, no more samples to serve")
-	return Sample{}
 }
 
 // Stop the background downloads, will clear the memory and CPU footprint
