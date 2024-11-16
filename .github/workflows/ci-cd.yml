@@ -36,7 +36,7 @@ jobs:
       - name: Install pybindgen
         run: |
           python3 -m pip install pybindgen
-          go install golang.org/x/tools/cmd/goimports@latest
+          go install golang.org/x/tools/cmd/goimports@v0.18.0
           go install github.com/go-python/gopy@latest
 
       - name: Get next version
