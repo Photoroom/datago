@@ -7,6 +7,9 @@ from datago import go
 
 
 def uint8_array_to_numpy(go_array):
+    if len(go_array.Data) == 0:
+        return None
+
     # By convention, arrays which are already serialized as jpg or png are not reshaped
     # We export them from Go with a Channels dimension of -1 to mark them as dimensionless.
     # Anything else is a valid number of channels and will thus lead to a reshape
@@ -29,6 +32,9 @@ def uint8_array_to_numpy(go_array):
 
 
 def go_array_to_numpy(go_array) -> Optional[np.ndarray]:
+    if len(go_array.Data) == 0:
+        return None
+
     # Generic numpy-serialized array
     bytes_buffer = bytes(go.Slice_byte(go_array.Data))
     try:
@@ -39,7 +45,10 @@ def go_array_to_numpy(go_array) -> Optional[np.ndarray]:
         return None
 
 
-def go_array_to_pil_image(go_array):
+def go_array_to_pil_image(go_array) -> Optional[Image.Image]:
+    if len(go_array.Data) == 0:
+        return None
+
     # Zero copy conversion of the image buffer from Go to PIL.Image
     np_array = uint8_array_to_numpy(go_array)
     if go_array.Channels <= 0:
