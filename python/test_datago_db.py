@@ -147,6 +147,16 @@ def test_has_tags():
     assert "v4_trainset_hq" in sample.Tags, "v4_trainset_hq should be in the tags"
 
 
+def test_empty_image():
+    client_config = get_json_config()
+    client_config["source_config"]["require_images"] = False
+
+    dataset = get_dataset(client_config)
+
+    # Just check that accessing the sample in python does not crash
+    _ = next(iter(dataset))
+
+
 def no_test_jpg_compression():
     # Check that the images are compressed as expected
     client_config = get_json_config()
