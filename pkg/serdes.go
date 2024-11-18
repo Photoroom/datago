@@ -282,6 +282,7 @@ func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Req
 
 	maybeAddField(&req, "fields", request.fields)
 	maybeAddField(&req, "source", request.sources)
+	maybeAddField(&req, "source__ne", request.sourcesNE)
 	maybeAddField(&req, "page_size", request.pageSize)
 
 	maybeAddField(&req, "tags", request.tags)
