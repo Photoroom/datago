@@ -291,30 +291,59 @@ func TestRanks(t *testing.T) {
 
 func TestTags(t *testing.T) {
 	clientConfig := get_default_test_config()
-	clientConfig.SamplesBufferSize = 1
+	{
+		clientConfig.SamplesBufferSize = 1
 
-	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
-	dbConfig.Tags = "v4_trainset_hq"
-	clientConfig.SourceConfig = dbConfig
+		dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
+		dbConfig.Tags = "v4_trainset_hq"
+		clientConfig.SourceConfig = dbConfig
 
-	client := datago.GetClient(clientConfig)
+		client := datago.GetClient(clientConfig)
 
-	countains := func(slice []string, element string) bool {
-		for _, item := range slice {
-			if item == element {
-				return true
+		countains := func(slice []string, element string) bool {
+			for _, item := range slice {
+				if item == element {
+					return true
+				}
+			}
+			return false
+		}
+
+		for i := 0; i < 10; i++ {
+			sample := client.GetSample()
+			if !countains(sample.Tags, "v4_trainset_hq") {
+				t.Errorf("Sample is missing the required tag")
 			}
 		}
-		return false
+		client.Stop()
 	}
+	{
+		clientConfig.SamplesBufferSize = 1
 
-	for i := 0; i < 10; i++ {
-		sample := client.GetSample()
-		if !countains(sample.Tags, "v4_trainset_hq") {
-			t.Errorf("Sample is missing the required tag")
+		dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
+		dbConfig.Tags = ""
+		dbConfig.TagsNE = "v4_trainset_hq"
+		clientConfig.SourceConfig = dbConfig
+
+		client := datago.GetClient(clientConfig)
+
+		countains := func(slice []string, element string) bool {
+			for _, item := range slice {
+				if item == element {
+					return true
+				}
+			}
+			return false
 		}
+
+		for i := 0; i < 10; i++ {
+			sample := client.GetSample()
+			if countains(sample.Tags, "v4_trainset_hq") {
+				t.Errorf("Sample is missing the required tag")
+			}
+		}
+		client.Stop()
 	}
-	client.Stop()
 }
 
 // FIXME: Could do with a lot of tests on the filesystem side

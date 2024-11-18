@@ -44,9 +44,10 @@ type dbResponse struct {
 }
 
 type dbRequest struct {
-	fields   string
-	sources  string
-	pageSize string
+	fields    string
+	sources   string
+	sourcesNE string
+	pageSize  string
 
 	tags   string
 	tagsNE string
@@ -77,10 +78,11 @@ type dbRequest struct {
 type SourceDBConfig struct {
 	DataSourceConfig
 	Sources           string `json:"sources"`
+	SourcesNE         string `json:"sources__ne"`
 	RequireImages     bool   `json:"require_images"`
 	RequireEmbeddings bool   `json:"require_embeddings"`
 	Tags              string `json:"tags"`
-	TagsNE            string `json:"tags_ne"`
+	TagsNE            string `json:"tags__ne"`
 	HasAttributes     string `json:"has_attributes"`
 	LacksAttributes   string `json:"lacks_attributes"`
 	HasMasks          string `json:"has_masks"`
