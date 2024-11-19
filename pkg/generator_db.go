@@ -184,7 +184,7 @@ func (c *SourceDBConfig) getDbRequest() dbRequest {
 		lacksMasks:      c.LacksMasks,
 		hasLatents:      c.HasLatents,
 		lacksLatents:    c.LacksLatents,
-		returnLatents:   c.HasLatents, // Could be exposed as it's done internally
+		returnLatents:   c.ReturnLatents,
 		minShortEdge:    sanitizeInt(c.MinShortEdge),
 		maxShortEdge:    sanitizeInt(c.MaxShortEdge),
 		minPixelCount:   sanitizeInt(c.MinPixelCount),
