@@ -34,23 +34,6 @@ type DataSourceConfig struct {
 	Limit     int `json:"limit"`
 }
 
-type ImageTransformConfig struct {
-	CropAndResize     bool    `json:"crop_and_resize"`
-	DefaultImageSize  int     `json:"default_image_size"`
-	DownsamplingRatio int     `json:"downsampling_ratio"`
-	MinAspectRatio    float64 `json:"min_aspect_ratio"`
-	MaxAspectRatio    float64 `json:"max_aspect_ratio"`
-	PreEncodeImages   bool    `json:"pre_encode_images"`
-}
-
-func (c *ImageTransformConfig) setDefaults() {
-	c.DefaultImageSize = 512
-	c.DownsamplingRatio = 16
-	c.MinAspectRatio = 0.5
-	c.MaxAspectRatio = 2.0
-	c.PreEncodeImages = false
-}
-
 // DatagoConfig is the main configuration structure for the datago client
 type DatagoConfig struct {
 	SourceType         DatagoSourceType     `json:"source_type"`
