@@ -20,7 +20,6 @@ func get_default_test_config() datago.DatagoConfig {
 	db_config := datago.GetSourceDBConfig()
 	db_config.Sources = get_test_source()
 	db_config.PageSize = 32
-
 	config.SourceConfig = db_config
 	return config
 }
@@ -378,4 +377,53 @@ func TestMultipleSources(t *testing.T) {
 		fmt.Println(test_set)
 	}
 	client.Stop()
+}
+
+func TestRandomSampling(t *testing.T) {
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
+	dbConfig.RandomSampling = true
+	clientConfig.SourceConfig = dbConfig
+
+	// Fill in two sets with some results
+	sample_set_1 := make(map[string]interface{})
+	sample_set_2 := make(map[string]interface{})
+
+	{
+		client := datago.GetClient(clientConfig)
+
+		for i := 0; i < 10; i++ {
+			sample := client.GetSample()
+			sample_set_1[sample.ID] = nil
+		}
+		client.Stop()
+	}
+
+	{
+		client := datago.GetClient(clientConfig)
+
+		for i := 0; i < 10; i++ {
+			sample := client.GetSample()
+			sample_set_2[sample.ID] = nil
+		}
+		client.Stop()
+	}
+
+	// Check that the two sets are different
+	setsAreEqual := func(set1, set2 map[string]interface{}) bool {
+		if len(set1) != len(set2) {
+			return false
+		}
+		for k := range set1 {
+			if _, exists := set2[k]; !exists {
+				return false
+			}
+		}
+		return true
+	}
+
+	if setsAreEqual(sample_set_1, sample_set_2) {
+		t.Error("Random sampling is not working")
+	}
 }

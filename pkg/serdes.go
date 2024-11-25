@@ -264,7 +264,12 @@ func fetchSample(config *SourceDBConfig, http_client *http.Client, sample_result
 }
 
 func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Request {
-	request_url, _ := http.NewRequest("GET", api_url+"images/", nil)
+	if request.randomSampling {
+		api_url += "images/random/"
+	} else {
+		api_url += "images/"
+	}
+	request_url, _ := http.NewRequest("GET", api_url, nil)
 	request_url.Header.Add("Authorization", "Token  "+api_key)
 	req := request_url.URL.Query()
 
