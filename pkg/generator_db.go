@@ -28,6 +28,7 @@ type urlLatent struct {
 
 type dbSampleMetadata struct {
 	Id             string                 `json:"id"`
+	Source         string                 `json:"source"`
 	Attributes     map[string]interface{} `json:"attributes"`
 	DuplicateState int                    `json:"duplicate_state"`
 	ImageDirectURL string                 `json:"image_direct_url"`
@@ -129,7 +130,7 @@ func (c *SourceDBConfig) setDefaults() {
 
 func (c *SourceDBConfig) getDbRequest() dbRequest {
 
-	fields := "attributes,image_direct_url"
+	fields := "attributes,image_direct_url,source"
 	if len(c.HasLatents) > 0 || len(c.HasMasks) > 0 {
 		fields += ",latents"
 		fmt.Println("Including some latents:", c.HasLatents, c.HasMasks)
