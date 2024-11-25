@@ -346,4 +346,36 @@ func TestTags(t *testing.T) {
 	}
 }
 
-// FIXME: Could do with a lot of tests on the filesystem side
+func TestMultipleSources(t *testing.T) {
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+
+	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
+	dbConfig.Sources = "LAION_ART,LAION_AESTHETICS"
+	clientConfig.SourceConfig = dbConfig
+
+	client := datago.GetClient(clientConfig)
+
+	// Pull samples from the client, collect the sources
+	test_set := make(map[string]interface{})
+	for i := 0; i < 100; i++ {
+		sample := client.GetSample()
+		if _, exists := test_set[sample.Source]; !exists {
+			test_set[sample.Source] = nil
+			if len(test_set) == 2 {
+				break
+			}
+		}
+	}
+
+	isin := func(dict map[string]interface{}, element string) bool {
+		_, exists := dict[element]
+		return exists
+	}
+
+	if len(test_set) != 2 || !isin(test_set, "LAION_ART") || !isin(test_set, "LAION_AESTHETICS") {
+		t.Error("Missing the required sources")
+		fmt.Println(test_set)
+	}
+	client.Stop()
+}

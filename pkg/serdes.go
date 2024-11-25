@@ -253,7 +253,7 @@ func fetchSample(config *SourceDBConfig, http_client *http.Client, sample_result
 	}
 
 	return &Sample{ID: sample_result.Id,
-		Source:           config.Sources,
+		Source:           sample_result.Source,
 		Attributes:       sample_result.Attributes,
 		Image:            *img_payload,
 		Latents:          latents,
@@ -281,8 +281,8 @@ func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Req
 	}
 
 	maybeAddField(&req, "fields", request.fields)
-	maybeAddField(&req, "source", request.sources)
-	maybeAddField(&req, "source__ne", request.sourcesNE)
+	maybeAddField(&req, "sources", request.sources)
+	maybeAddField(&req, "sources__ne", request.sourcesNE)
 	maybeAddField(&req, "page_size", request.pageSize)
 
 	maybeAddField(&req, "tags", request.tags)
