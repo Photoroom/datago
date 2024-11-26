@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -261,58 +260,4 @@ func fetchSample(config *SourceDBConfig, http_client *http.Client, sample_result
 		AdditionalImages: additional_images,
 		Tags:             sample_result.Tags,
 		CocaEmbedding:    cocaEmbedding}
-}
-
-func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Request {
-	if request.randomSampling {
-		api_url += "images/random/"
-	} else {
-		api_url += "images/"
-	}
-	request_url, _ := http.NewRequest("GET", api_url, nil)
-	request_url.Header.Add("Authorization", "Token  "+api_key)
-	req := request_url.URL.Query()
-
-	maybeAddField := func(req *url.Values, field string, value string) {
-		if value != "" {
-			req.Add(field, value)
-		}
-	}
-
-	// Limit the returned latents to the ones we asked for
-	return_latents := request.hasLatents
-	if request.hasMasks != "" {
-		return_latents += "," + request.hasMasks
-	}
-
-	maybeAddField(&req, "fields", request.fields)
-	maybeAddField(&req, "sources", request.sources)
-	maybeAddField(&req, "sources__ne", request.sourcesNE)
-	maybeAddField(&req, "page_size", request.pageSize)
-
-	maybeAddField(&req, "tags", request.tags)
-	maybeAddField(&req, "tags__ne", request.tagsNE)
-
-	maybeAddField(&req, "has_attributes", request.hasAttributes)
-	maybeAddField(&req, "lacks_attributes", request.lacksAttributes)
-
-	maybeAddField(&req, "has_masks", request.hasMasks)
-	maybeAddField(&req, "lacks_masks", request.lacksMasks)
-
-	maybeAddField(&req, "has_latents", request.hasLatents)
-	maybeAddField(&req, "lacks_latents", request.lacksLatents)
-	maybeAddField(&req, "return_latents", return_latents)
-
-	maybeAddField(&req, "short_edge__gte", request.minShortEdge)
-	maybeAddField(&req, "short_edge__lte", request.maxShortEdge)
-	maybeAddField(&req, "pixel_count__gte", request.minPixelCount)
-	maybeAddField(&req, "pixel_count__lte", request.maxPixelCount)
-
-	maybeAddField(&req, "partitions_count", request.partitionsCount)
-	maybeAddField(&req, "partition", request.partition)
-
-	request_url.URL.RawQuery = req.Encode()
-	fmt.Println("Request URL:", request_url.URL.String())
-	fmt.Println()
-	return request_url
 }
