@@ -250,6 +250,7 @@ func TestRanks(t *testing.T) {
 	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
 	dbConfig.WorldSize = 2
 	dbConfig.Rank = 0
+	dbConfig.RequireImages = false
 	clientConfig.SourceConfig = dbConfig
 
 	client_0 := datago.GetClient(clientConfig)
@@ -295,6 +296,7 @@ func TestTags(t *testing.T) {
 
 		dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
 		dbConfig.Tags = "v4_trainset_hq"
+		dbConfig.RequireImages = false
 		clientConfig.SourceConfig = dbConfig
 
 		client := datago.GetClient(clientConfig)
@@ -322,6 +324,8 @@ func TestTags(t *testing.T) {
 		dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
 		dbConfig.Tags = ""
 		dbConfig.TagsNE = "v4_trainset_hq"
+		dbConfig.RequireImages = false
+
 		clientConfig.SourceConfig = dbConfig
 
 		client := datago.GetClient(clientConfig)
@@ -351,6 +355,7 @@ func TestMultipleSources(t *testing.T) {
 
 	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
 	dbConfig.Sources = "LAION_ART,LAION_AESTHETICS"
+	dbConfig.RequireImages = false
 	clientConfig.SourceConfig = dbConfig
 
 	client := datago.GetClient(clientConfig)
@@ -375,6 +380,28 @@ func TestMultipleSources(t *testing.T) {
 	if len(test_set) != 2 || !isin(test_set, "LAION_ART") || !isin(test_set, "LAION_AESTHETICS") {
 		t.Error("Missing the required sources")
 		fmt.Println(test_set)
+	}
+	client.Stop()
+}
+
+func TestSourcesNE(t *testing.T) {
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+
+	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
+	dbConfig.Sources = "LAION_ART,LAION_AESTHETICS"
+	dbConfig.SourcesNE = "LAION_ART"
+	dbConfig.RequireImages = false
+	clientConfig.SourceConfig = dbConfig
+
+	client := datago.GetClient(clientConfig)
+
+	// Pull samples from the client, collect the sources
+	for i := 0; i < 100; i++ {
+		sample := client.GetSample()
+		if sample.Source == "LAION_ART" {
+			t.Error("We're not supposed to get samples from LAION_ART")
+		}
 	}
 	client.Stop()
 }
