@@ -21,6 +21,8 @@ Depending on the front ends, datago can be rank and world-size aware, in which c
 
 <details> <summary><strong>Use it</strong></summary>
 
+Using Python 3.11, you can simply install datago with `pip install datago`
+
 ## Use the package from Python
 
 ```python
@@ -131,10 +133,7 @@ then you can `pip install -e .` from here.
 
 ## Update the pypi release (maintainers)
 
-```
-python3 setup.py sdist
-python3 -m twine upload dist/* --verbose
-```
+Create a new tag and a new release in this repo, a new package will be pushed automatically.
 
 </details>
 
