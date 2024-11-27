@@ -97,12 +97,12 @@ type SourceDBConfig struct {
 	ReturnLatents        string `json:"return_latents"`
 	ReturnDuplicateState bool   `json:"return_duplicate_state"`
 
-	MinShortEdge   int  `json:"min_short_edge"`
-	MaxShortEdge   int  `json:"max_short_edge"`
-	MinPixelCount  int  `json:"min_pixel_count"`
-	MaxPixelCount  int  `json:"max_pixel_count"`
+	MinShortEdge  int `json:"min_short_edge"`
+	MaxShortEdge  int `json:"max_short_edge"`
+	MinPixelCount int `json:"min_pixel_count"`
+	MaxPixelCount int `json:"max_pixel_count"`
 
-	DuplicateState int  `json:"duplicate_state"`
+	DuplicateState int `json:"duplicate_state"`
 
 	RandomSampling bool `json:"random_sampling"`
 }
