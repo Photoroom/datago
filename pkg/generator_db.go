@@ -70,6 +70,8 @@ type dbRequest struct {
 	minPixelCount string
 	maxPixelCount string
 
+	duplicateState string
+
 	randomSampling bool
 
 	partitionsCount string
@@ -99,6 +101,9 @@ type SourceDBConfig struct {
 	MaxShortEdge   int  `json:"max_short_edge"`
 	MinPixelCount  int  `json:"min_pixel_count"`
 	MaxPixelCount  int  `json:"max_pixel_count"`
+
+	DuplicateState int  `json:"duplicate_state"`
+
 	RandomSampling bool `json:"random_sampling"`
 }
 
@@ -127,7 +132,7 @@ func (c *SourceDBConfig) setDefaults() {
 	c.MinPixelCount = -1
 	c.MaxPixelCount = -1
 	c.RandomSampling = false
-
+	c.DuplicateState = -1
 }
 
 func (c *SourceDBConfig) getDbRequest() dbRequest {
@@ -175,6 +180,11 @@ func (c *SourceDBConfig) getDbRequest() dbRequest {
 		c.Rank = -1
 	}
 
+	duplicateState := sanitizeInt(c.DuplicateState)
+	if duplicateState == "0" {
+		duplicateState = "None"
+	}
+
 	return dbRequest{
 		fields:          fields,
 		sources:         c.Sources,
@@ -194,6 +204,7 @@ func (c *SourceDBConfig) getDbRequest() dbRequest {
 		minPixelCount:   sanitizeInt(c.MinPixelCount),
 		maxPixelCount:   sanitizeInt(c.MaxPixelCount),
 		randomSampling:  c.RandomSampling,
+		duplicateState:  duplicateState,
 		partitionsCount: sanitizeInt(c.WorldSize),
 		partition:       sanitizeInt(c.Rank),
 	}
@@ -366,6 +377,8 @@ func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Req
 	maybeAddField(&req, "short_edge__lte", request.maxShortEdge)
 	maybeAddField(&req, "pixel_count__gte", request.minPixelCount)
 	maybeAddField(&req, "pixel_count__lte", request.maxPixelCount)
+
+	maybeAddField(&req, "duplicate_state", request.duplicateState)
 
 	maybeAddField(&req, "partitions_count", request.partitionsCount)
 	maybeAddField(&req, "partition", request.partition)
