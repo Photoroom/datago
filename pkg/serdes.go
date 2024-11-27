@@ -254,6 +254,7 @@ func fetchSample(config *SourceDBConfig, http_client *http.Client, sample_result
 	return &Sample{ID: sample_result.Id,
 		Source:           sample_result.Source,
 		Attributes:       sample_result.Attributes,
+		DuplicateState:   sample_result.DuplicateState,
 		Image:            *img_payload,
 		Latents:          latents,
 		Masks:            masks,

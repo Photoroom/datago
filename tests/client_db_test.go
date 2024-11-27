@@ -454,3 +454,22 @@ func TestRandomSampling(t *testing.T) {
 		t.Error("Random sampling is not working")
 	}
 }
+
+func TestDuplicateStateFiltering(t *testing.T) {
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+	dbConfig := clientConfig.SourceConfig.(datago.SourceDBConfig)
+	dbConfig.DuplicateState = 1
+	dbConfig.ReturnDuplicateState = true
+	clientConfig.SourceConfig = dbConfig
+
+	client := datago.GetClient(clientConfig)
+
+	for i := 0; i < 10; i++ {
+		sample := client.GetSample()
+		if sample.DuplicateState != 1 {
+			t.Errorf("Expected duplicate state to be 1")
+		}
+	}
+	client.Stop()
+}
