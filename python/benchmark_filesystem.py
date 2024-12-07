@@ -1,10 +1,9 @@
 from datago import datago  # type: ignore
 import time
 from tqdm import tqdm
-from go_types import go_array_to_pil_image
 import os
-import json
 import typer
+from dataset import DatagoIterDataset
 
 
 def benchmark(
@@ -41,27 +40,20 @@ def benchmark(
         "limit": limit,
     }
 
-    client = datago.GetClientFromJSON(json.dumps(client_config))
-
-    start = time.time()
-    client.Start()
-
     # Make sure in the following that we compare apples to apples, meaning in that case
     # that we materialize the payloads in the python scope in the expected format
     # (PIL.Image for images and masks for instance, numpy arrays for latents)
-    img = None
-    for _ in tqdm(range(limit), dynamic_ncols=True):
-        sample = client.GetSample()
-        if sample.ID and hasattr(sample, "Image"):
-            img = go_array_to_pil_image(sample.Image)
+    datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
+    start = time.time()  # Note that the datago dataset will start walking the filesystem at construction time
 
-        if sample.ID is None:
-            print("No more samples")
-            break
+    img = None
+    for sample in tqdm(datago_dataset, dynamic_ncols=True):
+        assert sample["id"] != ""
+        img = sample["image"]
 
     fps = limit / (time.time() - start)
     print(f"Datago FPS {fps:.2f}")
-    client.Stop()
+    del datago_dataset
 
     # Save the last image as a test
     assert img is not None, "No image - benchmark did not run"

@@ -1,6 +1,4 @@
-import ctypes
 from PIL import Image
-import io
 from typing import Optional
 import numpy as np
 from datago import go
