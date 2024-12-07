@@ -1,8 +1,8 @@
 from datago import datago
 import pytest
 import os
-import json
 from go_types import go_array_to_pil_image, go_array_to_numpy
+from dataset import DatagoIterDataset
 
 
 def get_test_source() -> str:
@@ -41,25 +41,6 @@ def get_json_config():
     return client_config
 
 
-def get_dataset(client_config: str):
-    client = datago.GetClientFromJSON(json.dumps(client_config))
-
-    class Dataset:
-        def __init__(self, client):
-            self.client = client
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            new_sample = self.client.GetSample()
-            if new_sample.ID == "":
-                raise StopIteration
-            return new_sample
-
-    return Dataset(client)
-
-
 def test_get_sample_db():
     # Check that we can instantiate a client and get a sample, nothing more
     client_config = datago.GetDatagoConfig()
@@ -79,7 +60,7 @@ N_SAMPLES = 3
 
 def test_caption_and_image():
     client_config = get_json_config()
-    dataset = get_dataset(client_config)
+    dataset = DatagoIterDataset(client_config, return_python_types=False)
 
     def check_image(img, channels=3):
         assert img.Height > 0
@@ -117,7 +98,7 @@ def test_caption_and_image():
 def test_image_resize():
     client_config = get_json_config()
     client_config["image_config"]["crop_and_resize"] = True
-    dataset = get_dataset(client_config)
+    dataset = DatagoIterDataset(client_config, return_python_types=False)
 
     for i, sample in enumerate(dataset):
         # Assert that all the images in the sample have the same size
@@ -141,7 +122,7 @@ def test_has_tags():
     client_config = get_json_config()
     client_config["source_config"]["tags"] = "v4_trainset_hq"
 
-    dataset = get_dataset(client_config)
+    dataset = DatagoIterDataset(client_config, return_python_types=False)
     sample = next(iter(dataset))
 
     assert "v4_trainset_hq" in sample.Tags, "v4_trainset_hq should be in the tags"
@@ -151,7 +132,7 @@ def test_empty_image():
     client_config = get_json_config()
     client_config["source_config"]["require_images"] = False
 
-    dataset = get_dataset(client_config)
+    dataset = DatagoIterDataset(client_config, return_python_types=False)
 
     # Just check that accessing the sample in python does not crash
     _ = next(iter(dataset))
@@ -161,7 +142,7 @@ def no_test_jpg_compression():
     # Check that the images are compressed as expected
     client_config = get_json_config()
     client_config["image_config"]["pre_encode_images"] = True
-    dataset = get_dataset(client_config)
+    dataset = DatagoIterDataset(client_config, return_python_types=False)
 
     sample = next(iter(dataset))
 
@@ -182,7 +163,7 @@ def no_test_jpg_compression():
 def test_duplicate_state():
     client_config = get_json_config()
     client_config["source_config"]["return_duplicate_state"] = True
-    dataset = get_dataset(client_config)
+    dataset = DatagoIterDataset(client_config, return_python_types=False)
 
     sample = next(iter(dataset))
     assert sample.DuplicateState in [
