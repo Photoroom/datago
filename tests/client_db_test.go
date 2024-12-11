@@ -55,6 +55,36 @@ func TestClientNoStop(t *testing.T) {
 	_ = client.GetSample()
 }
 
+func TestNoVariableEnvDBKey(t *testing.T) {
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+
+	// Nuke the env variable for the time of the test
+	DATAROOM_API_KEY := os.Getenv("DATAROOM_API_KEY")
+	os.Setenv("DATAROOM_API_KEY", "")
+	defer os.Setenv("DATAROOM_API_KEY", DATAROOM_API_KEY)
+
+	client := datago.GetClient(clientConfig)
+	if client != nil {
+		t.Errorf("GetClient returned an unexpected error")
+	}
+}
+
+func TestNoVariableEnvDBUrl(t *testing.T) {
+	clientConfig := get_default_test_config()
+	clientConfig.SamplesBufferSize = 1
+
+	// Nuke the env variable for the time of the test
+	DATAROOM_API_URL := os.Getenv("DATAROOM_API_URL")
+	os.Setenv("DATAROOM_API_URL", "")
+	defer os.Setenv("DATAROOM_API_URL", DATAROOM_API_URL)
+
+	client := datago.GetClient(clientConfig)
+	if client != nil {
+		t.Errorf("GetClient returned an unexpected error")
+	}
+}
+
 func TestMoreThanBufferSize(t *testing.T) {
 	// Check that we can start, get a sample, and destroy the client immediately
 	// In that case Stop() should be called in the background, and everything should work just fine

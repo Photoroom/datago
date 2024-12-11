@@ -221,23 +221,25 @@ type datagoGeneratorDB struct {
 	config      SourceDBConfig
 }
 
-func newDatagoGeneratorDB(config SourceDBConfig) datagoGeneratorDB {
+func newDatagoGeneratorDB(config SourceDBConfig) (datagoGeneratorDB, error) {
 	request := config.getDbRequest()
 
 	api_key := os.Getenv("DATAROOM_API_KEY")
 	if api_key == "" {
-		log.Panic("DATAROOM_API_KEY is not set")
+		fmt.Println("DATAROOM_API_KEY is not set")
+		return datagoGeneratorDB{}, fmt.Errorf("DATAROOM_API_KEY is not set")
 	}
 
 	api_url := os.Getenv("DATAROOM_API_URL")
 	if api_url == "" {
-		log.Panic("DATAROOM_API_URL is not set")
+		fmt.Println("DATAROOM_API_URL is not set")
+		return datagoGeneratorDB{}, fmt.Errorf("DATAROOM_API_URL is not set")
 	}
 
 	fmt.Println("Dataroom API URL:", api_url)
 	fmt.Println("Dataroom API KEY last characters:", getLast5Chars(api_key))
 
-	return datagoGeneratorDB{baseRequest: *getHTTPRequest(api_url, api_key, request), config: config}
+	return datagoGeneratorDB{baseRequest: *getHTTPRequest(api_url, api_key, request), config: config}, nil
 }
 
 func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pages) {

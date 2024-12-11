@@ -53,7 +53,7 @@ client_config = {
     "concurrency": concurrency,
 }
 
-client = datago.GetClientFromJSON(json.dumps(config))
+client = datago.GetClientFromJSON(json.dumps(config)) # Will return None if something goes wrong, check the logs
 client.Start()  # This can be done early for convenience, not mandatory
 
 for _ in range(10):

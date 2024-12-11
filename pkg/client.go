@@ -180,9 +180,15 @@ func GetClient(config DatagoConfig) *DatagoClient {
 	switch config.SourceConfig.(type) {
 	case SourceDBConfig:
 		fmt.Println("Creating a DB-backed dataloader")
+
+		var err error
 		dbConfig := config.SourceConfig.(SourceDBConfig)
-		generator = newDatagoGeneratorDB(dbConfig)
-		backend = BackendHTTP{config: &dbConfig, concurrency: config.Concurrency}
+		generator, err = newDatagoGeneratorDB(dbConfig)
+		if err != nil {
+			return nil
+		} else {
+			backend = BackendHTTP{config: &dbConfig, concurrency: config.Concurrency}
+		}
 	case SourceFileSystemConfig:
 		fmt.Println("Creating a FileSystem-backed dataloader")
 		fsConfig := config.SourceConfig.(SourceFileSystemConfig)
