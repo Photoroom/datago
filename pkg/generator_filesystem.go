@@ -43,9 +43,8 @@ type datagoGeneratorFileSystem struct {
 }
 
 func newDatagoGeneratorFileSystem(config SourceFileSystemConfig) datagoGeneratorFileSystem {
-	supported_img_extensions := []string{".jpg", ".jpeg", ".png", ".JPEG", ".JPG", ".PNG"}
 	var extensionsMap = make(set)
-	for _, ext := range supported_img_extensions {
+	for _, ext := range imgExtensions {
 		extensionsMap.Add(ext)
 	}
 
@@ -54,7 +53,7 @@ func newDatagoGeneratorFileSystem(config SourceFileSystemConfig) datagoGenerator
 	}
 
 	fmt.Println("File system root directory", config.RootPath)
-	fmt.Println("Supported image extensions", supported_img_extensions)
+	fmt.Println("Supported image extensions", imgExtensions)
 	fmt.Println("Rank and World Size", config.Rank, config.WorldSize)
 
 	return datagoGeneratorFileSystem{config: config, extensions: extensionsMap}

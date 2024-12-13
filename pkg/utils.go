@@ -4,6 +4,8 @@ import (
 	"time"
 )
 
+var imgExtensions = []string{".jpg", ".jpeg", ".png", ".JPEG", ".JPG", ".PNG"}
+
 func exponentialBackoffWait(retries int) {
 	baseDelay := time.Second
 	maxDelay := 64 * time.Second
