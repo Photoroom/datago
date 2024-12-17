@@ -12,8 +12,10 @@ def uint8_array_to_numpy(go_array):
     # We export them from Go with a Channels dimension of -1 to mark them as dimensionless.
     # Anything else is a valid number of channels and will thus lead to a reshape
     num_final_channels = max(go_array.Channels, 1)
+    bit_depth = getattr(go_array, "BitDepth", 8)
+
     length = (
-        go_array.Width * go_array.Height * num_final_channels
+        go_array.Width * go_array.Height * num_final_channels * bit_depth
         if go_array.Channels > 0
         else len(go_array.Data)
     )

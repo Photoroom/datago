@@ -15,6 +15,7 @@ type ImagePayload struct {
 	Height         int // Useful to decode the current payload
 	Width          int
 	Channels       int
+	BitDepth       int
 }
 
 type Sample struct {
