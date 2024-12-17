@@ -82,6 +82,8 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 	// If requested, re-encode the image to a jpg or png
 	var img_bytes []byte
 	var channels int
+	var bit_depth int
+
 	if pre_encode_image {
 		if err != nil {
 			return nil, -1., err
@@ -107,6 +109,13 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 			return nil, -1., err
 		}
 		channels = img.Bands()
+
+		// Define bit depth de facto, not exposed in the vips interface
+		bit_depth = len(img_bytes) / (width * height * channels)
+	}
+
+	if bit_depth == 0 && !pre_encode_image {
+		panic("Bit depth not set")
 	}
 
 	img_payload := ImagePayload{
@@ -116,6 +125,7 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 		Height:         height,
 		Width:          width,
 		Channels:       channels,
+		BitDepth:       bit_depth,
 	}
 
 	return &img_payload, aspect_ratio, nil
