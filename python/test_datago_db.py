@@ -6,7 +6,7 @@ from dataset import DatagoIterDataset
 
 
 def get_test_source() -> str:
-    test_source = os.getenv("DATAROOM_TEST_SOURCE")
+    test_source = os.getenv("DATAROOM_TEST_SOURCE", "COYO")
     assert test_source is not None, "Please set DATAROOM_TEST_SOURCE"
     return test_source
 
@@ -158,6 +158,24 @@ def no_test_jpg_compression():
     assert (
         go_array_to_numpy(sample.CocaEmbedding) is not None
     ), "Embedding should be set"
+
+
+def test_original_image():
+    # Check that the images are transmitted as expected
+    client_config = get_json_config()
+    client_config["image_config"]["pre_encode_images"] = False
+    client_config["image_config"]["crop_and_resize"] = False
+    dataset = DatagoIterDataset(client_config, return_python_types=False)
+
+    sample = next(iter(dataset))
+
+    assert go_array_to_pil_image(sample.Image).mode == "RGB", "Image should be RGB"
+    assert (
+        go_array_to_pil_image(sample.AdditionalImages["masked_image"]).mode == "RGB"
+    ), "Image should be RGB"
+    assert (
+        go_array_to_pil_image(sample.Masks["segmentation_mask"]).mode == "L"
+    ), "Mask should be L"
 
 
 def test_duplicate_state():
