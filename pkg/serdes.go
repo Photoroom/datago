@@ -111,7 +111,7 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 		channels = img.Bands()
 
 		// Define bit depth de facto, not exposed in the vips interface
-		bit_depth = len(img_bytes) / (width * height * channels)
+		bit_depth = len(img_bytes) / (width * height * channels) * 8 // 8 bits per byte
 	}
 
 	if bit_depth == 0 && !pre_encode_image {
