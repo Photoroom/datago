@@ -179,7 +179,7 @@ func GetClient(config DatagoConfig) *DatagoClient {
 
 	switch config.SourceConfig.(type) {
 	case SourceDBConfig:
-		fmt.Println("Creating a DB-backed dataloader")
+		fmt.Println("Creating a DB-backed dataloader.", config.Limit, " max samples")
 
 		var err error
 		dbConfig := config.SourceConfig.(SourceDBConfig)
@@ -190,7 +190,7 @@ func GetClient(config DatagoConfig) *DatagoClient {
 			backend = BackendHTTP{config: &dbConfig, concurrency: config.Concurrency}
 		}
 	case SourceFileSystemConfig:
-		fmt.Println("Creating a FileSystem-backed dataloader")
+		fmt.Println("Creating a FileSystem-backed dataloader.", config.Limit, " max samples")
 		fsConfig := config.SourceConfig.(SourceFileSystemConfig)
 		generator = newDatagoGeneratorFileSystem(fsConfig)
 		backend = BackendFileSystem{config: &config, concurrency: config.Concurrency}
