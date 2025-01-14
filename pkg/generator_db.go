@@ -242,7 +242,7 @@ func newDatagoGeneratorDB(config SourceDBConfig) (datagoGeneratorDB, error) {
 	return datagoGeneratorDB{baseRequest: *getHTTPRequest(api_url, api_key, request), config: config}, nil
 }
 
-func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pages) {
+func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages *BufferedChan[Pages]) {
 	// Fetch pages from the API, and feed the results to the items channel
 	// This is meant to be run in a goroutine
 	http_client := http.Client{Timeout: 30 * time.Second}
@@ -277,6 +277,8 @@ func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pag
 		return &data, nil
 	}
 
+	defer chanPages.Close()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -304,13 +306,12 @@ func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pag
 						samplesDataPointers[i] = sample
 					}
 
-					chanPages <- Pages{samplesDataPointers}
+					chanPages.Send(Pages{samplesDataPointers})
 				}
 
 				// Check if there are more pages to fetch
 				if data.Next == "" {
 					fmt.Println("No more pages to fetch, wrapping up")
-					close(chanPages)
 					return
 				}
 
@@ -328,7 +329,6 @@ func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pag
 			// Check if we consumed all the retries
 			if !valid_page {
 				fmt.Println("Too many errors fetching new pages, wrapping up")
-				close(chanPages)
 				return
 			}
 		}

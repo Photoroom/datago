@@ -6,11 +6,10 @@ import (
 )
 
 type BackendFileSystem struct {
-	config      *DatagoConfig
-	concurrency int
+	config *DatagoConfig
 }
 
-func loadSample(config *DatagoConfig, filesystem_sample fsSampleMetadata, transform *ARAwareTransform, pre_encode_images bool) *Sample {
+func loadSample(filesystem_sample fsSampleMetadata, transform *ARAwareTransform, pre_encode_image bool) *Sample {
 	// Load the file into []bytes
 	bytes_buffer, err := os.ReadFile(filesystem_sample.FilePath)
 	if err != nil {
@@ -18,7 +17,7 @@ func loadSample(config *DatagoConfig, filesystem_sample fsSampleMetadata, transf
 		return nil
 	}
 
-	img_payload, _, err := imageFromBuffer(bytes_buffer, transform, -1., pre_encode_images, false)
+	img_payload, _, err := imageFromBuffer(bytes_buffer, transform, -1., pre_encode_image, false)
 	if err != nil {
 		fmt.Println("Error loading image:", filesystem_sample.FileName)
 		return nil
@@ -29,17 +28,21 @@ func loadSample(config *DatagoConfig, filesystem_sample fsSampleMetadata, transf
 	}
 }
 
-func (b BackendFileSystem) collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, pre_encode_images bool) {
+func (b BackendFileSystem) collectSamples(inputSampleMetadata *BufferedChan[SampleDataPointers], outputSamples *BufferedChan[Sample], transform *ARAwareTransform, encodeImages bool) {
 
-	ack_channel := make(chan bool)
-
-	sampleWorker := func() {
+	sampleWorker := func(worker_handle *worker) {
 		for {
-			item_to_fetch, open := <-chanSampleMetadata
-			if !open {
-				ack_channel <- true
+			if worker_handle.state == worker_stopping {
+				worker_handle.state = worker_done
 				return
 			}
+			worker_handle.state = worker_idle
+			item_to_fetch, err := inputSampleMetadata.Receive()
+			if err != nil {
+				worker_handle.state = worker_done
+				return
+			}
+			worker_handle.state = worker_running
 
 			// Cast the item to fetch to the correct type
 			filesystem_sample, ok := item_to_fetch.(fsSampleMetadata)
@@ -47,21 +50,13 @@ func (b BackendFileSystem) collectSamples(chanSampleMetadata chan SampleDataPoin
 				panic("Failed to cast the item to fetch to dbSampleMetadata. This worker is probably misconfigured")
 			}
 
-			sample := loadSample(b.config, filesystem_sample, transform, pre_encode_images)
+			sample := loadSample(filesystem_sample, transform, encodeImages)
 			if sample != nil {
-				chanSamples <- *sample
+				outputSamples.Send(*sample)
 			}
 		}
 	}
 
-	// Start the workers and work on the metadata channel
-	for i := 0; i < b.concurrency; i++ {
-		go sampleWorker()
-	}
-
-	// Wait for all the workers to be done or overall context to be cancelled
-	for i := 0; i < b.concurrency; i++ {
-		<-ack_channel
-	}
-	close(chanSamples)
+	run_worker_pool(sampleWorker, inputSampleMetadata, outputSamples)
+	outputSamples.Close()
 }

@@ -56,9 +56,8 @@ type DatagoConfig struct {
 	SourceType         DatagoSourceType     `json:"source_type"`
 	SourceConfig       interface{}          `json:"source_config"`
 	ImageConfig        ImageTransformConfig `json:"image_config"`
-	PrefetchBufferSize int                  `json:"prefetch_buffer_size"`
-	SamplesBufferSize  int                  `json:"samples_buffer_size"`
-	Concurrency        int                  `json:"concurrency"`
+	PrefetchBufferSize int32                `json:"prefetch_buffer_size"`
+	SamplesBufferSize  int32                `json:"samples_buffer_size"`
 	Limit              int                  `json:"limit"`
 }
 
@@ -70,7 +69,6 @@ func (c *DatagoConfig) setDefaults() {
 	c.ImageConfig.setDefaults()
 	c.PrefetchBufferSize = 64
 	c.SamplesBufferSize = 32
-	c.Concurrency = 64
 	c.Limit = 0
 }
 
@@ -131,9 +129,8 @@ func DatagoConfigFromJSON(jsonString string) DatagoConfig {
 		log.Panicf("Error unmarshalling Image config: %v", err)
 	}
 
-	config.PrefetchBufferSize = int(tempConfig["prefetch_buffer_size"].(float64))
-	config.SamplesBufferSize = int(tempConfig["samples_buffer_size"].(float64))
-	config.Concurrency = int(tempConfig["concurrency"].(float64))
+	config.PrefetchBufferSize = int32(tempConfig["prefetch_buffer_size"].(float64))
+	config.SamplesBufferSize = int32(tempConfig["samples_buffer_size"].(float64))
 	if err != nil {
 		log.Panicf("Error unmarshalling JSON: %v", err)
 	}
@@ -155,9 +152,9 @@ type DatagoClient struct {
 	backend   Backend
 
 	// Channels	- these will be used to communicate between the background goroutines
-	chanPages          chan Pages
-	chanSampleMetadata chan SampleDataPointers
-	chanSamples        chan Sample
+	chanPages          BufferedChan[Pages]
+	chanSampleMetadata BufferedChan[SampleDataPointers]
+	chanSamples        BufferedChan[Sample]
 }
 
 // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -187,13 +184,13 @@ func GetClient(config DatagoConfig) *DatagoClient {
 		if err != nil {
 			return nil
 		} else {
-			backend = BackendHTTP{config: &dbConfig, concurrency: config.Concurrency}
+			backend = BackendHTTP{config: &dbConfig}
 		}
 	case SourceFileSystemConfig:
 		fmt.Println("Creating a FileSystem-backed dataloader.", config.Limit, " max samples")
 		fsConfig := config.SourceConfig.(SourceFileSystemConfig)
 		generator = newDatagoGeneratorFileSystem(fsConfig)
-		backend = BackendFileSystem{config: &config, concurrency: config.Concurrency}
+		backend = BackendFileSystem{config: &config}
 	default:
 		fmt.Println("Unsupported source type")
 		log.Panic("Unsupported source type")
@@ -201,9 +198,9 @@ func GetClient(config DatagoConfig) *DatagoClient {
 
 	// Create the client
 	client := &DatagoClient{
-		chanPages:          make(chan Pages, 2),
-		chanSampleMetadata: make(chan SampleDataPointers, config.PrefetchBufferSize),
-		chanSamples:        make(chan Sample, config.SamplesBufferSize),
+		chanPages:          NewBufferedChan[Pages](2),
+		chanSampleMetadata: NewBufferedChan[SampleDataPointers](config.PrefetchBufferSize),
+		chanSamples:        NewBufferedChan[Sample](config.SamplesBufferSize),
 		imageConfig:        config.ImageConfig,
 		servedSamples:      0,
 		limit:              config.Limit,
@@ -264,7 +261,7 @@ func (c *DatagoClient) Start() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.generator.generatePages(c.context, c.chanPages) // Collect the root data source pages
+		c.generator.generatePages(c.context, &c.chanPages) // Collect the root data source pages
 	}()
 
 	wg.Add(1)
@@ -276,7 +273,7 @@ func (c *DatagoClient) Start() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.backend.collectSamples(c.chanSampleMetadata, c.chanSamples, arAwareTransform, c.imageConfig.PreEncodeImages) // Fetch the payloads and and deserialize them
+		c.backend.collectSamples(&c.chanSampleMetadata, &c.chanSamples, arAwareTransform, c.imageConfig.PreEncodeImages) // Fetch the payloads and and deserialize them
 	}()
 
 	c.waitGroup = &wg
@@ -296,7 +293,8 @@ func (c *DatagoClient) GetSample() Sample {
 		return Sample{}
 	}
 
-	if sample, ok := <-c.chanSamples; ok {
+	sample, err := c.chanSamples.Receive()
+	if err == nil {
 		c.servedSamples++
 		return sample
 	}
@@ -307,18 +305,16 @@ func (c *DatagoClient) GetSample() Sample {
 
 // Stop the background downloads, will clear the memory and CPU footprint
 func (c *DatagoClient) Stop() {
-	fmt.Println("Stopping the datago client")
 
 	// Signal the coroutines that next round should be a stop
 	if c.cancel == nil {
 		return // Already stopped
 	}
+	fmt.Println("Stopping the datago client. Emptying buffers and cancelling ongoing tasks")
 	c.cancel()
-
-	// Clear the channels, in case a commit is blocking
-	go consumeChannel(c.chanPages)
-	go consumeChannel(c.chanSampleMetadata)
-	go consumeChannel(c.chanSamples)
+	c.chanPages.Empty()
+	c.chanSampleMetadata.Empty()
+	c.chanSamples.Empty()
 
 	// Wait for all goroutines to finish
 	if c.waitGroup != nil {
@@ -336,25 +332,25 @@ func (c *DatagoClient) Stop() {
 func (c *DatagoClient) asyncDispatch() {
 	// Break down the page results and maintain a list of individual items to be processed
 
+	defer c.chanSampleMetadata.Close()
+
 	for {
 		select {
 		case <-c.context.Done():
-			close(c.chanSampleMetadata)
 			return
-		case page, open := <-c.chanPages:
-			if !open {
+		default:
+			page, err := c.chanPages.Receive()
+			if err != nil {
 				fmt.Println("No more metadata to fetch, wrapping up")
-				close(c.chanSampleMetadata)
 				return
 			}
 
 			for _, item := range page.samplesDataPointers {
 				select {
 				case <-c.context.Done():
-					close(c.chanSampleMetadata)
 					return
-				case c.chanSampleMetadata <- item:
-					// Item sent to the channel
+				default:
+					c.chanSampleMetadata.Send(item)
 				}
 			}
 		}

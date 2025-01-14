@@ -14,7 +14,6 @@ def benchmark(
     crop_and_resize: bool = typer.Option(
         True, help="Crop and resize the images on the fly"
     ),
-    concurrency: int = typer.Option(64, help="The number of coroutines"),
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
 ):
     print(f"Running benchmark for {root_path} - {limit} samples")
@@ -34,9 +33,8 @@ def benchmark(
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
         },
-        "prefetch_buffer_size": concurrency * 2,
-        "samples_buffer_size": concurrency * 2,
-        "concurrency": concurrency,
+        "prefetch_buffer_size": 128,
+        "samples_buffer_size": 64,
         "limit": limit,
     }
 

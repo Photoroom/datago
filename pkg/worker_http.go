@@ -6,24 +6,23 @@ import (
 )
 
 type BackendHTTP struct {
-	config      *SourceDBConfig
-	concurrency int
+	config *SourceDBConfig
 }
 
-func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, pre_encode_images bool) {
+func (b BackendHTTP) collectSamples(inputSampleMetadata *BufferedChan[SampleDataPointers], outputSamples *BufferedChan[Sample], transform *ARAwareTransform, encodeImages bool) {
 
-	ack_channel := make(chan bool)
-
-	sampleWorker := func() {
-		// One HHTP client per goroutine, make sure we don't run into racing conditions when renewing
+	sampleWorker := func(worker_handle *worker) {
+		// One HHTP client per goroutine, make sure we don't run into race conditions when renewing
 		http_client := http.Client{Timeout: 30 * time.Second}
 
 		for {
-			item_to_fetch, open := <-chanSampleMetadata
-			if !open {
-				ack_channel <- true
+			worker_handle.state = worker_idle
+			item_to_fetch, err := inputSampleMetadata.Receive()
+			if err != nil {
+				worker_handle.state = worker_done
 				return
 			}
+			worker_handle.state = worker_running
 
 			// Cast the item to fetch to the correct type
 			http_sample, ok := item_to_fetch.(dbSampleMetadata)
@@ -31,21 +30,13 @@ func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, 
 				panic("Failed to cast the item to fetch to dbSampleMetadata. This worker is probably misconfigured")
 			}
 
-			sample := fetchSample(b.config, &http_client, http_sample, transform, pre_encode_images)
+			sample := fetchSample(b.config, &http_client, http_sample, transform, encodeImages)
 			if sample != nil {
-				chanSamples <- *sample
+				outputSamples.Send(*sample)
 			}
 		}
 	}
 
-	// Start the workers and work on the metadata channel
-	for i := 0; i < b.concurrency; i++ {
-		go sampleWorker()
-	}
-
-	// Wait for all the workers to be done or overall context to be cancelled
-	for i := 0; i < b.concurrency; i++ {
-		<-ack_channel
-	}
-	close(chanSamples)
+	run_worker_pool(sampleWorker, inputSampleMetadata, outputSamples)
+	outputSamples.Close()
 }
