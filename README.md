@@ -50,7 +50,6 @@ client_config = {
     # some performance options, best settings will depend on your machine
     "prefetch_buffer_size": 64,
     "samples_buffer_size": 128,
-    "concurrency": concurrency,
 }
 
 client = datago.GetClientFromJSON(json.dumps(config)) # Will return None if something goes wrong, check the logs

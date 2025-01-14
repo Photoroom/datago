@@ -1,6 +1,50 @@
 package datago
 
-import "context"
+import (
+	"context"
+	"sync/atomic"
+)
+
+type BufferedChan[T any] struct {
+	_channel      chan T
+	current_items int32
+	max_items     int32
+	open          bool
+}
+
+// --- Simple buffered channel implementation ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Make it possible to track the current channel status from the outside
+
+func NewBufferedChan[T any](max_items int32) BufferedChan[T] {
+	return BufferedChan[T]{_channel: make(chan T, max_items), current_items: 0, max_items: max_items, open: true}
+}
+
+func (b *BufferedChan[T]) Send(item T) {
+	b._channel <- item
+
+	// Small perf hit, not sure it's worth it
+	atomic.AddInt32(&b.current_items, 1)
+}
+
+func (b *BufferedChan[T]) Receive() (T, bool) {
+	item, open := <-b._channel
+	if !open {
+		return item, false
+	}
+
+	// Small perf hit, not sure it's worth it
+	atomic.AddInt32(&b.current_items, -1)
+	return item, true
+}
+
+func (b *BufferedChan[T]) Empty() {
+	consumeChannel(b._channel)
+}
+
+func (b *BufferedChan[T]) Close() {
+	close(b._channel)
+	b.open = false
+}
 
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 type LatentPayload struct {
@@ -43,10 +87,10 @@ type Pages struct {
 }
 
 type Generator interface {
-	generatePages(ctx context.Context, chanPages chan Pages)
+	generatePages(ctx context.Context, chanPages *BufferedChan[Pages])
 }
 
 // The backend will be responsible for fetching the payloads and deserializing them
 type Backend interface {
-	collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, pre_encode_images bool)
+	collectSamples(inputSampleMetadata *BufferedChan[SampleDataPointers], outputSamples *BufferedChan[Sample], transform *ARAwareTransform, encodeImages bool)
 }

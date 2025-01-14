@@ -66,30 +66,35 @@ func hash(s string) int {
 	return int(h[0]) // Convert the first byte of the hash to an integer
 }
 
-func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages chan Pages) {
+func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages *BufferedChan[Pages]) {
 	// Walk over the directory and feed the results to the items channel
 	// This is meant to be run in a goroutine
 
 	var samples []SampleDataPointers
 
 	err := filepath.Walk(f.config.RootPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if !info.IsDir() && f.extensions.Contains(filepath.Ext(path)) {
-			if f.config.WorldSize > 1 && hash(path)%f.config.WorldSize != f.config.Rank || f.config.WorldSize == 1 {
-				new_sample := fsSampleMetadata{FilePath: path, FileName: info.Name()}
-				samples = append(samples, SampleDataPointers(new_sample))
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			if err != nil {
+				return err
 			}
-		}
 
-		// Check if we have enough files to send a page
-		if len(samples) >= f.config.PageSize {
-			chanPages <- Pages{samples}
-			samples = nil
+			if !info.IsDir() && f.extensions.Contains(filepath.Ext(path)) {
+				if f.config.WorldSize > 1 && hash(path)%f.config.WorldSize != f.config.Rank || f.config.WorldSize == 1 {
+					new_sample := fsSampleMetadata{FilePath: path, FileName: info.Name()}
+					samples = append(samples, SampleDataPointers(new_sample))
+				}
+			}
+
+			// Check if we have enough files to send a page
+			if len(samples) >= f.config.PageSize && chanPages.open {
+				chanPages.Send(Pages{samples})
+				samples = nil
+			}
+			return nil
 		}
-		return nil
 	})
 
 	if err != nil {
@@ -97,10 +102,9 @@ func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages 
 		panic(err)
 	} else {
 		// Send the last page
-		if len(samples) > 0 {
-			chanPages <- Pages{samples}
+		if len(samples) > 0 && chanPages.open {
+			chanPages.Send(Pages{samples})
 		}
 	}
-
-	close(chanPages)
+	chanPages.Close()
 }

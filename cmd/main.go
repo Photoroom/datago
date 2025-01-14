@@ -13,7 +13,6 @@ import (
 func main() {
 
 	cropAndResize := flag.Bool("crop_and_resize", false, "Whether to crop and resize the images and masks")
-	concurrency := flag.Int("concurrency", 64, "The number of concurrent http requests to make")
 	itemFetchBuffer := flag.Int("item_fetch_buffer", 256, "The number of items to pre-load")
 	itemReadyBuffer := flag.Int("item_ready_buffer", 128, "The number of items ready to be served")
 	limit := flag.Int("limit", 2000, "The number of items to fetch")
@@ -36,9 +35,8 @@ func main() {
 		CropAndResize:     *cropAndResize,
 	}
 	config.SourceConfig = sourceConfig
-	config.Concurrency = *concurrency
-	config.PrefetchBufferSize = *itemFetchBuffer
-	config.SamplesBufferSize = *itemReadyBuffer
+	config.PrefetchBufferSize = int32(*itemFetchBuffer)
+	config.SamplesBufferSize = int32(*itemReadyBuffer)
 	config.Limit = *limit
 
 	dataroom_client := datago.GetClient(config)

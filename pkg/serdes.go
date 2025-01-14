@@ -114,7 +114,7 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspect_ratio fl
 		bit_depth = len(img_bytes) / (width * height * channels) * 8 // 8 bits per byte
 	}
 
-	if bit_depth == 0 && !pre_encode_image {
+	if bit_depth == 0 && !transform.PreEncodeImages {
 		panic("Bit depth not set")
 	}
 
