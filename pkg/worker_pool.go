@@ -13,14 +13,6 @@ const (
 	worker_done
 )
 
-// Define a custom max function
-func max(a, b int32) int32 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // Define a stateful worker struct which will be spawned by the worker pool
 type worker struct {
 	state worker_state // Allows us to track the state of the worker, useful for debugging or dynamic provisioning
