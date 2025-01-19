@@ -1,6 +1,8 @@
 package datago
 
-import "context"
+import (
+	"context"
+)
 
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 type LatentPayload struct {
@@ -48,5 +50,5 @@ type Generator interface {
 
 // The backend will be responsible for fetching the payloads and deserializing them
 type Backend interface {
-	collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, pre_encode_images bool)
+	collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, encodeImages bool)
 }

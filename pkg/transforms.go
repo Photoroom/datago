@@ -25,6 +25,7 @@ type ARAwareTransform struct {
 	maxAspectRatio    float64
 	targetImageSizes  []ImageSize // list of [width, height] pairs
 	aspectRatioToSize map[float64]ImageSize
+	PreEncodeImages   bool
 }
 
 func buildImageSizeList(defaultImageSize int, downsamplingRatio int, minAspectRatio float64, maxAspectRatio float64) []ImageSize {

@@ -6,24 +6,24 @@ import (
 )
 
 type BackendHTTP struct {
-	config      *SourceDBConfig
-	concurrency int
+	config *SourceDBConfig
 }
 
-func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, pre_encode_images bool) {
+func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, chanSamples chan Sample, transform *ARAwareTransform, encodeImages bool) {
 
-	ack_channel := make(chan bool)
+	sampleWorker := func(worker_handle *worker) {
+		defer worker_handle.stop()
 
-	sampleWorker := func() {
-		// One HHTP client per goroutine, make sure we don't run into racing conditions when renewing
+		// One HHTP client per goroutine, make sure we don't run into race conditions when renewing
 		http_client := http.Client{Timeout: 30 * time.Second}
 
 		for {
+			worker_handle.state = worker_idle
 			item_to_fetch, open := <-chanSampleMetadata
 			if !open {
-				ack_channel <- true
 				return
 			}
+			worker_handle.state = worker_running
 
 			// Cast the item to fetch to the correct type
 			http_sample, ok := item_to_fetch.(dbSampleMetadata)
@@ -31,21 +31,13 @@ func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, 
 				panic("Failed to cast the item to fetch to dbSampleMetadata. This worker is probably misconfigured")
 			}
 
-			sample := fetchSample(b.config, &http_client, http_sample, transform, pre_encode_images)
+			sample := fetchSample(b.config, &http_client, http_sample, transform, encodeImages)
 			if sample != nil {
 				chanSamples <- *sample
 			}
 		}
 	}
 
-	// Start the workers and work on the metadata channel
-	for i := 0; i < b.concurrency; i++ {
-		go sampleWorker()
-	}
-
-	// Wait for all the workers to be done or overall context to be cancelled
-	for i := 0; i < b.concurrency; i++ {
-		<-ack_channel
-	}
-	close(chanSamples)
+	defer close(chanSamples)
+	runWorkerPool(sampleWorker)
 }

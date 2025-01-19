@@ -87,7 +87,6 @@ if __name__ == "__main__":
         },
         "prefetch_buffer_size": 64,
         "samples_buffer_size": 128,
-        "concurrency": 1,
         "limit": 10,
     }
     dataset = DatagoIterDataset(client_config)

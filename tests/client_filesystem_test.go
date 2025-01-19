@@ -9,16 +9,14 @@ import (
 	"math/rand"
 	"os"
 	"testing"
-	"time"
 )
 
 // Function to generate and save a random image
 func generateRandomImage(width, height int, filename string) error {
+	// Note that rand.Seed() is not required to get real random numbers
+
 	// Create a new RGBA image
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
-
-	// Seed the random number generator
-	rand.Seed(time.Now().UnixNano())
 
 	// Fill the image with random colors
 	for y := 0; y < height; y++ {

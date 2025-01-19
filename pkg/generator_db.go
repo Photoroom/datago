@@ -277,6 +277,8 @@ func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pag
 		return &data, nil
 	}
 
+	defer close(chanPages)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -310,7 +312,6 @@ func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pag
 				// Check if there are more pages to fetch
 				if data.Next == "" {
 					fmt.Println("No more pages to fetch, wrapping up")
-					close(chanPages)
 					return
 				}
 
@@ -328,7 +329,6 @@ func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pag
 			// Check if we consumed all the retries
 			if !valid_page {
 				fmt.Println("Too many errors fetching new pages, wrapping up")
-				close(chanPages)
 				return
 			}
 		}

@@ -35,7 +35,6 @@ def get_json_config():
         },
         "prefetch_buffer_size": 64,
         "samples_buffer_size": 128,
-        "concurrency": 1,
         "limit": 10,
     }
     return client_config
@@ -87,9 +86,9 @@ def test_caption_and_image():
         assert (
             go_array_to_pil_image(sample.AdditionalImages["masked_image"]).mode == "RGB"
         ), "Image should be RGB"
-        assert (
-            go_array_to_pil_image(sample.Masks["segmentation_mask"]).mode == "L"
-        ), "Mask should be L"
+        assert go_array_to_pil_image(sample.Masks["segmentation_mask"]).mode == "L", (
+            "Mask should be L"
+        )
 
         if i > N_SAMPLES:
             break
@@ -150,14 +149,14 @@ def no_test_jpg_compression():
     assert (
         go_array_to_pil_image(sample.AdditionalImages["masked_image"]).mode == "RGB"
     ), "Image should be RGB"
-    assert (
-        go_array_to_pil_image(sample.Masks["segmentation_mask"]).mode == "L"
-    ), "Mask should be L"
+    assert go_array_to_pil_image(sample.Masks["segmentation_mask"]).mode == "L", (
+        "Mask should be L"
+    )
 
     # Check the embeddings decoding
-    assert (
-        go_array_to_numpy(sample.CocaEmbedding) is not None
-    ), "Embedding should be set"
+    assert go_array_to_numpy(sample.CocaEmbedding) is not None, (
+        "Embedding should be set"
+    )
 
 
 def test_original_image():
@@ -173,9 +172,9 @@ def test_original_image():
     assert (
         go_array_to_pil_image(sample.AdditionalImages["masked_image"]).mode == "RGB"
     ), "Image should be RGB"
-    assert (
-        go_array_to_pil_image(sample.Masks["segmentation_mask"]).mode == "L"
-    ), "Mask should be L"
+    assert go_array_to_pil_image(sample.Masks["segmentation_mask"]).mode == "L", (
+        "Mask should be L"
+    )
 
 
 def test_duplicate_state():
