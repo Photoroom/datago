@@ -162,6 +162,10 @@ type DatagoClient struct {
 // GetClient is a constructor for the DatagoClient, given a JSON configuration string
 func GetClient(config DatagoConfig) *DatagoClient {
 	// Initialize the vips library
+	err := os.Setenv("VIPS_DISC_THRESHOLD", "5g")
+	if err != nil {
+		log.Panicf("Error setting VIPS_DISC_THRESHOLD: %v", err)
+	}
 	vips.LoggingSettings(nil, vips.LogLevelWarning)
 	vips.Startup(nil)
 
