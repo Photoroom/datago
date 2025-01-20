@@ -15,7 +15,7 @@ const (
 
 // Define a stateful worker struct which will be spawned by the worker pool
 type worker struct {
-	state worker_state // Allows us to track the state of the worker, useful for debugging or dynamic provisioning
+	state workerState // Allows us to track the state of the worker, useful for debugging or dynamic provisioning
 	done  chan bool
 }
 

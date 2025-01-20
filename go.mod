@@ -1,6 +1,8 @@
 module datago
 
-go 1.23.0
+go 1.22.0
+
+toolchain go1.22.2
 
 require (
 	github.com/davidbyttow/govips/v2 v2.16.0
@@ -11,5 +13,5 @@ require (
 require (
 	golang.org/x/image v0.18.0 // indirect
 	golang.org/x/net v0.33.0 // indirect
-	golang.org/x/text v0.16.0 // indirect
+	golang.org/x/text v0.21.0 // indirect
 )
