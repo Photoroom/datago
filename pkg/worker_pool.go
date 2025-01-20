@@ -5,12 +5,12 @@ import (
 )
 
 // Define an enum which will be used to track the state of the worker
-type worker_state int
+type workerState int
 
 const (
-	worker_idle worker_state = iota
-	worker_running
-	worker_done
+	workerStateIdle workerState = iota
+	workerStateRunning
+	workerStateDone
 )
 
 // Define a stateful worker struct which will be spawned by the worker pool
@@ -20,7 +20,7 @@ type worker struct {
 }
 
 func (w *worker) stop() {
-	w.state = worker_done
+	w.state = workerStateDone
 	w.done <- true
 }
 
@@ -28,13 +28,13 @@ func (w *worker) stop() {
 func runWorkerPool(sampleWorker func(*worker)) {
 	// Shall we just use pond here ?
 	// https://github.com/alitto/pond
-	worker_pool_size := runtime.NumCPU()
+	poolSize := runtime.NumCPU()
 
 	// Start the workers and work on the metadata channel
 	var workers []*worker
 
-	for i := 0; i < worker_pool_size; i++ {
-		newWorker := worker{state: worker_idle, done: make(chan bool)}
+	for i := 0; i < poolSize; i++ {
+		newWorker := worker{state: workerStateIdle, done: make(chan bool)}
 		workers = append(workers, &newWorker)
 		go sampleWorker(&newWorker)
 	}

@@ -94,7 +94,7 @@ type SourceDBConfig struct {
 	HasLatents        string `json:"has_latents"`
 	LacksLatents      string `json:"lacks_latents"`
 
-	ReturnLatents        string `json:"return_latents"`
+	ReturnLatents        string `json:"returnLatents"`
 	ReturnDuplicateState bool   `json:"return_duplicate_state"`
 
 	MinShortEdge  int `json:"min_short_edge"`
@@ -341,9 +341,9 @@ func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Req
 	} else {
 		api_url += "images/"
 	}
-	request_url, _ := http.NewRequest("GET", api_url, nil)
-	request_url.Header.Add("Authorization", "Token  "+api_key)
-	req := request_url.URL.Query()
+	requestURL, _ := http.NewRequest("GET", api_url, nil)
+	requestURL.Header.Add("Authorization", "Token  "+api_key)
+	req := requestURL.URL.Query()
 
 	maybeAddField := func(req *url.Values, field string, value string) {
 		if value != "" {
@@ -352,9 +352,9 @@ func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Req
 	}
 
 	// Limit the returned latents to the ones we asked for
-	return_latents := request.hasLatents
+	returnLatents := request.hasLatents
 	if request.hasMasks != "" {
-		return_latents += "," + request.hasMasks
+		returnLatents += "," + request.hasMasks
 	}
 
 	maybeAddField(&req, "fields", request.fields)
@@ -373,7 +373,7 @@ func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Req
 
 	maybeAddField(&req, "has_latents", request.hasLatents)
 	maybeAddField(&req, "lacks_latents", request.lacksLatents)
-	maybeAddField(&req, "return_latents", return_latents)
+	maybeAddField(&req, "returnLatents", returnLatents)
 
 	maybeAddField(&req, "short_edge__gte", request.minShortEdge)
 	maybeAddField(&req, "short_edge__lte", request.maxShortEdge)
@@ -385,8 +385,8 @@ func getHTTPRequest(api_url string, api_key string, request dbRequest) *http.Req
 	maybeAddField(&req, "partitions_count", request.partitionsCount)
 	maybeAddField(&req, "partition", request.partition)
 
-	request_url.URL.RawQuery = req.Encode()
-	fmt.Println("Request URL:", request_url.URL.String())
+	requestURL.URL.RawQuery = req.Encode()
+	fmt.Println("Request URL:", requestURL.URL.String())
 	fmt.Println()
-	return request_url
+	return requestURL
 }

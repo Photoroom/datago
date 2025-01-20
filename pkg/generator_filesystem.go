@@ -43,9 +43,9 @@ type datagoGeneratorFileSystem struct {
 }
 
 func newDatagoGeneratorFileSystem(config SourceFileSystemConfig) datagoGeneratorFileSystem {
-	supported_img_extensions := []string{".jpg", ".jpeg", ".png", ".JPEG", ".JPG", ".PNG"}
+	supportedImgExtensions := []string{".jpg", ".jpeg", ".png", ".JPEG", ".JPG", ".PNG"}
 	var extensionsMap = make(set)
-	for _, ext := range supported_img_extensions {
+	for _, ext := range supportedImgExtensions {
 		extensionsMap.Add(ext)
 	}
 
@@ -54,7 +54,7 @@ func newDatagoGeneratorFileSystem(config SourceFileSystemConfig) datagoGenerator
 	}
 
 	fmt.Println("File system root directory", config.RootPath)
-	fmt.Println("Supported image extensions", supported_img_extensions)
+	fmt.Println("Supported image extensions", supportedImgExtensions)
 	fmt.Println("Rank and World Size", config.Rank, config.WorldSize)
 
 	return datagoGeneratorFileSystem{config: config, extensions: extensionsMap}
@@ -84,8 +84,7 @@ func (f datagoGeneratorFileSystem) generatePages(ctx context.Context, chanPages 
 
 			if !info.IsDir() && f.extensions.Contains(filepath.Ext(path)) {
 				if f.config.WorldSize > 1 && hash(path)%f.config.WorldSize != f.config.Rank || f.config.WorldSize == 1 {
-					new_sample := fsSampleMetadata{FilePath: path, FileName: info.Name()}
-					samples = append(samples, SampleDataPointers(new_sample))
+					samples = append(samples, SampleDataPointers(fsSampleMetadata{FilePath: path, FileName: info.Name()}))
 				}
 			}
 

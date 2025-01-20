@@ -29,37 +29,37 @@ type ARAwareTransform struct {
 }
 
 func buildImageSizeList(defaultImageSize int, downsamplingRatio int, minAspectRatio float64, maxAspectRatio float64) []ImageSize {
-	patch_size := defaultImageSize / downsamplingRatio
-	patch_size_sq := float64(patch_size * patch_size)
-	var image_list []ImageSize
+	patchSize := defaultImageSize / downsamplingRatio
+	patchSizeSq := float64(patchSize * patchSize)
+	var imgSizes []ImageSize
 
-	min_patch_w := int(math.Ceil(patch_size_sq * minAspectRatio))
-	max_patch_w := int(math.Floor(patch_size_sq * maxAspectRatio))
+	minPatchW := int(math.Ceil(patchSizeSq * minAspectRatio))
+	maxPatchW := int(math.Floor(patchSizeSq * maxAspectRatio))
 
-	for patch_w := min_patch_w; patch_w <= max_patch_w; patch_w++ { // go over all possible downsampled image widths
-		patch_h := int(math.Floor(patch_size_sq / float64(patch_w))) // get max height
-		img_w, img_h := patch_w*downsamplingRatio, patch_h*downsamplingRatio
-		image_list = append(image_list, ImageSize{img_w, img_h})
+	for patchW := minPatchW; patchW <= maxPatchW; patchW++ { // go over all possible downsampled image widths
+		patchH := int(math.Floor(patchSizeSq / float64(patchW))) // get max height
+		imgW, imgH := patchW*downsamplingRatio, patchH*downsamplingRatio
+		imgSizes = append(imgSizes, ImageSize{imgW, imgH})
 	}
 
-	min_patch_h := int(math.Ceil(math.Sqrt(patch_size_sq * 1.0 / maxAspectRatio)))
-	max_patch_h := int(math.Floor(math.Sqrt(patch_size_sq * 1.0 / minAspectRatio)))
-	for patch_h := min_patch_h; patch_h <= max_patch_h; patch_h++ { // go over all possible downsampled image heights
-		patch_w := int(math.Floor(patch_size_sq / float64(patch_h))) // get max width
-		img_w, img_h := patch_w*downsamplingRatio, patch_h*downsamplingRatio
-		image_list = append(image_list, ImageSize{img_w, img_h})
+	minPatchH := int(math.Ceil(math.Sqrt(patchSizeSq * 1.0 / maxAspectRatio)))
+	maxPatchH := int(math.Floor(math.Sqrt(patchSizeSq * 1.0 / minAspectRatio)))
+	for patchH := minPatchH; patchH <= maxPatchH; patchH++ { // go over all possible downsampled image heights
+		patchW := int(math.Floor(patchSizeSq / float64(patchH))) // get max width
+		imgW, imgH := patchW*downsamplingRatio, patchH*downsamplingRatio
+		imgSizes = append(imgSizes, ImageSize{imgW, imgH})
 	}
 
-	return image_list
+	return imgSizes
 }
 
 func newARAwareTransform(imageConfig ImageTransformConfig) *ARAwareTransform {
 	// Build the image size list
-	image_list := buildImageSizeList(imageConfig.DefaultImageSize, imageConfig.DownsamplingRatio, imageConfig.MinAspectRatio, imageConfig.MaxAspectRatio)
+	imgSizes := buildImageSizeList(imageConfig.DefaultImageSize, imageConfig.DownsamplingRatio, imageConfig.MinAspectRatio, imageConfig.MaxAspectRatio)
 
 	// Fill in the map table to match aspect ratios and image sizes
 	aspectRatioToSize := make(map[float64]ImageSize)
-	for _, size := range image_list {
+	for _, size := range imgSizes {
 		aspectRatioToSize[size.AspectRatio()] = size
 	}
 
@@ -69,7 +69,7 @@ func newARAwareTransform(imageConfig ImageTransformConfig) *ARAwareTransform {
 		downsamplingRatio: imageConfig.DownsamplingRatio,
 		minAspectRatio:    imageConfig.MinAspectRatio,
 		maxAspectRatio:    imageConfig.MaxAspectRatio,
-		targetImageSizes:  image_list,
+		targetImageSizes:  imgSizes,
 		aspectRatioToSize: aspectRatioToSize,
 	}
 }
