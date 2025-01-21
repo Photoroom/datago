@@ -169,6 +169,10 @@ func GetClient(config DatagoConfig) *DatagoClient {
 	vips.LoggingSettings(nil, vips.LogLevelWarning)
 	vips.Startup(nil)
 
+	// Make sure that the GC is run more often than usual
+	// VIPS will allocate a lot of memory and we want to make sure that it's released as soon as possible
+	os.Setenv("GOGC", "10") // Default is 100, we're running it when heap is 10% larger than the last GC
+
 	// Create the generator and backend
 	var generator Generator
 	var backend Backend
