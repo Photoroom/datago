@@ -118,6 +118,9 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspectRatio flo
 		panic("Bit depth not set")
 	}
 
+	// Release the vips image, will free underlying buffers without having to resort to the GC
+	img.Close()
+
 	imgPayload := ImagePayload{
 		Data:           imgBytes,
 		OriginalHeight: originalHeight,

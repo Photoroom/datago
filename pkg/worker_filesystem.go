@@ -10,7 +10,7 @@ type BackendFileSystem struct {
 	config *DatagoConfig
 }
 
-func loadSample(fsSample fsSampleMetadata, transform *ARAwareTransform, encodeImage bool) *Sample {
+func loadFromDisk(fsSample fsSampleMetadata, transform *ARAwareTransform, encodeImage bool) *Sample {
 	// Using mmap to put the file directly into memory, removes buffering needs
 	r, err := mmap.Open(fsSample.FilePath)
 	if err != nil {
@@ -55,7 +55,7 @@ func (b BackendFileSystem) collectSamples(chanSampleMetadata chan SampleDataPoin
 				panic("Failed to cast the item to fetch to dbSampleMetadata. This worker is probably misconfigured")
 			}
 
-			sample := loadSample(fsSample, transform, encodeImages)
+			sample := loadFromDisk(fsSample, transform, encodeImages)
 			if sample != nil {
 				chanSamples <- *sample
 			}
