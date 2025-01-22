@@ -1,11 +1,10 @@
 module datago
 
-go 1.22.0
-
-toolchain go1.22.2
+go 1.18
 
 require (
 	github.com/davidbyttow/govips/v2 v2.16.0
+	github.com/go-python/gopy v0.4.10
 	go.uber.org/automaxprocs v1.6.0
 	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8
 )
