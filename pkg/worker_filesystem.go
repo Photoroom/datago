@@ -2,8 +2,7 @@ package datago
 
 import (
 	"fmt"
-
-	"golang.org/x/exp/mmap"
+	"os"
 )
 
 type BackendFileSystem struct {
@@ -11,17 +10,25 @@ type BackendFileSystem struct {
 }
 
 func loadFromDisk(fsSample fsSampleMetadata, transform *ARAwareTransform, encodeImage bool) *Sample {
-	// Using mmap to put the file directly into memory, removes buffering needs
-	r, err := mmap.Open(fsSample.FilePath)
+	// Load the file into []bytes
+	bytesBuffer, err := os.ReadFile(fsSample.FilePath)
 	if err != nil {
-		panic(err)
+		fmt.Println("Error reading file:", fsSample.FilePath)
+		return nil
 	}
 
-	bytesBuffer := make([]byte, r.Len())
-	_, err = r.ReadAt(bytesBuffer, 0)
-	if err != nil {
-		panic(err)
-	}
+	// Slightly faster take, requires Go 1.21+ which breaks gopy speed for now
+	// // Using mmap to put the file directly into memory, removes buffering needs
+	// r, err := mmap.Open(fsSample.FilePath)
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// bytesBuffer := make([]byte, r.Len())
+	// _, err = r.ReadAt(bytesBuffer, 0)
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	// Decode the image, can error out here also, and return the sample
 	imgPayload, _, err := imageFromBuffer(bytesBuffer, transform, -1., encodeImage, false)
