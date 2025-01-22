@@ -161,6 +161,10 @@ type DatagoClient struct {
 
 // GetClient is a constructor for the DatagoClient, given a JSON configuration string
 func GetClient(config DatagoConfig) *DatagoClient {
+	// Make sure that the GC is run more often than usual
+	// VIPS will allocate a lot of memory and we want to make sure that it's released as soon as possible
+	os.Setenv("GOGC", "10") // Default is 100, we're running it when heap is 10% larger than the last GC
+
 	// Initialize the vips library
 	err := os.Setenv("VIPS_DISC_THRESHOLD", "5g")
 	if err != nil {
@@ -309,11 +313,11 @@ func (c *DatagoClient) GetSample() Sample {
 
 // Stop the background downloads, will clear the memory and CPU footprint
 func (c *DatagoClient) Stop() {
-
 	// Signal the coroutines that next round should be a stop
 	if c.cancel == nil {
 		return // Already stopped
 	}
+
 	fmt.Println("Stopping the datago client. Emptying buffers and cancelling ongoing tasks")
 	c.cancel()
 	consumeChannel(c.chanPages)

@@ -259,7 +259,12 @@ func (f datagoGeneratorDB) generatePages(ctx context.Context, chanPages chan Pag
 			return nil, fmt.Errorf("error fetching page: %s", resp.Status)
 		}
 
-		defer resp.Body.Close()
+		defer func() {
+			err := resp.Body.Close()
+			if err != nil {
+				fmt.Print(err)
+			}
+		}()
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
