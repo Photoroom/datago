@@ -24,7 +24,7 @@ def benchmark(
     client_config.ImageConfig.CropAndResize = crop_and_resize
 
     # Specify the source parameters as you see fit
-    source_config = datago.GetSourceDBConfig()
+    source_config = datago.GetDefaultSourceDBConfig()
     source_config.Sources = source
     source_config.RequireImages = require_images
     source_config.RequireEmbeddings = require_embeddings

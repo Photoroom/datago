@@ -31,7 +31,7 @@ func (c *SourceFileSystemConfig) setDefaults() {
 	c.RootPath = os.Getenv("DATAGO_TEST_FILESYSTEM")
 }
 
-func GetSourceFileSystemConfig() SourceFileSystemConfig {
+func GetDefaultSourceFileSystemConfig() SourceFileSystemConfig {
 	config := SourceFileSystemConfig{}
 	config.setDefaults()
 	return config

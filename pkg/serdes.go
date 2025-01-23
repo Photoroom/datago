@@ -38,27 +38,13 @@ func readBodyBuffered(resp *http.Response) ([]byte, error) {
 
 func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspectRatio float64, encodeImage bool, isMask bool) (*ImagePayload, float64, error) {
 	// Decode the image payload using vips
-	img, err := vips.NewImageFromBuffer(buffer)
+	importParams := vips.NewImportParams()
+	importParams.AutoRotate.Set(true)
+
+	img, err := vips.LoadImageFromBuffer(buffer, importParams)
 	if err != nil {
 		return nil, -1., err
 	}
-
-	err = img.AutoRotate()
-	if err != nil {
-		return nil, -1., err
-	}
-
-	// Optionally crop and resize the image on the fly. Save the aspect ratio in the process for future use
-	originalWidth, originalHeight := img.Width(), img.Height()
-
-	if transform != nil {
-		aspectRatio, err = transform.cropAndResizeToClosestAspectRatio(img, aspectRatio)
-		if err != nil {
-			return nil, -1., err
-		}
-	}
-
-	width, height := img.Width(), img.Height()
 
 	// If the image is 4 channels, we need to drop the alpha channel
 	if img.Bands() == 4 {
@@ -72,12 +58,37 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspectRatio flo
 
 	// If the image is not a mask but is 1 channel, we want to convert it to 3 channels
 	if (img.Bands() == 1) && !isMask {
-		err = img.ToColorSpace(vips.InterpretationSRGB)
+		// FIXME: this color space conversion is not robust enough, can randomly hard crash
+		return nil, -1., fmt.Errorf("1 channel image not supported")
+		// err = img.ToColorSpace(vips.InterpretationSRGB)
+		// if err != nil {
+		// 	fmt.Println("Error converting to sRGB:", err)
+		// 	return nil, -1., err
+		// }
+	}
+
+	// If the image is 2 channels, that's gray+alpha and we flatten it
+	if img.Bands() == 2 {
+		err = img.ExtractBand(1, 1)
+		fmt.Println("Gray+alpha image, removing alpha")
 		if err != nil {
-			fmt.Println("Error converting to sRGB:", err)
+			fmt.Println("Error extracting band:", err)
 			return nil, -1., err
 		}
 	}
+
+	// Optionally crop and resize the image on the fly. Save the aspect ratio in the process for future use
+	originalWidth, originalHeight := img.Width(), img.Height()
+
+	if transform != nil {
+		aspectRatio, err = transform.cropAndResizeToClosestAspectRatio(img, aspectRatio)
+		if err != nil {
+			fmt.Println("Error cropping and resizing image:", err)
+			return nil, -1., err
+		}
+	}
+
+	width, height := img.Width(), img.Height()
 
 	// If requested, re-encode the image to a jpg or png
 	var imgBytes []byte
@@ -85,22 +96,21 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspectRatio flo
 	var bitDepth int
 
 	if encodeImage {
-		if err != nil {
-			return nil, -1., err
-		}
-
 		if img.Bands() == 3 {
 			// Re-encode the image to a jpg
 			imgBytes, _, err = img.ExportJpeg(&vips.JpegExportParams{Quality: 95})
-			if err != nil {
-				return nil, -1., err
-			}
 		} else {
 			// Re-encode the image to a png
-			imgBytes, _, err = img.ExportPng(vips.NewPngExportParams())
-			if err != nil {
-				return nil, -1., err
-			}
+			imgBytes, _, err = img.ExportPng(&vips.PngExportParams{
+				Compression: 6,
+				Filter:      vips.PngFilterNone,
+				Interlace:   false,
+				Palette:     false,
+				Bitdepth:    8, // force 8 bit depth
+			})
+		}
+		if err != nil {
+			return nil, -1., err
 		}
 		channels = -1 // Signal that we have encoded the image
 	} else {
@@ -114,12 +124,17 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspectRatio flo
 		bitDepth = len(imgBytes) / (width * height * channels) * 8 // 8 bits per byte
 	}
 
+	defer img.Close() // release vips buffers when done
+
 	if bitDepth == 0 && !encodeImage {
 		panic("Bit depth not set")
 	}
 
+	data := make([]byte, len(imgBytes))
+	copy(data, imgBytes)
+
 	imgPayload := ImagePayload{
-		Data:           imgBytes,
+		Data:           data,
 		OriginalHeight: originalHeight,
 		OriginalWidth:  originalWidth,
 		Height:         height,

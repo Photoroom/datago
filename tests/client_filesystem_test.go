@@ -77,7 +77,7 @@ func TestFilesystemLoad(t *testing.T) {
 
 	// Run the tests
 	config := datago.GetDatagoConfig()
-	fs_config := datago.GetSourceFileSystemConfig()
+	fs_config := datago.GetDefaultSourceFileSystemConfig()
 	fs_config.RootPath = test_dir
 	config.SourceConfig = fs_config
 
