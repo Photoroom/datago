@@ -29,11 +29,9 @@ func main() {
 	sourceConfig.Rank = 0
 	sourceConfig.WorldSize = 1
 
-	config.ImageConfig = datago.ImageTransformConfig{
-		DefaultImageSize:  1024,
-		DownsamplingRatio: 32,
-		CropAndResize:     *cropAndResize,
-	}
+	config.ImageConfig = datago.GetDefaultImageTransformConfig()
+	config.ImageConfig.CropAndResize = *cropAndResize
+
 	config.SourceConfig = sourceConfig
 	config.PrefetchBufferSize = int32(*itemFetchBuffer)
 	config.SamplesBufferSize = int32(*itemReadyBuffer)

@@ -64,5 +64,5 @@ def go_array_to_pil_image(go_array) -> Optional[Image.Image]:
     if c == 4:
         return Image.frombuffer("RGBA", (w, h), np_array, "raw", "RGBA", 0, 1)
 
-    assert c == 3, "Expected 3 channels"
+    assert c == 3, f"Expected 3 channels, got {c}"
     return Image.fromarray(np_array)

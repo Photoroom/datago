@@ -4,6 +4,7 @@ from tqdm import tqdm
 import numpy as np
 from go_types import go_array_to_pil_image, go_array_to_numpy
 import typer
+import json
 
 
 def benchmark(
@@ -15,26 +16,33 @@ def benchmark(
     require_images: bool = typer.Option(True, help="Request the original images"),
     require_embeddings: bool = typer.Option(False, help="Request embeddings"),
     test_masks: bool = typer.Option(True, help="Test masks"),
-    test_latents: bool = typer.Option(True, help="Test latents"),
 ):
     print(f"Running benchmark for {source} - {limit} samples")
+    client_config = {
+        "source_type": datago.SourceTypeDB,
+        "source_config": {
+            "page_size": 512,
+            "sources": source,
+            "require_images": require_images,
+            "require_embeddings": require_embeddings,
+            "has_masks": "segmentation_mask" if test_masks else "",
+            "rank": 0,
+            "world_size": 1,
+        },
+        "image_config": {
+            "crop_and_resize": crop_and_resize,
+            "default_image_size": 512,
+            "downsampling_ratio": 16,
+            "min_aspect_ratio": 0.5,
+            "max_aspect_ratio": 2.0,
+            "pre_encode_images": False,
+        },
+        "prefetch_buffer_size": 128,
+        "samples_buffer_size": 64,
+        "limit": limit,
+    }
 
-    # Get a generic client config
-    client_config = datago.GetDatagoConfig()
-    client_config.ImageConfig.CropAndResize = crop_and_resize
-
-    # Specify the source parameters as you see fit
-    source_config = datago.GetSourceDBConfig()
-    source_config.Sources = source
-    source_config.RequireImages = require_images
-    source_config.RequireEmbeddings = require_embeddings
-    source_config.HasMasks = "segmentation_mask" if test_masks else ""
-    source_config.HasLatents = "caption_latent_t5xxl" if test_latents else ""
-
-    # Get a new client instance, happy benchmarking
-    client_config.SourceConfig = source_config
-    client = datago.GetClient(client_config)
-
+    client = datago.GetClientFromJSON(json.dumps(client_config))
     client.Start()  # Optional, but good practice to start the client to reduce latency to first sample (while you're instantiating models for instance)
     start = time.time()
 

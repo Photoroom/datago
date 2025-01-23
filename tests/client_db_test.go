@@ -17,7 +17,7 @@ func get_test_source() string {
 func get_default_test_config() datago.DatagoConfig {
 	config := datago.GetDatagoConfig()
 
-	db_config := datago.GetSourceDBConfig()
+	db_config := datago.GetDefaultSourceDBConfig()
 	db_config.Sources = get_test_source()
 	db_config.PageSize = 32
 	config.SourceConfig = db_config

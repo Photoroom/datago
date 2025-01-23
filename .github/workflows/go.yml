@@ -38,7 +38,7 @@ jobs:
         run: pre-commit run --all-files
 
       - name: Build
-        run: cd cmd && go build -v main.go
+        run: cd cmd/filesystem && go build -v main.go
 
       - name: Test
         env:

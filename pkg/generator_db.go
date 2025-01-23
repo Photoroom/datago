@@ -135,6 +135,12 @@ func (c *SourceDBConfig) setDefaults() {
 	c.DuplicateState = -1
 }
 
+func GetDefaultSourceDBConfig() SourceDBConfig {
+	config := SourceDBConfig{}
+	config.setDefaults()
+	return config
+}
+
 func (c *SourceDBConfig) getDbRequest() dbRequest {
 
 	fields := "attributes,image_direct_url,source"
@@ -208,12 +214,6 @@ func (c *SourceDBConfig) getDbRequest() dbRequest {
 		partitionsCount: sanitizeInt(c.WorldSize),
 		partition:       sanitizeInt(c.Rank),
 	}
-}
-
-func GetSourceDBConfig() SourceDBConfig {
-	config := SourceDBConfig{}
-	config.setDefaults()
-	return config
 }
 
 type datagoGeneratorDB struct {

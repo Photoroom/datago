@@ -98,8 +98,19 @@ func (t *ARAwareTransform) getClosestAspectRatio(imageWidth int, imageHeight int
 	return closestAspectRatio
 }
 
-func (t *ARAwareTransform) cropAndResizeToClosestAspectRatio(image *vips.ImageRef, referenceAR float64) (float64, error) {
+func safeCrop(image *vips.ImageRef, width, height int) error {
+	// Catch possible crash in libvips and recover from it
+	defer func() error {
+		if r := recover(); r != nil {
+			return fmt.Errorf("caught crash: %v", r)
+		}
+		return nil
+	}()
+	err := image.ThumbnailWithSize(width, height, vips.InterestingCentre, vips.SizeBoth)
+	return err
+}
 
+func (t *ARAwareTransform) cropAndResizeToClosestAspectRatio(image *vips.ImageRef, referenceAR float64) (float64, error) {
 	// Get the closest aspect ratio
 	if referenceAR <= 0. {
 		referenceAR = t.getClosestAspectRatio(image.Width(), image.Height())
@@ -109,6 +120,6 @@ func (t *ARAwareTransform) cropAndResizeToClosestAspectRatio(image *vips.ImageRe
 	targetSize := t.aspectRatioToSize[referenceAR]
 
 	// Trust libvips to do resize and crop in one go. Note that jpg decoding happens here and can fail
-	err := image.ThumbnailWithSize(targetSize.Width, targetSize.Height, vips.InterestingCentre, vips.SizeBoth)
+	err := safeCrop(image, targetSize.Width, targetSize.Height)
 	return referenceAR, err
 }
