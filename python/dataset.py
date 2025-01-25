@@ -1,7 +1,7 @@
 from datago import datago
 import json
 from typing import Dict, Any
-from go_types import go_array_to_pil_image, go_array_to_numpy
+from raw_types import raw_array_to_pil_image, raw_array_to_numpy
 
 
 class DatagoIterDataset:
@@ -26,9 +26,9 @@ class DatagoIterDataset:
     @staticmethod
     def to_python_types(item):
         if isinstance(item, datago.ImagePayload):
-            return go_array_to_pil_image(item)
+            return raw_array_to_pil_image(item)
         elif isinstance(item, datago.LatentPayload):
-            return go_array_to_numpy(item)
+            return raw_array_to_numpy(item)
         elif isinstance(item, datago.Map_string_interface_):
             dict_item = dict(item)
             for key, value in filter(

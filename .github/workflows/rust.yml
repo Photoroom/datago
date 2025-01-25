@@ -1,26 +1,24 @@
-name: Push to PyPI
+name: Rust CI
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  pypi-publish:
-    name: Upload release to PyPI
-
+  build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest]
         rust: [stable]
 
-    environment:
-      name: release
-      url: https://pypi.org/p/datago
-    permissions:
-      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
@@ -54,19 +52,3 @@ jobs:
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
 
         run: cd datago && cargo test --verbose
-
-      - name: Install maturin
-        run: |
-          python3 -m pip install maturin twine
-
-      - name: Build and upload the package
-        run: |
-          cd datago
-          maturin build -i python3.11 --release --target "x86_64-unknown-linux-gnu"
-          cd target/wheels
-          python3 -m pip install --user -v *.whl
-          ls
-          twine upload *.whl --repository-url https://pypi.org/p/datago
-
-      - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,7 +1,7 @@
 from datago import datago
 import pytest
 import os
-from go_types import go_array_to_pil_image, go_array_to_numpy
+from python.raw_types import go_array_to_pil_image, go_array_to_numpy
 from dataset import DatagoIterDataset
 
 
