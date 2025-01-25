@@ -1,0 +1,22 @@
+[package]
+name = "datago"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# exposed by pyo3
+name = "datago"
+crate-type = ["cdylib"]
+
+[dependencies]
+image = "0.25.5"
+reqwest = { version = "0.12.12", features = ["blocking"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+url = "2.5.4"
+kanal = "0.1.0-pre8"
+clap = { version = "4.5.27", features = ["derive"] }
+tokio = "1.43.0"
+prettytable-rs = "0.10.0"
+pyo3 = { version = "0.23.4", features = ["extension-module"] }
+threadpool = "1.8.1"
