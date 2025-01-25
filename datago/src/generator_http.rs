@@ -177,7 +177,7 @@ pub fn ping_pages(
 
     // Build the request to the DB, given the source configuration
     // There are a lot of straight copies, but also some internal logic
-    let mut fields = "id,source,attributes,source".to_string();
+    let mut fields = "id,source,attributes,height,width,tags".to_string();
 
     if source_config.require_images {
         fields.push_str(",image_direct_url");

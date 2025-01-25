@@ -1,5 +1,6 @@
 [![Build & Test](https://github.com/Photoroom/datago/actions/workflows/go.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/go.yml)
-[![Gopy](https://github.com/Photoroom/datago/actions/workflows/gopy.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/gopy.yml)
+
+[![Rust-py](https://github.com/Photoroom/datago/actions/workflows/rust-py.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/rust-py.yml)
 
 # datago
 

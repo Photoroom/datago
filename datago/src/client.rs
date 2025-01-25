@@ -64,10 +64,11 @@ impl DatagoClient {
         let mut image_transform: Option<ARAwareTransform> = None;
         let mut encode_images = false;
 
-        if config.image_config.is_some() {
-            let image_config = config.image_config.unwrap();
-            println!("Cropping and resizing images");
-            image_transform = Some(image_config.get_ar_aware_transform());
+        if let Some(image_config) = config.image_config {
+            if image_config.crop_and_resize {
+                println!("Cropping and resizing images");
+                image_transform = Some(image_config.get_ar_aware_transform());
+            }
             encode_images = image_config.pre_encode_images;
         }
 
