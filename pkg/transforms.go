@@ -33,8 +33,8 @@ func buildImageSizeList(defaultImageSize int, downsamplingRatio int, minAspectRa
 	patchSizeSq := float64(patchSize * patchSize)
 	var imgSizes []ImageSize
 
-	minPatchW := int(math.Ceil(patchSizeSq * minAspectRatio))
-	maxPatchW := int(math.Floor(patchSizeSq * maxAspectRatio))
+	minPatchW := int(math.Ceil(math.Sqrt(patchSizeSq * minAspectRatio)))
+	maxPatchW := int(math.Floor(math.Sqrt(patchSizeSq * maxAspectRatio)))
 
 	for patchW := minPatchW; patchW <= maxPatchW; patchW++ { // go over all possible downsampled image widths
 		patchH := int(math.Floor(patchSizeSq / float64(patchW))) // get max height
