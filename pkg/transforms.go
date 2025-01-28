@@ -28,7 +28,7 @@ type ARAwareTransform struct {
 	PreEncodeImages   bool
 }
 
-func buildImageSizeList(defaultImageSize int, downsamplingRatio int, minAspectRatio float64, maxAspectRatio float64) []ImageSize {
+func BuildImageSizeList(defaultImageSize int, downsamplingRatio int, minAspectRatio float64, maxAspectRatio float64) []ImageSize {
 	patchSize := defaultImageSize / downsamplingRatio
 	patchSizeSq := float64(patchSize * patchSize)
 	var imgSizes []ImageSize
@@ -53,9 +53,9 @@ func buildImageSizeList(defaultImageSize int, downsamplingRatio int, minAspectRa
 	return imgSizes
 }
 
-func newARAwareTransform(imageConfig ImageTransformConfig) *ARAwareTransform {
+func GetArAwareTransform(imageConfig ImageTransformConfig) *ARAwareTransform {
 	// Build the image size list
-	imgSizes := buildImageSizeList(imageConfig.DefaultImageSize, imageConfig.DownsamplingRatio, imageConfig.MinAspectRatio, imageConfig.MaxAspectRatio)
+	imgSizes := BuildImageSizeList(imageConfig.DefaultImageSize, imageConfig.DownsamplingRatio, imageConfig.MinAspectRatio, imageConfig.MaxAspectRatio)
 
 	// Fill in the map table to match aspect ratios and image sizes
 	aspectRatioToSize := make(map[float64]ImageSize)
@@ -74,7 +74,7 @@ func newARAwareTransform(imageConfig ImageTransformConfig) *ARAwareTransform {
 	}
 }
 
-func (t *ARAwareTransform) getClosestAspectRatio(imageWidth int, imageHeight int) float64 {
+func (t *ARAwareTransform) GetClosestAspectRatio(imageWidth int, imageHeight int) float64 {
 	// Find the closest aspect ratio to the given aspect ratio
 	if len(t.aspectRatioToSize) == 0 {
 		fmt.Println("Aspect ratio to size map is empty")
@@ -112,7 +112,7 @@ func safeCrop(image *vips.ImageRef, width, height int) error {
 func (t *ARAwareTransform) cropAndResizeToClosestAspectRatio(image *vips.ImageRef, referenceAR float64) (float64, error) {
 	// Get the closest aspect ratio
 	if referenceAR <= 0. {
-		referenceAR = t.getClosestAspectRatio(image.Width(), image.Height())
+		referenceAR = t.GetClosestAspectRatio(image.Width(), image.Height())
 	}
 
 	// Desired target size is a lookup away, this is pre-computed/bucketed

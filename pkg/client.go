@@ -257,7 +257,7 @@ func (c *DatagoClient) Start() {
 	if c.imageConfig.CropAndResize {
 		fmt.Println("Cropping and resizing images")
 		fmt.Println("Base image size | downsampling ratio | min | max:", c.imageConfig.DefaultImageSize, c.imageConfig.DownsamplingRatio, c.imageConfig.MinAspectRatio, c.imageConfig.MaxAspectRatio)
-		arAwareTransform = newARAwareTransform(c.imageConfig)
+		arAwareTransform = GetArAwareTransform(c.imageConfig)
 	}
 
 	if c.imageConfig.PreEncodeImages {
