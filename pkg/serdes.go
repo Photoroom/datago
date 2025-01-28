@@ -1,7 +1,6 @@
 package datago
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,41 +10,67 @@ import (
 	"github.com/davidbyttow/govips/v2/vips"
 )
 
-func readBodyBuffered(resp *http.Response) ([]byte, error) {
-	// Use a bytes.Buffer to accumulate the response body
-	// Faster than the default ioutil.ReadAll which reallocates
-	var body bytes.Buffer
+func sanitizeImage(img *vips.ImageRef, isMask bool) error {
 
-	bufferSize := 2048 * 1024 // 2MB
-
-	// Create a fixed-size buffer for reading
-	localBuffer := make([]byte, bufferSize)
-
-	for {
-		n, err := resp.Body.Read(localBuffer)
-		if err != nil && err != io.EOF {
-			return nil, err
+	// Catch possible crash in libvips and recover from it
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("caught crash: %v", r)
 		}
-		if n > 0 {
-			body.Write(localBuffer[:n])
+	}()
+
+	// If the image is 4 channels, we need to drop the alpha channel
+	if img.Bands() == 4 {
+		err := img.Flatten(&vips.Color{R: 255, G: 255, B: 255}) // Flatten with white background
+		if err != nil {
+			return fmt.Errorf("error flattening image: %w", err)
 		}
-		if err == io.EOF {
-			break
+		fmt.Println("Image flattened")
+	}
+
+	// If the image is not a mask but is 1 channel, we want to convert it to 3 channels
+	if (img.Bands() == 1) && !isMask {
+		if img.Metadata().Format == vips.ImageTypeJPEG {
+			err := img.ToColorSpace(vips.InterpretationSRGB)
+			if err != nil {
+				return fmt.Errorf("error converting to sRGB: %w", err)
+			}
+		} else {
+			// // FIXME: maybe that we could recover these still. By default throws an error, sRGB and PNG not supported
+			return fmt.Errorf("1 channel PNG image not supported")
 		}
 	}
-	return body.Bytes(), nil
+
+	// If the image is 2 channels, that's gray+alpha and we flatten it
+	if img.Bands() == 2 {
+		err := img.ExtractBand(1, 1)
+		fmt.Println("Gray+alpha image, removing alpha")
+		if err != nil {
+			return fmt.Errorf("error extracting band: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspectRatio float64, encodeImage bool, isMask bool) (*ImagePayload, float64, error) {
-	// Decode the image payload using vips
-	img, err := vips.NewImageFromBuffer(buffer)
+	// Decode the image payload using vips, using bulletproof settings
+	importParams := vips.NewImportParams()
+	importParams.AutoRotate.Set(true)
+	importParams.FailOnError.Set(true)
+	importParams.Page.Set(0)
+	importParams.NumPages.Set(1)
+	importParams.HeifThumbnail.Set(false)
+	importParams.SvgUnlimited.Set(false)
+
+	img, err := vips.LoadImageFromBuffer(buffer, importParams)
 	if err != nil {
-		return nil, -1., err
+		return nil, -1., fmt.Errorf("error loading image: %w", err)
 	}
 
-	err = img.AutoRotate()
+	err = sanitizeImage(img, isMask)
 	if err != nil {
-		return nil, -1., err
+		return nil, -1., fmt.Errorf("error processing image: %w", err)
 	}
 
 	// Optionally crop and resize the image on the fly. Save the aspect ratio in the process for future use
@@ -54,30 +79,11 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspectRatio flo
 	if transform != nil {
 		aspectRatio, err = transform.cropAndResizeToClosestAspectRatio(img, aspectRatio)
 		if err != nil {
-			return nil, -1., err
+			return nil, -1., fmt.Errorf("error cropping and resizing image: %w", err)
 		}
 	}
 
 	width, height := img.Width(), img.Height()
-
-	// If the image is 4 channels, we need to drop the alpha channel
-	if img.Bands() == 4 {
-		err = img.Flatten(&vips.Color{R: 255, G: 255, B: 255}) // Flatten with white background
-		if err != nil {
-			fmt.Println("Error flattening image:", err)
-			return nil, -1., err
-		}
-		fmt.Println("Image flattened")
-	}
-
-	// If the image is not a mask but is 1 channel, we want to convert it to 3 channels
-	if (img.Bands() == 1) && !isMask {
-		err = img.ToColorSpace(vips.InterpretationSRGB)
-		if err != nil {
-			fmt.Println("Error converting to sRGB:", err)
-			return nil, -1., err
-		}
-	}
 
 	// If requested, re-encode the image to a jpg or png
 	var imgBytes []byte
@@ -85,34 +91,37 @@ func imageFromBuffer(buffer []byte, transform *ARAwareTransform, aspectRatio flo
 	var bitDepth int
 
 	if encodeImage {
-		if err != nil {
-			return nil, -1., err
-		}
-
 		if img.Bands() == 3 {
 			// Re-encode the image to a jpg
 			imgBytes, _, err = img.ExportJpeg(&vips.JpegExportParams{Quality: 95})
-			if err != nil {
-				return nil, -1., err
-			}
 		} else {
 			// Re-encode the image to a png
-			imgBytes, _, err = img.ExportPng(vips.NewPngExportParams())
-			if err != nil {
-				return nil, -1., err
-			}
+			imgBytes, _, err = img.ExportPng(&vips.PngExportParams{
+				Compression: 6,
+				Filter:      vips.PngFilterNone,
+				Interlace:   false,
+				Palette:     false,
+				Bitdepth:    8, // force 8 bit depth
+			})
 		}
-		channels = -1 // Signal that we have encoded the image
-	} else {
-		imgBytes, err = img.ToBytes()
+
 		if err != nil {
 			return nil, -1., err
 		}
-		channels = img.Bands()
 
+		channels = -1 // Signal that we have encoded the image
+	} else {
+		channels = img.Bands()
+		imgBytes, err = img.ToBytes()
+
+		if err != nil {
+			return nil, -1., err
+		}
 		// Define bit depth de facto, not exposed in the vips interface
 		bitDepth = len(imgBytes) / (width * height * channels) * 8 // 8 bits per byte
 	}
+
+	defer img.Close() // release vips buffers when done
 
 	if bitDepth == 0 && !encodeImage {
 		panic("Bit depth not set")
@@ -145,14 +154,9 @@ func fetchURL(client *http.Client, url string, retries int) (urlPayload, error) 
 			continue
 		}
 
-		defer func() {
-			err := resp.Body.Close()
-			if err != nil {
-				fmt.Print(err)
-			}
-		}()
+		body_bytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 
-		body_bytes, err := readBodyBuffered(resp)
 		if err != nil {
 			// Renew the http client, not a shared resource
 			client = &http.Client{Timeout: 30 * time.Second}
@@ -181,31 +185,29 @@ func fetchImage(client *http.Client, url string, retries int, transform *ARAware
 			continue
 		}
 
-		defer func() {
-			err := resp.Body.Close()
-			if err != nil {
-				fmt.Print(err)
-			}
-		}()
+		body_bytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 
-		body_bytes, err := readBodyBuffered(resp)
 		if err != nil {
 			errReport = err
 			exponentialBackoffWait(i)
 			continue
 		}
 
-		// Decode into a flat buffer using vips
-		imgPayload_ptr, aspectRatio, err := imageFromBuffer(body_bytes, transform, aspectRatio, encodeImage, isMask)
-		if err != nil {
-			break
+		// Decode into a flat buffer using vips. Note that this can fail on its own
+		{
+			imgPayload_ptr, aspectRatio, err := imageFromBuffer(body_bytes, transform, aspectRatio, encodeImage, isMask)
+			if err != nil {
+				errReport = err
+				continue
+			}
+			return imgPayload_ptr, aspectRatio, nil
 		}
-		return imgPayload_ptr, aspectRatio, nil
 	}
 	return nil, -1., errReport
 }
 
-func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult dbSampleMetadata, transform *ARAwareTransform, encodeImage bool) *Sample {
+func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult dbSampleMetadata, transform *ARAwareTransform, encodeImage bool) (*Sample, error) {
 	// Per sample work:
 	// - fetch the raw payloads
 	// - deserialize / decode, depending on the types
@@ -219,10 +221,8 @@ func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult d
 	// Base image
 	if config.RequireImages {
 		baseImage, newAspectRatio, err := fetchImage(httpClient, sampleResult.ImageDirectURL, retries, transform, aspectRatio, encodeImage, false)
-
 		if err != nil {
-			fmt.Println("Error fetching image:", sampleResult.Id)
-			return nil
+			return nil, fmt.Errorf("error fetching image: %v", sampleResult.Id)
 		} else {
 			imgPayload = baseImage
 			aspectRatio = newAspectRatio
@@ -239,8 +239,7 @@ func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult d
 			// Image types, registered as latents but they need to be jpg-decoded
 			new_image, _, err := fetchImage(httpClient, latent.URL, retries, transform, aspectRatio, encodeImage, false)
 			if err != nil {
-				fmt.Println("Error fetching masked image:", sampleResult.Id, latent.LatentType)
-				return nil
+				return nil, fmt.Errorf("error fetching masked image: %v %v", sampleResult.Id, latent.LatentType)
 			}
 
 			extraImages[latent.LatentType] = *new_image
@@ -248,16 +247,16 @@ func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult d
 			// Mask types, registered as latents but they need to be png-decoded
 			mask_ptr, _, err := fetchImage(httpClient, latent.URL, retries, transform, aspectRatio, encodeImage, true)
 			if err != nil {
-				fmt.Println("Error fetching mask:", sampleResult.Id, latent.LatentType)
-				return nil
+				return nil, fmt.Errorf("error fetching mask: %v %v", sampleResult.Id, latent.LatentType)
 			}
 			masks[latent.LatentType] = *mask_ptr
 		} else {
+			fmt.Println("Loading latents ", latent.URL)
+
 			// Vanilla latents, pure binary payloads
 			latentPayload, err := fetchURL(httpClient, latent.URL, retries)
 			if err != nil {
-				fmt.Println("Error fetching latent:", err)
-				return nil
+				return nil, fmt.Errorf("error fetching latent: %v", err)
 			}
 
 			latents[latent.LatentType] = LatentPayload{
@@ -282,5 +281,5 @@ func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult d
 		Masks:            masks,
 		AdditionalImages: extraImages,
 		Tags:             sampleResult.Tags,
-		CocaEmbedding:    cocaEmbedding}
+		CocaEmbedding:    cocaEmbedding}, nil
 }

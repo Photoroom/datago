@@ -51,6 +51,12 @@ func (c *ImageTransformConfig) setDefaults() {
 	c.PreEncodeImages = false
 }
 
+func GetDefaultImageTransformConfig() ImageTransformConfig {
+	config := ImageTransformConfig{}
+	config.setDefaults()
+	return config
+}
+
 // DatagoConfig is the main configuration structure for the datago client
 type DatagoConfig struct {
 	SourceType         DatagoSourceType     `json:"source_type"`
@@ -161,12 +167,8 @@ type DatagoClient struct {
 
 // GetClient is a constructor for the DatagoClient, given a JSON configuration string
 func GetClient(config DatagoConfig) *DatagoClient {
-	// Make sure that the GC is run more often than usual
-	// VIPS will allocate a lot of memory and we want to make sure that it's released as soon as possible
-	os.Setenv("GOGC", "10") // Default is 100, we're running it when heap is 10% larger than the last GC
-
 	// Initialize the vips library
-	err := os.Setenv("VIPS_DISC_THRESHOLD", "5g")
+	err := os.Setenv("VIPS_DISC_THRESHOLD", "10g")
 	if err != nil {
 		log.Panicf("Error setting VIPS_DISC_THRESHOLD: %v", err)
 	}
@@ -255,7 +257,7 @@ func (c *DatagoClient) Start() {
 	if c.imageConfig.CropAndResize {
 		fmt.Println("Cropping and resizing images")
 		fmt.Println("Base image size | downsampling ratio | min | max:", c.imageConfig.DefaultImageSize, c.imageConfig.DownsamplingRatio, c.imageConfig.MinAspectRatio, c.imageConfig.MaxAspectRatio)
-		arAwareTransform = newARAwareTransform(c.imageConfig)
+		arAwareTransform = GetArAwareTransform(c.imageConfig)
 	}
 
 	if c.imageConfig.PreEncodeImages {

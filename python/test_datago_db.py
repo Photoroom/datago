@@ -45,7 +45,7 @@ def test_get_sample_db():
     client_config = datago.GetDatagoConfig()
     client_config.SamplesBufferSize = 10
 
-    source_config = datago.GetSourceDBConfig()
+    source_config = datago.GetDefaultSourceDBConfig()
     source_config.Sources = get_test_source()
     client_config.SourceConfig = source_config
 

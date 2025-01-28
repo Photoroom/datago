@@ -31,8 +31,8 @@ func (b BackendHTTP) collectSamples(chanSampleMetadata chan SampleDataPointers, 
 				panic("Failed to cast the item to fetch to dbSampleMetadata. This worker is probably misconfigured")
 			}
 
-			sample := fetchSample(b.config, &httpClient, httpSample, transform, encodeImages)
-			if sample != nil {
+			sample, err := fetchSample(b.config, &httpClient, httpSample, transform, encodeImages)
+			if err == nil && sample != nil {
 				chanSamples <- *sample
 			}
 		}
