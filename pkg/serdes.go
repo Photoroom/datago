@@ -13,11 +13,10 @@ import (
 func sanitizeImage(img *vips.ImageRef, isMask bool) error {
 
 	// Catch possible crash in libvips and recover from it
-	defer func() error {
+	defer func() {
 		if r := recover(); r != nil {
-			return fmt.Errorf("caught crash: %v", r)
+			fmt.Printf("caught crash: %v", r)
 		}
-		return nil
 	}()
 
 	// If the image is 4 channels, we need to drop the alpha channel
@@ -223,7 +222,7 @@ func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult d
 	if config.RequireImages {
 		baseImage, newAspectRatio, err := fetchImage(httpClient, sampleResult.ImageDirectURL, retries, transform, aspectRatio, encodeImage, false)
 		if err != nil {
-			return nil, fmt.Errorf("Error fetching image:", sampleResult.Id)
+			return nil, fmt.Errorf("error fetching image: %v", sampleResult.Id)
 		} else {
 			imgPayload = baseImage
 			aspectRatio = newAspectRatio
@@ -240,7 +239,7 @@ func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult d
 			// Image types, registered as latents but they need to be jpg-decoded
 			new_image, _, err := fetchImage(httpClient, latent.URL, retries, transform, aspectRatio, encodeImage, false)
 			if err != nil {
-				return nil, fmt.Errorf("Error fetching masked image:", sampleResult.Id, latent.LatentType)
+				return nil, fmt.Errorf("error fetching masked image: %v %v", sampleResult.Id, latent.LatentType)
 			}
 
 			extraImages[latent.LatentType] = *new_image
@@ -248,7 +247,7 @@ func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult d
 			// Mask types, registered as latents but they need to be png-decoded
 			mask_ptr, _, err := fetchImage(httpClient, latent.URL, retries, transform, aspectRatio, encodeImage, true)
 			if err != nil {
-				return nil, fmt.Errorf("Error fetching mask:", sampleResult.Id, latent.LatentType)
+				return nil, fmt.Errorf("error fetching mask: %v %v", sampleResult.Id, latent.LatentType)
 			}
 			masks[latent.LatentType] = *mask_ptr
 		} else {
@@ -257,7 +256,7 @@ func fetchSample(config *SourceDBConfig, httpClient *http.Client, sampleResult d
 			// Vanilla latents, pure binary payloads
 			latentPayload, err := fetchURL(httpClient, latent.URL, retries)
 			if err != nil {
-				return nil, fmt.Errorf("Error fetching latent:", err)
+				return nil, fmt.Errorf("error fetching latent: %v", err)
 			}
 
 			latents[latent.LatentType] = LatentPayload{

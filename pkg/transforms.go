@@ -100,11 +100,10 @@ func (t *ARAwareTransform) getClosestAspectRatio(imageWidth int, imageHeight int
 
 func safeCrop(image *vips.ImageRef, width, height int) error {
 	// Catch possible crash in libvips and recover from it
-	defer func() error {
+	defer func() {
 		if r := recover(); r != nil {
-			return fmt.Errorf("caught crash: %v", r)
+			fmt.Printf("caught crash: %v", r)
 		}
-		return nil
 	}()
 	err := image.ThumbnailWithSize(width, height, vips.InterestingCentre, vips.SizeBoth)
 	return err

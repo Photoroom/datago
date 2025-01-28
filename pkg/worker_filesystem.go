@@ -13,7 +13,7 @@ func loadFromDisk(fsSample fsSampleMetadata, transform *ARAwareTransform, encode
 	// Load the file into []bytes
 	bytesBuffer, err := os.ReadFile(fsSample.FilePath)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading file:", fsSample.FilePath)
+		return nil, fmt.Errorf("error reading file: %v", fsSample.FilePath)
 	}
 
 	// Slightly faster take, requires Go 1.21+ which breaks gopy speed for now
@@ -34,7 +34,7 @@ func loadFromDisk(fsSample fsSampleMetadata, transform *ARAwareTransform, encode
 	// Decode the image, can error out here also, and return the sample
 	imgPayload, _, err := imageFromBuffer(bytesBuffer, transform, -1., encodeImage, false)
 	if err != nil {
-		return nil, fmt.Errorf("Error loading image:", fsSample.FileName)
+		return nil, fmt.Errorf("error loading image: %v", fsSample.FileName)
 	}
 
 	return &Sample{ID: fsSample.FileName,
