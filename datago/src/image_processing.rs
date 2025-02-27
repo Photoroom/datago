@@ -84,22 +84,25 @@ impl ARAwareTransform {
             panic!("Aspect ratio to size map is empty");
         }
 
-        let aspect_ratio_float = aspect_ratio_to_str((image_width, image_height))
-            .parse::<f64>()
-            .unwrap();
-
-        let mut min_diff = f64::MAX;
-        let mut closest_aspect_ratio = String::new();
-        for ar_key in self.aspect_ratio_to_size.keys() {
-            let ar_key_float: f64 = ar_key.parse().unwrap();
-            let diff = (ar_key_float - aspect_ratio_float).abs();
-            if diff < min_diff {
-                min_diff = diff;
-                closest_aspect_ratio = ar_key.clone();
+        if let Ok(aspect_ratio_float) =
+            aspect_ratio_to_str((image_width, image_height)).parse::<f64>()
+        {
+            let mut min_diff = f64::MAX;
+            let mut closest_aspect_ratio = String::new();
+            for ar_key in self.aspect_ratio_to_size.keys() {
+                if let Ok(ar_key_float) = ar_key.parse::<f64>() {
+                    let diff = (ar_key_float - aspect_ratio_float).abs();
+                    if diff < min_diff {
+                        min_diff = diff;
+                        closest_aspect_ratio = ar_key.clone();
+                    }
+                }
             }
-        }
 
-        closest_aspect_ratio.to_string()
+            closest_aspect_ratio.to_string()
+        } else {
+            panic!("Failed to parse aspect ratio");
+        }
     }
 
     pub fn crop_and_resize(
@@ -113,12 +116,15 @@ impl ARAwareTransform {
             aspect_ratio_input.to_string()
         };
 
-        let target_size = self.aspect_ratio_to_size.get(&aspect_ratio).unwrap();
-        image.resize_to_fill(
-            target_size.0 as u32,
-            target_size.1 as u32,
-            image::imageops::FilterType::Lanczos3,
-        ) // returns the resized image
+        if let Some(target_size) = self.aspect_ratio_to_size.get(&aspect_ratio) {
+            image.resize_to_fill(
+                target_size.0 as u32,
+                target_size.1 as u32,
+                image::imageops::FilterType::Lanczos3,
+            ) // returns the resized image
+        } else {
+            panic!("Aspect ratio not found in aspect ratio to size map");
+        }
     }
 }
 

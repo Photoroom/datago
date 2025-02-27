@@ -95,70 +95,62 @@ pub struct DbRequest {
     pub partition: String,
 }
 
-// implement a helper to get the http request which correspons to the db request structure above
+// implement a helper to get the http request which corresponds to the db request structure above
 impl DbRequest {
     pub fn get_http_request(&self, api_url: &str, api_key: &str) -> reqwest::blocking::Request {
         let mut url = if self.random_sampling {
-            Url::parse(&format!("{}images/random/", api_url)).unwrap()
+            Url::parse(&format!("{}images/random/", api_url))
         } else {
-            Url::parse(&format!("{}images/", api_url)).unwrap()
-        };
+            Url::parse(&format!("{}images/", api_url))
+        }
+        .unwrap(); // Cannot survive without the URL, that's a panic
 
-        let mut query_pairs = url.query_pairs_mut();
+        // Edit the URL with the query parameters
+        {
+            let mut query_pairs = url.query_pairs_mut();
+            let query_pairs = &mut query_pairs;
 
-        let maybe_add_field =
-            |query_pairs: &mut url::form_urlencoded::Serializer<url::UrlQuery>,
-             field: &str,
-             value: &str| {
+            let mut maybe_add_field = move |field: &str, value: &str| {
                 if !value.is_empty() {
                     query_pairs.append_pair(field, value);
                 }
             };
 
-        let return_latents = if !self.has_latents.is_empty() {
-            format!("{},{}", self.has_latents, self.has_masks)
-        } else {
-            self.has_masks.clone()
-        };
+            let return_latents = if !self.has_latents.is_empty() {
+                format!("{},{}", self.has_latents, self.has_masks)
+            } else {
+                self.has_masks.clone()
+            };
 
-        maybe_add_field(&mut query_pairs, "fields", &self.fields);
-        maybe_add_field(&mut query_pairs, "sources", &self.sources);
-        maybe_add_field(&mut query_pairs, "sources__ne", &self.sources_ne);
-        maybe_add_field(&mut query_pairs, "page_size", &self.page_size);
+            maybe_add_field("fields", &self.fields);
+            maybe_add_field("sources", &self.sources);
+            maybe_add_field("sources__ne", &self.sources_ne);
+            maybe_add_field("page_size", &self.page_size);
 
-        maybe_add_field(&mut query_pairs, "tags", &self.tags);
-        maybe_add_field(&mut query_pairs, "tags__ne", &self.tags_ne);
-
-        maybe_add_field(&mut query_pairs, "has_attributes", &self.has_attributes);
-        maybe_add_field(&mut query_pairs, "lacks_attributes", &self.lacks_attributes);
-
-        maybe_add_field(&mut query_pairs, "has_masks", &self.has_masks);
-        maybe_add_field(&mut query_pairs, "lacks_masks", &self.lacks_masks);
-
-        maybe_add_field(&mut query_pairs, "has_latents", &self.has_latents);
-        maybe_add_field(&mut query_pairs, "lacks_latents", &self.lacks_latents);
-        maybe_add_field(&mut query_pairs, "return_latents", &return_latents);
-
-        maybe_add_field(&mut query_pairs, "short_edge__gte", &self.min_short_edge);
-        maybe_add_field(&mut query_pairs, "short_edge__lte", &self.max_short_edge);
-        maybe_add_field(&mut query_pairs, "pixel_count__gte", &self.min_pixel_count);
-        maybe_add_field(&mut query_pairs, "pixel_count__lte", &self.max_pixel_count);
-
-        maybe_add_field(&mut query_pairs, "duplicate_state", &self.duplicate_state);
-
-        maybe_add_field(&mut query_pairs, "partitions_count", &self.partitions_count);
-        maybe_add_field(&mut query_pairs, "partition", &self.partition);
-
-        drop(query_pairs);
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Token  {}", api_key)).unwrap(),
-        );
+            maybe_add_field("tags", &self.tags);
+            maybe_add_field("tags__ne", &self.tags_ne);
+            maybe_add_field("has_attributes", &self.has_attributes);
+            maybe_add_field("lacks_attributes", &self.lacks_attributes);
+            maybe_add_field("has_masks", &self.has_masks);
+            maybe_add_field("lacks_masks", &self.lacks_masks);
+            maybe_add_field("has_latents", &self.has_latents);
+            maybe_add_field("lacks_latents", &self.lacks_latents);
+            maybe_add_field("return_latents", &return_latents);
+            maybe_add_field("short_edge__gte", &self.min_short_edge);
+            maybe_add_field("short_edge__lte", &self.max_short_edge);
+            maybe_add_field("pixel_count__gte", &self.min_pixel_count);
+            maybe_add_field("pixel_count__lte", &self.max_pixel_count);
+            maybe_add_field("duplicate_state", &self.duplicate_state);
+            maybe_add_field("partitions_count", &self.partitions_count);
+            maybe_add_field("partition", &self.partition);
+        }
 
         let mut req = reqwest::blocking::Request::new(reqwest::Method::GET, url);
-        req.headers_mut().extend(headers);
+        req.headers_mut().append(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Token {}", api_key))
+                .expect("Couldn't parse the provided API key"),
+        );
 
         println!("Request URL: {:?}\n", req.url().as_str());
 
@@ -266,12 +258,15 @@ pub fn ping_pages(
     let mut response_json = serde_json::Value::Null;
     let mut next_url = &serde_json::Value::Null;
 
+    let initial_request = db_request.get_http_request(&api_url, &api_key);
+
     for _ in 0..retries {
-        let initial_request = db_request.get_http_request(&api_url, &api_key);
         if let Ok(response) = client.execute(initial_request.try_clone().unwrap()) {
             // We can now deserialize the response, extract the "result" and "next" fields.
             if let Ok(response_text) = response.text() {
-                response_json = serde_json::from_str(&response_text).unwrap();
+                response_json =
+                    serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
+
                 if let Some(next) = response_json.get("next") {
                     next_url = next;
                 } else {
@@ -318,8 +313,16 @@ pub fn ping_pages(
                 }
 
                 if let Ok(response_text) = new_response.text() {
-                    response_json = serde_json::from_str(&response_text).unwrap();
-                    next_url = response_json.get("next").unwrap();
+                    let decoded_response = serde_json::from_str(&response_text);
+                    if decoded_response.is_err() {
+                        println!("Failed to decode the response");
+                        println!("{:?}", response_text);
+                        break;
+                    }
+                    response_json = decoded_response.unwrap();
+                    next_url = response_json
+                        .get("next")
+                        .unwrap_or(&serde_json::Value::Null);
                     break;
                 }
             }

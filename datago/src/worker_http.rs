@@ -80,11 +80,11 @@ pub struct Sample {
 impl Sample {
     #[getter]
     pub fn attributes(&self) -> String {
-        serde_json::to_string(&self.attributes).unwrap()
+        serde_json::to_string(&self.attributes).unwrap_or("".to_string())
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 struct CocaEmbedding {
     vector: Vec<f32>,
 }
@@ -108,48 +108,38 @@ struct SampleMetadata {
     coca_embedding: Option<CocaEmbedding>,
 }
 
-fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Vec<u8> {
+fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u8>> {
+    // Retry on the request a few times
     let retries = 5;
     let timeout = std::time::Duration::from_secs(30);
     for _ in 0..retries {
         let permit = shared_client.semaphore.acquire();
-        let response = shared_client.client.get(url).timeout(timeout).send();
-        drop(permit);
 
-        match response {
-            Ok(response) => {
-                let bytes = response.bytes();
-                if let Ok(bytes) = bytes {
-                    return bytes.to_vec();
-                }
-                // Try again
-            }
-            Err(e) => {
-                println!("Failed to get response from URL: {}", url);
-                println!("Error: {:?}", e);
+        if let Ok(response) = shared_client.client.get(url).timeout(timeout).send() {
+            if let Ok(bytes) = response.bytes() {
+                return Some(bytes.to_vec());
             }
         }
+        drop(permit);
     }
-
-    vec![]
+    None
 }
 
 fn image_from_url(
     client: &SharedClient,
     url: &str,
 ) -> Result<image::DynamicImage, image::ImageError> {
-    let bytes = bytes_from_url(client, url);
-
-    // Catch an error down the stack, couldn´t pull the bytes in the first place
-    if bytes.is_empty() {
-        return Err(image::ImageError::IoError(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Empty bytes",
-        )));
+    // Retry on the fetch and decode a few times, could happen that we get a broken packet
+    let retries = 5;
+    for _ in 0..retries {
+        if let Some(bytes) = bytes_from_url(client, url) {
+            return image::load_from_memory(&bytes);
+        }
     }
-
-    // Image loading, error handling. Things can happen here too
-    image::load_from_memory(&bytes)
+    Err(image::ImageError::IoError(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        "Failed to fetch image bytes",
+    )))
 }
 
 fn image_payload_from_url(
@@ -177,12 +167,15 @@ fn image_payload_from_url(
             // Encode the image if needed
             let mut image_bytes: Vec<u8> = Vec::new();
             if encode_images {
-                // TODO: Handle masks and pngs
-
-                // Force PNG for now
-                new_image
+                if new_image
                     .write_to(&mut Cursor::new(&mut image_bytes), image::ImageFormat::Png)
-                    .unwrap();
+                    .is_err()
+                {
+                    return Err(image::ImageError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Failed to encode image",
+                    )));
+                }
 
                 channels = -1; // Signal the fact that the image is encoded
             } else {
@@ -212,7 +205,7 @@ fn pull_sample(
     // TODO: Make this whole function async
 
     // Deserialize the sample metadata
-    let sample: SampleMetadata = serde_json::from_value(sample_json).unwrap();
+    let sample: SampleMetadata = serde_json::from_value(sample_json).unwrap(); // Ok to surface an error here, return type will catch it
 
     // Pull the image for a start, get an idea of the speed
     let mut image_payload: Option<ImagePayload> = None;
@@ -249,54 +242,63 @@ fn pull_sample(
         for latent in exposed_latents {
             if latent.latent_type.contains("image") && !latent.latent_type.contains("latent_") {
                 // Image types, registered as latents but they need to be jpg-decoded
-                let additional_image_payload = image_payload_from_url(
+                match image_payload_from_url(
                     client,
                     &latent.file_direct_url,
                     img_tfm,
                     &aspect_ratio,
                     encode_images,
-                );
-                if additional_image_payload.is_err() {
-                    println!(
-                        "Failed to get additional image from URL: {} {}",
-                        latent.latent_type, latent.file_direct_url
-                    );
-                    return None;
-                }
+                ) {
+                    Ok(additional_image_payload) => {
+                        additional_images
+                            .insert(latent.latent_type.clone(), additional_image_payload);
+                    }
 
-                additional_images.insert(
-                    latent.latent_type.clone(),
-                    additional_image_payload.unwrap(),
-                );
+                    Err(e) => {
+                        println!(
+                            "Failed to get additional image from URL: {} {} {:?}",
+                            latent.latent_type, latent.file_direct_url, e
+                        );
+                        return None;
+                    }
+                }
             } else if latent.is_mask {
                 // Mask types, registered as latents but they need to be png-decoded
-                let mask_payload = image_payload_from_url(
+                match image_payload_from_url(
                     client,
                     &latent.file_direct_url,
                     img_tfm,
                     &aspect_ratio,
                     encode_images,
-                );
-                if mask_payload.is_err() {
-                    println!("Failed to get mask from URL: {}", latent.file_direct_url);
-                    return None;
-                }
+                ) {
+                    Ok(mask_payload) => {
+                        masks.insert(latent.latent_type.clone(), mask_payload);
+                    }
 
-                masks.insert(latent.latent_type.clone(), mask_payload.unwrap());
+                    Err(e) => {
+                        println!(
+                            "Failed to get mask from URL: {} {} {:?}",
+                            latent.latent_type, latent.file_direct_url, e
+                        );
+                        return None;
+                    }
+                }
             } else {
                 // Vanilla latents, pure binary payloads
-                let latent_payload = bytes_from_url(client, &latent.file_direct_url);
-                if !latent_payload.is_empty() {
-                    latents.insert(
-                        latent.latent_type.clone(),
-                        LatentPayload {
-                            data: latent_payload.clone(),
-                            len: latent_payload.len(),
-                        },
-                    );
-                } else {
-                    println!("Error fetching latent: {}", latent.file_direct_url);
-                    return None;
+                match bytes_from_url(client, &latent.file_direct_url) {
+                    Some(latent_payload) => {
+                        latents.insert(
+                            latent.latent_type.clone(),
+                            LatentPayload {
+                                len: latent_payload.len(),
+                                data: latent_payload,
+                            },
+                        );
+                    }
+                    None => {
+                        println!("Error fetching latent: {}", latent.file_direct_url);
+                        return None;
+                    }
                 }
             }
         }
@@ -320,7 +322,7 @@ fn pull_sample(
         masks,
         additional_images,
         latents,
-        coca_embedding: Vec::<f32>::new(), //sample.coca_embedding.vector, // FIXME
+        coca_embedding: sample.coca_embedding.unwrap_or_default().vector,
         tags: sample.tags.unwrap_or_default(),
     };
     Some(pulled_sample)
@@ -342,7 +344,7 @@ pub fn pull_samples(
         }
 
         if let Some(sample) = pull_sample(&client, received, image_transform, encode_images) {
-            if !samples_tx.send(sample).is_ok() {
+            if samples_tx.send(sample).is_err() {
                 println!("http_worker: failed to send a sample");
                 break;
             }

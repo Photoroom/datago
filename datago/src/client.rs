@@ -55,7 +55,7 @@ pub struct DatagoClient {
 impl DatagoClient {
     #[new]
     pub fn new(str_config: String) -> Self {
-        let config: DatagoClientConfig = serde_json::from_str(&str_config).unwrap();
+        let config: DatagoClientConfig = serde_json::from_str(&str_config).unwrap(); // Ok to panic here, no way we can recover
 
         let (pages_tx, pages_rx) = bounded(2);
         let (samples_meta_tx, samples_meta_rx) = bounded(config.samples_buffer_size);
@@ -79,7 +79,7 @@ impl DatagoClient {
             is_started: false,
             source_config: config.source_config,
             limit: config.limit,
-            num_threads: num_threads,
+            num_threads,
             max_connections: 512,
             rank: config.rank,
             world_size: config.world_size,
@@ -179,7 +179,7 @@ impl DatagoClient {
         // Try to fetch a new sample from the queue
         match self.samples_rx.recv_timeout(TIMEOUT) {
             Ok(sample) => {
-                if sample.id != *"" {
+                if !sample.id.is_empty() {
                     Some(sample)
                 } else {
                     println!("Empty sample received, stopping the client");
@@ -205,11 +205,15 @@ impl DatagoClient {
         self.samples_rx.close();
 
         if let Some(pinger) = self.pinger.take() {
-            pinger.join().unwrap();
+            if pinger.join().is_err() {
+                println!("Failed to join pinger thread");
+            }
         }
 
         if let Some(feeder) = self.feeder.take() {
-            feeder.join().unwrap();
+            if feeder.join().is_err() {
+                println!("Failed to join feeder thread");
+            }
         }
 
         self.thread_pool.join();

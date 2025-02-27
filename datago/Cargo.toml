@@ -28,5 +28,5 @@ threadpool = "1.8.1"
 num_cpus = "1.16.0"
 
 [profile.release]
-opt-level = 3  # Optimize for size
-lto = true       # Enable link-time optimization
+opt-level = 3  # Optimize for speed
+lto = true     # Enable link-time optimization
