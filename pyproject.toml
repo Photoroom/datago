@@ -6,13 +6,43 @@ authors = [
 ]
 description = "A high performance dataloader for Python, written in Golang"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.8"
 classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
 ]
 
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"
 Issues = "https://github.com/photoroom/datago/issues"
+
+[build-system]
+requires = ["maturin>=1,<2"]
+build-backend = "maturin"
+target = "x86_64-unknown-linux-gnu"
+
+[tool.maturin]
+# Include additional files
+include = []
+# Exclude files
+exclude = []
+# Bindings type
+bindings = "pyo3"
+# Control the platform tag on linux
+compatibility = "linux"
+# auditwheel mode, possible values are repair, check and skip
+auditwheel = "repair"
+# Don't check for manylinux compliance, deprecated in favor of auditwheel = "audit"
+skip-auditwheel = false
+# Python source directory
+python-source = "src"
+# Python packages to include
+python-packages = []
+# Strip the library for minimum file size
+strip = true
+# Source distribution generator,
+# supports cargo (default) and git.
+sdist-generator = "cargo"

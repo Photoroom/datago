@@ -86,7 +86,7 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: ubuntu-22.04
+          - runner: ubuntu-latest
             target: x86_64
 
     steps:
@@ -94,13 +94,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
-          sccache: 'true'
-          manylinux: auto
+
+
+      - name: Install maturin
+        run: |
+          python3 -m pip install maturin twine
+
+      - name: Build and upload the package
+        run: |
+          maturin build -i python3.11 --release --out dist --target "x86_64-unknown-linux-gnu"
+
+      # - name: Build wheels
+      #   uses: PyO3/maturin-action@v1
+      #   with:
+      #     target: ${{ matrix.platform.target }}
+      #     args: --release --out dist --find-interpreter
+      #     sccache: 'true'
+      #     # manylinux: auto
+      #     docker-options: "--env CIBW_BEFORE_BUILD_LINUX='${{ env.CIBW_BEFORE_BUILD_LINUX }}'"
+      #   env:
+      #     CIBW_BEFORE_BUILD_LINUX: yum -y install openssl openssl-devel perl-IPC-Cmd
+
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
