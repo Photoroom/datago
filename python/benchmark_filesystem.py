@@ -1,4 +1,3 @@
-from datago import datago  # type: ignore
 import time
 from tqdm import tqdm
 import os
@@ -18,12 +17,9 @@ def benchmark(
 ):
     print(f"Running benchmark for {root_path} - {limit} samples")
     client_config = {
-        "source_type": datago.SourceTypeFileSystem,
+        "source_type": "file",
         "source_config": {
-            "page_size": 512,
             "root_path": root_path,
-            "rank": 0,
-            "world_size": 1,
         },
         "image_config": {
             "crop_and_resize": crop_and_resize,
@@ -36,6 +32,8 @@ def benchmark(
         "prefetch_buffer_size": 128,
         "samples_buffer_size": 64,
         "limit": limit,
+        "rank": 0,
+        "world_size": 1,
     }
 
     # Make sure in the following that we compare apples to apples, meaning in that case

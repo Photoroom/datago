@@ -3,8 +3,11 @@ use prettytable::{row, Table};
 use serde_json::json;
 
 mod client;
+mod generator_files;
 mod generator_http;
 mod image_processing;
+mod structs;
+mod worker_files;
 mod worker_http;
 
 fn main() {

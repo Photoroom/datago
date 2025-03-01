@@ -108,12 +108,11 @@ impl ARAwareTransform {
     pub fn crop_and_resize(
         &self,
         image: &image::DynamicImage,
-        aspect_ratio_input: &String,
+        aspect_ratio_input: Option<&String>,
     ) -> image::DynamicImage {
-        let aspect_ratio = if aspect_ratio_input.is_empty() {
-            self.get_closest_aspect_ratio(image.width() as i32, image.height() as i32)
-        } else {
-            aspect_ratio_input.to_string()
+        let aspect_ratio = match aspect_ratio_input {
+            Some(ar) => ar.to_string(),
+            None => self.get_closest_aspect_ratio(image.width() as i32, image.height() as i32),
         };
 
         if let Some(target_size) = self.aspect_ratio_to_size.get(&aspect_ratio) {
@@ -156,15 +155,15 @@ mod tests {
 
         // Test image resizing
         let img = DynamicImage::new_rgb8(300, 200);
-        let resized = transform.crop_and_resize(&img, &"1.000".to_string());
+        let resized = transform.crop_and_resize(&img, Some(&"1.000".to_string()));
         assert_eq!(resized.dimensions(), (224, 224));
 
-        let resized = transform.crop_and_resize(&img, &"1.900".to_string());
+        let resized = transform.crop_and_resize(&img, Some(&"1.900".to_string()));
         assert_eq!(resized.dimensions(), (304, 160));
 
         // Test empty aspect ratio input (should use closest)
         let img = DynamicImage::new_rgb8(400, 200);
-        let resized = transform.crop_and_resize(&img, &"".to_string());
+        let resized = transform.crop_and_resize(&img, None);
         assert_eq!(resized.dimensions(), (304, 160));
     }
 
@@ -176,7 +175,7 @@ mod tests {
         // Check all sizes respect min/max aspect ratio
         for (w, h) in sizes {
             let ar = w as f64 / h as f64;
-            assert!(ar >= 0.5 && ar <= 2.0);
+            assert!((0.5..=2.0).contains(&ar));
 
             // Check dimensions are multiples of downsampling ratio
             assert_eq!(w % 16, 0);
