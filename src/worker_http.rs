@@ -1,8 +1,6 @@
 use crate::image_processing;
-use pyo3::pyclass;
-use pyo3::pymethods;
-use serde::Deserialize;
-use serde::Serialize;
+use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, UrlLatent};
+use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -14,88 +12,6 @@ pub struct SharedClient {
 }
 
 // ------------------------------------------------------------------
-#[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LatentPayload {
-    #[pyo3(get, set)]
-    data: Vec<u8>,
-    #[pyo3(get, set)]
-    len: usize,
-}
-
-#[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ImagePayload {
-    #[pyo3(get, set)]
-    pub data: Vec<u8>,
-    #[pyo3(get, set)]
-    pub original_height: usize, // Good indicator of the image frequency dbResponse at the current resolution
-    #[pyo3(get, set)]
-    pub original_width: usize,
-    #[pyo3(get, set)]
-    pub height: usize, // Useful to decode the current payload
-    #[pyo3(get, set)]
-    pub width: usize,
-    #[pyo3(get, set)]
-    pub channels: i8,
-    #[pyo3(get, set)]
-    pub bit_depth: usize,
-}
-
-#[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Sample {
-    #[pyo3(get, set)]
-    pub id: String,
-
-    #[pyo3(get, set)]
-    pub source: String,
-
-    #[doc(hidden)]
-    pub attributes: std::collections::HashMap<String, serde_json::Value>,
-
-    #[pyo3(get, set)]
-    pub duplicate_state: i32,
-
-    #[pyo3(get, set)]
-    pub image: ImagePayload,
-
-    #[pyo3(get, set)]
-    pub masks: std::collections::HashMap<String, ImagePayload>,
-
-    #[pyo3(get, set)]
-    pub additional_images: std::collections::HashMap<String, ImagePayload>,
-
-    #[pyo3(get, set)]
-    pub latents: std::collections::HashMap<String, LatentPayload>,
-
-    #[pyo3(get, set)]
-    pub coca_embedding: Vec<f32>,
-
-    #[pyo3(get, set)]
-    pub tags: Vec<String>,
-}
-
-#[pymethods]
-impl Sample {
-    #[getter]
-    pub fn attributes(&self) -> String {
-        serde_json::to_string(&self.attributes).unwrap_or("".to_string())
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct CocaEmbedding {
-    vector: Vec<f32>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct UrlLatent {
-    file_direct_url: String,
-    latent_type: String,
-    is_mask: bool,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct SampleMetadata {
     id: String,
@@ -158,7 +74,13 @@ fn image_payload_from_url(
 
             // Optionally transform the additional image in the same way the main image was
             if let Some(img_tfm) = img_tfm {
-                new_image = img_tfm.crop_and_resize(&new_image, aspect_ratio);
+                let aspect_ratio_input = if aspect_ratio.is_empty() {
+                    None
+                } else {
+                    Some(aspect_ratio)
+                };
+
+                new_image = img_tfm.crop_and_resize(&new_image, aspect_ratio_input);
             }
 
             let height = new_image.height() as usize;

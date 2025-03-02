@@ -1,80 +1,14 @@
-# name: Rust-py
-
-# on:
-#   push:
-#     branches: ["main"]
-#   pull_request:
-#     branches: ["main"]
-
-# jobs:
-#   build:
-#     runs-on: ${{ matrix.os }}
-#     strategy:
-#       matrix:
-#         os: [ubuntu-latest]
-#         rust: [stable]
-
-#     steps:
-#       - uses: actions/checkout@v3
-
-#       - name: Install Rust
-#         uses: actions-rs/toolchain@v1
-#         with:
-#           profile: minimal
-#           toolchain: ${{ matrix.rust }}
-#           override: true
-#           components: rustfmt, clippy # , cargo-llvm-cov
-
-#       - name: Cache dependencies
-#         uses: actions/cache@v3
-#         with:
-#           path: |
-#             ~/.cargo/bin/
-#             ~/.cargo/registry/index/
-#             ~/.cargo/registry/cache/
-#             ~/.cargo/git/db/
-#             target/
-#           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-#       - name: Set up Python
-#         uses: actions/setup-python@v5
-#         with:
-#           python-version: "3.11.10"
-
-#       - name: Install maturin
-#         run: |
-#           python3 -m pip install maturin
-
-#       - name: Build and install python module
-#         run: |
-#           cd datago
-#           maturin build -i python3.11 --release --target "x86_64-unknown-linux-gnu"
-#           cd target/wheels
-#           python3 -m pip install --user -v *.whl
-
-#       - name: Run the python unit tests
-#         env:
-#           DATAROOM_API_KEY: ${{ secrets.DATAROOM_API_KEY }}
-#           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
-#           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
-
-#         run: |
-#           ls
-#       #     python3 -m pip install -r requirements-tests.txt
-#       #     pytest -xv python/*
-
-
-name: CI
+name: Rust-py
 
 on:
   push:
     branches:
       - main
     tags:
-      - '*'
+      - "*"
   pull_request:
     branches:
-      - main
+      - "*"
   workflow_dispatch:
 
 permissions:
@@ -91,29 +25,38 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - run: git fetch --prune --unshallow
+
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.x
-
+          python-version: 3.11
 
       - name: Install maturin
         run: |
           python3 -m pip install maturin twine
 
-      - name: Build and upload the package
+      # Gather the name of the latest tag on the current main branch
+      - name: Get the latest tag
+        id: get_tag
+        run: echo "tag=$(git describe --tags --abbrev=0)" >> $GITHUB_OUTPUT
+
+      - name: Build the package
         run: |
           maturin build -i python3.11 --release --out dist --target "x86_64-unknown-linux-gnu"
+          mv dist/datago-0.0.0-cp311-cp311-linux_x86_64.whl dist/datago-${{ steps.get_tag.outputs.tag }}-cp311-cp311-linux_x86_64.whl
 
-      # - name: Build wheels
-      #   uses: PyO3/maturin-action@v1
-      #   with:
-      #     target: ${{ matrix.platform.target }}
-      #     args: --release --out dist --find-interpreter
-      #     sccache: 'true'
-      #     # manylinux: auto
-      #     docker-options: "--env CIBW_BEFORE_BUILD_LINUX='${{ env.CIBW_BEFORE_BUILD_LINUX }}'"
-      #   env:
-      #     CIBW_BEFORE_BUILD_LINUX: yum -y install openssl openssl-devel perl-IPC-Cmd
+      - name: Test package
+        env:
+          DATAROOM_API_KEY: ${{ secrets.DATAROOM_API_KEY }}
+          DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
+          DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
+
+        # needs to be replaced with the live version of the package / evolving version number
+        run: |
+          python3 -m pip install dist/datago-${{ steps.get_tag.outputs.tag }}-cp311-cp311-linux_x86_64.whl
+          python3 -m pip install -r requirements-tests.txt
+          cd python
+          python3 -m pytest -v .
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -153,7 +96,7 @@ jobs:
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: 'wheels-*/*'
+          subject-path: "wheels-*/*"
       - name: Publish to PyPI
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: PyO3/maturin-action@v1

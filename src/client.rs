@@ -1,29 +1,21 @@
+use crate::generator_files;
 use crate::generator_http;
 use crate::image_processing::ARAwareTransform;
-use crate::image_processing::ImageTransformConfig;
+use crate::structs::{DatagoClientConfig, Sample, SourceType};
+use crate::worker_files;
 use crate::worker_http;
-use pyo3::prelude::*;
 
 use kanal::bounded;
-use serde::Deserialize;
+use pyo3::prelude::*;
 use std::sync::Arc;
 use std::thread;
 use threadpool::ThreadPool;
 
-#[derive(Deserialize)]
-struct DatagoClientConfig {
-    source_config: generator_http::SourceDBConfig,
-    image_config: Option<ImageTransformConfig>,
-    limit: usize,
-    rank: usize,
-    world_size: usize,
-    samples_buffer_size: usize,
-}
-
 #[pyclass]
 pub struct DatagoClient {
     pub is_started: bool,
-    source_config: generator_http::SourceDBConfig,
+    source_type: SourceType,
+    source_config: serde_json::Value,
     limit: usize,
 
     // Perf settings
@@ -37,8 +29,8 @@ pub struct DatagoClient {
     pages_rx: kanal::Receiver<serde_json::Value>,
     samples_meta_tx: kanal::Sender<serde_json::Value>,
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<worker_http::Sample>,
-    samples_rx: kanal::Receiver<worker_http::Sample>,
+    samples_tx: kanal::Sender<Sample>,
+    samples_rx: kanal::Receiver<Sample>,
     worker_done_count: Arc<std::sync::atomic::AtomicUsize>,
 
     // Sample processing
@@ -77,6 +69,7 @@ impl DatagoClient {
 
         DatagoClient {
             is_started: false,
+            source_type: config.source_type,
             source_config: config.source_config,
             limit: config.limit,
             num_threads,
@@ -105,7 +98,6 @@ impl DatagoClient {
 
         // Spawn a new thread which will query the DB and send the pages
         let pages_tx = self.pages_tx.clone();
-        let source_config = self.source_config.clone();
         let limit = self.limit;
         let rank = self.rank;
         let world_size = self.world_size;
@@ -115,16 +107,42 @@ impl DatagoClient {
             "Rank cannot be greater than or equal to world size"
         );
 
-        self.pinger = Some(thread::spawn(move || {
-            generator_http::ping_pages(pages_tx, source_config, rank, world_size, limit);
-        }));
+        match self.source_type {
+            SourceType::Db => {
+                println!("Using DB as source");
+                // convert the source_config to a SourceDBConfig
+                let source_db_config: generator_http::SourceDBConfig =
+                    serde_json::from_value(self.source_config.clone()).unwrap();
+
+                self.pinger = Some(thread::spawn(move || {
+                    generator_http::ping_pages(pages_tx, source_db_config, rank, world_size, limit);
+                }));
+            }
+            SourceType::File => {
+                // convert the source_config to a SourceFileConfig
+                let source_file_config: generator_files::SourceFileConfig =
+                    serde_json::from_value(self.source_config.clone()).unwrap();
+
+                println!("Using file as source {}", source_file_config.root_path);
+
+                self.pinger = Some(thread::spawn(move || {
+                    generator_files::ping_files(
+                        pages_tx,
+                        source_file_config,
+                        rank,
+                        world_size,
+                        limit,
+                    );
+                }));
+            }
+        }
 
         // Spawn a new thread which will pull the pages and send the sample metadata
         let pages_rx = self.pages_rx.clone();
         let samples_meta_tx = self.samples_meta_tx.clone();
         let limit = self.limit;
         self.feeder = Some(thread::spawn(move || {
-            generator_http::pull_pages(pages_rx, samples_meta_tx, limit);
+            generator_http::dispatch_pages(pages_rx, samples_meta_tx, limit);
         }));
 
         // Spawn threads which will receive the pages
@@ -138,27 +156,43 @@ impl DatagoClient {
             // FIXME: this is a bit ugly, there must be a better way
             let samples_meta_rx_local = self.samples_meta_rx.clone();
             let samples_tx_local = self.samples_tx.clone();
-            let thread_local_client = http_client.clone();
             let local_image_transform = self.image_transform.clone();
             let encode_images = self.encode_images;
             let worker_done_count = self.worker_done_count.clone();
 
-            self.thread_pool.execute(move || {
-                worker_http::pull_samples(
-                    thread_local_client,
-                    samples_meta_rx_local,
-                    samples_tx_local,
-                    worker_done_count,
-                    &local_image_transform,
-                    encode_images,
-                );
-            });
+            match self.source_type {
+                SourceType::Db => {
+                    let thread_local_client = http_client.clone();
+
+                    self.thread_pool.execute(move || {
+                        worker_http::pull_samples(
+                            thread_local_client,
+                            samples_meta_rx_local,
+                            samples_tx_local,
+                            worker_done_count,
+                            &local_image_transform,
+                            encode_images,
+                        );
+                    });
+                }
+                SourceType::File => {
+                    self.thread_pool.execute(move || {
+                        worker_files::pull_samples(
+                            samples_meta_rx_local,
+                            samples_tx_local,
+                            worker_done_count,
+                            &local_image_transform,
+                            encode_images,
+                        );
+                    });
+                }
+            }
         }
 
         self.is_started = true;
     }
 
-    pub fn get_sample(&mut self) -> Option<worker_http::Sample> {
+    pub fn get_sample(&mut self) -> Option<Sample> {
         if !self.is_started {
             self.start();
         }

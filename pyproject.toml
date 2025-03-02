@@ -1,6 +1,5 @@
 [project]
 name = "datago"
-version = "2025.2.1"
 authors = [
   { name="Photoroom", email="team@photoroom.com" },
 ]

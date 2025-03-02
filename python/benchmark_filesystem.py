@@ -1,4 +1,3 @@
-from datago import datago  # type: ignore
 import time
 from tqdm import tqdm
 import os
@@ -18,24 +17,23 @@ def benchmark(
 ):
     print(f"Running benchmark for {root_path} - {limit} samples")
     client_config = {
-        "source_type": datago.SourceTypeFileSystem,
+        "source_type": "file",
         "source_config": {
-            "page_size": 512,
             "root_path": root_path,
-            "rank": 0,
-            "world_size": 1,
         },
         "image_config": {
             "crop_and_resize": crop_and_resize,
-            "default_image_size": 512,
-            "downsampling_ratio": 16,
+            "default_image_size": 1024,
+            "downsampling_ratio": 32,
             "min_aspect_ratio": 0.5,
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
         },
         "prefetch_buffer_size": 128,
-        "samples_buffer_size": 64,
+        "samples_buffer_size": 128,
         "limit": limit,
+        "rank": 0,
+        "world_size": 1,
     }
 
     # Make sure in the following that we compare apples to apples, meaning in that case
@@ -68,7 +66,7 @@ def benchmark(
             transforms.Compose(
                 [
                     transforms.Resize(
-                        (512, 512), interpolation=transforms.InterpolationMode.BICUBIC
+                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
                     ),
                 ]
             )
@@ -81,9 +79,16 @@ def benchmark(
             root=root_path, transform=transform, allow_empty=True
         )
 
+        # Get the number of CPUs on the machine, same as what datago does
+        num_workers = os.cpu_count() or 16
+
         # Create a DataLoader to allow for multiple workers
         dataloader = DataLoader(
-            dataset, batch_size=1, shuffle=False, num_workers=8, collate_fn=lambda x: x
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=lambda x: x,
         )
 
         # Iterate over the DataLoader

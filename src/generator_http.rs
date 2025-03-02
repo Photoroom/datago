@@ -63,7 +63,7 @@ pub struct SourceDBConfig {
 
 // TODO: Derive from the above
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DbRequest {
+struct DbRequest {
     pub fields: String,
     pub sources: String,
     pub sources_ne: String,
@@ -97,7 +97,7 @@ pub struct DbRequest {
 
 // implement a helper to get the http request which corresponds to the db request structure above
 impl DbRequest {
-    pub fn get_http_request(&self, api_url: &str, api_key: &str) -> reqwest::blocking::Request {
+    fn get_http_request(&self, api_url: &str, api_key: &str) -> reqwest::blocking::Request {
         let mut url = if self.random_sampling {
             Url::parse(&format!("{}images/random/", api_url))
         } else {
@@ -344,7 +344,7 @@ pub fn ping_pages(
     };
 }
 
-pub fn pull_pages(
+pub fn dispatch_pages(
     pages_rx: kanal::Receiver<serde_json::Value>,
     samples_meta_tx: kanal::Sender<serde_json::Value>,
     num_samples: usize,
@@ -354,7 +354,7 @@ pub fn pull_pages(
     while count < num_samples {
         match pages_rx.recv() {
             Ok(serde_json::Value::Null) => {
-                println!("pull_pages: end of stream received, stopping there");
+                println!("dispatch_pages: end of stream received, stopping there");
                 break;
             }
             Ok(response_json) => {
@@ -365,7 +365,7 @@ pub fn pull_pages(
 
                         // Push the sample to the channel
                         if samples_meta_tx.send(sample_json).is_err() {
-                            println!("pull_pages: stream already closed, wrapping up");
+                            println!("dispatch_pages: stream already closed, wrapping up");
                             pages_rx.close();
                             break;
                         }
@@ -375,7 +375,7 @@ pub fn pull_pages(
                         if count >= num_samples {
                             // NOTE: This doesn´t count the samples which have actually been processed
                             println!(
-                                "pull_pages: reached the limit of samples requested. Shutting down"
+                                "dispatch_pages: reached the limit of samples requested. Shutting down"
                             );
                             break;
                         }
@@ -387,7 +387,7 @@ pub fn pull_pages(
                 }
             }
             Err(_) => {
-                println!("pull_pages: stream already closed, wrapping up");
+                println!("dispatch_pages: stream already closed, wrapping up");
                 break;
             }
         }
@@ -397,7 +397,7 @@ pub fn pull_pages(
 
     // Either we don't have any more samples or we have reached the limit
     println!(
-        "pull_pages: total samples requested: {}. served {}",
+        "dispatch_pages: total samples requested: {}. served {}",
         num_samples, count
     );
 

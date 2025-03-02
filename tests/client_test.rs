@@ -72,7 +72,7 @@ fn test_get_sample() {
     let sample = client.get_sample();
 
     assert!(sample.is_some());
-    assert!(sample.unwrap().id != "");
+    assert!(!sample.unwrap().id.is_empty());
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn test_limit() {
     for _ in 0..limit {
         let sample = client.get_sample();
         assert!(sample.is_some());
-        assert!(sample.unwrap().id != "");
+        assert!(!sample.unwrap().id.is_empty());
     }
 
     let limit = 100; // limit > page_size
@@ -96,24 +96,24 @@ fn test_limit() {
     for _ in 0..limit {
         let sample = client.get_sample();
         assert!(sample.is_some());
-        assert!(sample.unwrap().id != "");
+        assert!(!sample.unwrap().id.is_empty());
     }
 }
 
 fn check_image(img: &ImagePayload) {
-    assert!(img.data.len() > 0);
+    assert!(!img.data.is_empty());
 
     if img.channels > 0 {
         // Raw image
         assert!(img.channels == 3 || img.channels == 1);
         assert!(img.width > 0);
         assert!(img.height > 0);
-        assert!(img.data.len() * 8 == img.width * img.height * img.bit_depth as usize);
+        assert!(img.data.len() * 8 == img.width * img.height * img.bit_depth);
     } else {
         // Encoded image
         assert!(img.width > 0);
         assert!(img.height > 0);
-        assert!(img.data.len() > 0);
+        assert!(!img.data.is_empty());
         assert!(img.channels == -1);
 
         // Check that we can decode the image
@@ -231,7 +231,7 @@ fn test_tags() {
     assert!(sample.is_some());
 
     let sample = sample.unwrap();
-    assert!(sample.id.len() > 0);
+    assert!(!sample.id.is_empty());
     assert!(sample.tags.contains(&tag.to_string()));
     client.stop();
 
@@ -244,7 +244,7 @@ fn test_tags() {
     assert!(sample.is_some());
 
     let sample = sample.unwrap();
-    assert!(sample.id.len() > 0);
+    assert!(!sample.id.is_empty());
     assert!(!sample.tags.contains(&tag.to_string()));
     client.stop();
 }
@@ -268,7 +268,7 @@ fn test_multiple_sources() {
         assert!(sample.is_some());
 
         let sample = sample.unwrap();
-        assert!(sample.id.len() > 0);
+        assert!(!sample.id.is_empty());
         println!("{}", sample.source);
         assert!(sources.contains(&sample.source.as_str()));
     }
@@ -290,7 +290,7 @@ fn test_sources_ne() {
         assert!(sample.is_some());
 
         let sample = sample.unwrap();
-        assert!(sample.id.len() > 0);
+        assert!(!sample.id.is_empty());
         println!("{}", sample.source);
         assert!(sample.source == "LAION_AESTHETICS");
     }
