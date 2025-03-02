@@ -1,6 +1,5 @@
 [package]
 name = "datago"
-version = "0.1.0"
 edition = "2021"
 
 [lib]
@@ -27,6 +26,7 @@ pyo3 = { version = "0.23.4", features = ["extension-module"] }
 threadpool = "1.8.1"
 num_cpus = "1.16.0"
 openssl = { version = "0.10", features = ["vendored"] }
+walkdir = "2.5.0"
 
 [profile.release]
 opt-level = 3  # Optimize for speed
