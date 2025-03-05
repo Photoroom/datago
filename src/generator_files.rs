@@ -44,11 +44,12 @@ pub fn ping_files(
         }
     });
 
-    let page_size = 500;
+    let page_size = 50;
 
-    // While we have something in the Send the samples to the channel
+    // Iterate over the files and send the pages of files as they come
     let mut count = 0;
     let mut filepaths = Vec::new();
+    let max_submitted_samples = (1.1 * (num_samples as f64)).ceil() as usize;
 
     // Build a page from the files iterator
     for entry in files {
@@ -66,7 +67,7 @@ pub fn ping_files(
         filepaths.push(file_name);
         count += 1;
 
-        if filepaths.len() >= page_size || count >= num_samples {
+        if filepaths.len() >= page_size || count >= max_submitted_samples {
             // Convert the page to a JSON
             let page_json = serde_json::json!({
                 "results": filepaths,
@@ -82,7 +83,7 @@ pub fn ping_files(
             filepaths.clear();
         }
 
-        if count >= num_samples {
+        if count >= max_submitted_samples {
             // NOTE: This doesn´t count the samples which have actually been processed
             println!("ping_pages: reached the limit of samples requested. Shutting down");
             break;

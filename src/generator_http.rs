@@ -163,7 +163,7 @@ pub fn ping_pages(
     source_config: SourceDBConfig,
     rank: usize,
     world_size: usize,
-    num_samples: usize,
+    limit: usize,
 ) {
     let retries = 5;
 
@@ -285,7 +285,8 @@ pub fn ping_pages(
 
     // While we have something in the Send the samples to the channel
     let mut count = 0;
-    while count < num_samples {
+    let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
+    while count < max_submitted_samples {
         // Push the page to the channel
         if pages_tx.send(response_json.clone()).is_err() {
             println!("ping_pages: stream already closed, wrapping up");
@@ -332,7 +333,7 @@ pub fn ping_pages(
     // Either we don't have any more samples or we have reached the limit
     println!(
         "ping_pages: total samples requested: {}. page samples served {}",
-        num_samples, count
+        limit, count
     );
 
     // Send an empty value to signal the end of the stream
@@ -347,11 +348,16 @@ pub fn ping_pages(
 pub fn dispatch_pages(
     pages_rx: kanal::Receiver<serde_json::Value>,
     samples_meta_tx: kanal::Sender<serde_json::Value>,
-    num_samples: usize,
+    limit: usize,
 ) {
-    // While we have something in the Send the samples to the channel
+    // While we have something, send the samples to the channel
     let mut count = 0;
-    while count < num_samples {
+
+    // Send a bit more than the requested samples, in case some are invalid
+    // 10% arbitrary margin, the workers will stop early if not useful
+    let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
+
+    loop {
         match pages_rx.recv() {
             Ok(serde_json::Value::Null) => {
                 println!("dispatch_pages: end of stream received, stopping there");
@@ -372,7 +378,7 @@ pub fn dispatch_pages(
 
                         count += 1;
 
-                        if count >= num_samples {
+                        if count >= max_submitted_samples {
                             // NOTE: This doesn´t count the samples which have actually been processed
                             println!(
                                 "dispatch_pages: reached the limit of samples requested. Shutting down"
@@ -398,7 +404,7 @@ pub fn dispatch_pages(
     // Either we don't have any more samples or we have reached the limit
     println!(
         "dispatch_pages: total samples requested: {}. served {}",
-        num_samples, count
+        limit, count
     );
 
     // Send an empty value to signal the end of the stream

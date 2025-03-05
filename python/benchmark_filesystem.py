@@ -43,10 +43,13 @@ def benchmark(
     start = time.time()  # Note that the datago dataset will start walking the filesystem at construction time
 
     img = None
+    count = 0
     for sample in tqdm(datago_dataset, dynamic_ncols=True):
         assert sample["id"] != ""
         img = sample["image"]
+        count += 1
 
+    assert count == limit, f"Expected {limit} samples, got {count}"
     fps = limit / (time.time() - start)
     print(f"Datago FPS {fps:.2f}")
     del datago_dataset

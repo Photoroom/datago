@@ -291,7 +291,6 @@ fn test_sources_ne() {
 
         let sample = sample.unwrap();
         assert!(!sample.id.is_empty());
-        println!("{}", sample.source);
         assert!(sample.source == "LAION_AESTHETICS");
     }
 }

@@ -161,6 +161,6 @@ fn main() {
     table.add_row(row!["Total Samples", num_samples]);
     table.add_row(row!["Execution time", format!("{:.2}", elapsed_secs)]);
     table.add_row(row!["Samples / s", format!("{:.2}", fps)]);
-    table.add_row(row!["Active Threads", num_cpus::get()]);
+    table.add_row(row!["Threads", num_cpus::get()]);
     table.printstd();
 }

@@ -9,7 +9,6 @@ use kanal::bounded;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use std::thread;
-use threadpool::ThreadPool;
 
 #[pyclass]
 pub struct DatagoClient {
@@ -19,7 +18,6 @@ pub struct DatagoClient {
     limit: usize,
 
     // Perf settings
-    num_threads: usize,
     max_connections: usize,
     rank: usize,
     world_size: usize,
@@ -31,7 +29,6 @@ pub struct DatagoClient {
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Sample>,
     samples_rx: kanal::Receiver<Sample>,
-    worker_done_count: Arc<std::sync::atomic::AtomicUsize>,
 
     // Sample processing
     image_transform: Option<ARAwareTransform>,
@@ -40,7 +37,7 @@ pub struct DatagoClient {
     // Threads
     pinger: Option<thread::JoinHandle<()>>,
     feeder: Option<thread::JoinHandle<()>>,
-    thread_pool: ThreadPool,
+    worker: Option<thread::JoinHandle<()>>,
 }
 
 #[pymethods]
@@ -58,21 +55,16 @@ impl DatagoClient {
 
         if let Some(image_config) = config.image_config {
             if image_config.crop_and_resize {
-                println!("Cropping and resizing images");
                 image_transform = Some(image_config.get_ar_aware_transform());
             }
             encode_images = image_config.pre_encode_images;
         }
-
-        // We use the machine number of CPUs as max number of threads
-        let num_threads = num_cpus::get();
 
         DatagoClient {
             is_started: false,
             source_type: config.source_type,
             source_config: config.source_config,
             limit: config.limit,
-            num_threads,
             max_connections: 512,
             rank: config.rank,
             world_size: config.world_size,
@@ -82,12 +74,11 @@ impl DatagoClient {
             samples_meta_rx,
             samples_tx,
             samples_rx,
-            worker_done_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             image_transform,
             encode_images,
             pinger: None,
             feeder: None,
-            thread_pool: ThreadPool::new(num_threads),
+            worker: None,
         }
     }
 
@@ -147,45 +138,43 @@ impl DatagoClient {
 
         // Spawn threads which will receive the pages
         let http_client = worker_http::SharedClient {
-            client: reqwest::blocking::Client::new(),
+            client: reqwest::Client::new(),
             semaphore: Arc::new(tokio::sync::Semaphore::new(self.max_connections)),
         };
 
-        for _ in 0..self.num_threads {
-            // Need to clone all these trivial values to move them into the thread
-            // FIXME: this is a bit ugly, there must be a better way
-            let samples_meta_rx_local = self.samples_meta_rx.clone();
-            let samples_tx_local = self.samples_tx.clone();
-            let local_image_transform = self.image_transform.clone();
-            let encode_images = self.encode_images;
-            let worker_done_count = self.worker_done_count.clone();
+        // Spawn a thread which will handle the async workers
+        // Need to clone all these trivial values to move them into the thread
+        // FIXME: this is a bit ugly, there must be a better way
+        let samples_meta_rx_local = self.samples_meta_rx.clone();
+        let samples_tx_local = self.samples_tx.clone();
+        let local_image_transform = self.image_transform.clone();
+        let encode_images = self.encode_images;
 
-            match self.source_type {
-                SourceType::Db => {
-                    let thread_local_client = http_client.clone();
+        match self.source_type {
+            SourceType::Db => {
+                let thread_local_client = http_client.clone();
 
-                    self.thread_pool.execute(move || {
-                        worker_http::pull_samples(
-                            thread_local_client,
-                            samples_meta_rx_local,
-                            samples_tx_local,
-                            worker_done_count,
-                            &local_image_transform,
-                            encode_images,
-                        );
-                    });
-                }
-                SourceType::File => {
-                    self.thread_pool.execute(move || {
-                        worker_files::pull_samples(
-                            samples_meta_rx_local,
-                            samples_tx_local,
-                            worker_done_count,
-                            &local_image_transform,
-                            encode_images,
-                        );
-                    });
-                }
+                self.worker = Some(thread::spawn(move || {
+                    worker_http::pull_samples(
+                        thread_local_client,
+                        samples_meta_rx_local,
+                        samples_tx_local,
+                        local_image_transform,
+                        encode_images,
+                        limit,
+                    );
+                }));
+            }
+            SourceType::File => {
+                self.worker = Some(thread::spawn(move || {
+                    worker_files::pull_samples(
+                        samples_meta_rx_local,
+                        samples_tx_local,
+                        local_image_transform,
+                        encode_images,
+                        limit,
+                    );
+                }));
             }
         }
 
@@ -196,15 +185,10 @@ impl DatagoClient {
         if !self.is_started {
             self.start();
         }
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
         // If no more samples and workers are closed, then wrap it up
-        if self
-            .worker_done_count
-            .load(std::sync::atomic::Ordering::Relaxed)
-            == self.num_threads
-            && self.samples_rx.is_empty()
-        {
+        if self.samples_rx.is_closed() {
             println!("No more samples to process, stopping the client");
             self.stop();
             return None;
@@ -221,8 +205,8 @@ impl DatagoClient {
                     None
                 }
             }
-            Err(_) => {
-                println!("Timeout waiting for sample, stopping the client");
+            Err(e) => {
+                println!("Timeout waiting for sample, stopping the client. {}", e);
                 self.stop();
                 None
             }
@@ -236,7 +220,7 @@ impl DatagoClient {
 
         self.samples_meta_rx.close();
         self.pages_rx.close();
-        self.samples_rx.close();
+        self.samples_tx.close();
 
         if let Some(pinger) = self.pinger.take() {
             if pinger.join().is_err() {
@@ -250,7 +234,11 @@ impl DatagoClient {
             }
         }
 
-        self.thread_pool.join();
+        if let Some(worker) = self.worker.take() {
+            if worker.join().is_err() {
+                println!("Failed to join worker thread");
+            }
+        }
         self.is_started = false;
     }
 }

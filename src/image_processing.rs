@@ -21,7 +21,10 @@ impl ImageTransformConfig {
             self.max_aspect_ratio,
         );
 
-        println!("Target image sizes:\n{:?}\n", target_image_sizes);
+        println!(
+            "Cropping and resizing images. Target image sizes:\n{:?}\n",
+            target_image_sizes
+        );
 
         let mut aspect_ratio_to_size = std::collections::HashMap::new();
         for img_size in &target_image_sizes {
@@ -105,7 +108,7 @@ impl ARAwareTransform {
         }
     }
 
-    pub fn crop_and_resize(
+    pub async fn crop_and_resize(
         &self,
         image: &image::DynamicImage,
         aspect_ratio_input: Option<&String>,
@@ -135,8 +138,8 @@ mod tests {
     use image::DynamicImage;
     use image::GenericImageView;
 
-    #[test]
-    fn test_aspect_ratio_transform() {
+    #[tokio::test]
+    async fn test_aspect_ratio_transform() {
         let config = ImageTransformConfig {
             crop_and_resize: true,
             default_image_size: 224,
@@ -155,15 +158,19 @@ mod tests {
 
         // Test image resizing
         let img = DynamicImage::new_rgb8(300, 200);
-        let resized = transform.crop_and_resize(&img, Some(&"1.000".to_string()));
+        let resized = transform
+            .crop_and_resize(&img, Some(&"1.000".to_string()))
+            .await;
         assert_eq!(resized.dimensions(), (224, 224));
 
-        let resized = transform.crop_and_resize(&img, Some(&"1.900".to_string()));
+        let resized = transform
+            .crop_and_resize(&img, Some(&"1.900".to_string()))
+            .await;
         assert_eq!(resized.dimensions(), (304, 160));
 
         // Test empty aspect ratio input (should use closest)
         let img = DynamicImage::new_rgb8(400, 200);
-        let resized = transform.crop_and_resize(&img, None);
+        let resized = transform.crop_and_resize(&img, None).await;
         assert_eq!(resized.dimensions(), (304, 160));
     }
 
