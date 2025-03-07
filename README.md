@@ -21,7 +21,8 @@ Depending on the front ends, datago can be rank and world-size aware, in which c
 
 <details> <summary><strong>Use it</strong></summary>
 
-Using Python 3.11, you can simply install datago with `pip install datago`
+~Using Python 3.11, you can simply install datago with `pip install datago`~
+See https://github.com/Photoroom/datago/issues/83, needs fixing
 
 ## Use the package from Python
 
@@ -48,6 +49,30 @@ for _ in range(10):
 ```
 
 Please note that the image buffers will be passed around as raw pointers, see below.
+To test datago while serving local files (jpg, png, ..), code would look like the following
+
+```python
+from datago import DatagoClient
+import os
+import json
+
+config = {
+    "source_type": "file",
+    "source_config": {
+        "root_path": "myPath",
+    },
+    "limit": 200,
+    "rank": 0,
+    "world_size": 1,
+    "samples_buffer_size": 32,
+}
+
+client = DatagoClient(json.dumps(config))
+
+for _ in range(10):
+    sample = client.get_sample()
+```
+
 
 ## Match the raw exported buffers with typical python types
 
