@@ -1,9 +1,9 @@
-[![Build & Test](https://github.com/Photoroom/datago/actions/workflows/go.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/go.yml)
-[![Gopy](https://github.com/Photoroom/datago/actions/workflows/gopy.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/gopy.yml)
-
 # datago
 
-A golang-based data loader which can be used from Python. Compatible with a [soon-to-be open sourced](https://github.com/Photoroom/dataroom) VectorDB-enabled data stack, which exposes HTTP requests, and with a local filesystem, more front-ends are possible. Focused on image data at the moment, could also easily be more generic.
+[![Rust](https://github.com/Photoroom/datago/actions/workflows/rust.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/rust.yml)
+[![Rust-py](https://github.com/Photoroom/datago/actions/workflows/rust-py.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/rust-py.yml)
+
+A Rust-written data loader which can be used from Python. Compatible with a [soon-to-be open sourced](https://github.com/Photoroom/dataroom) VectorDB-enabled data stack, which exposes HTTP requests, and with a local filesystem, more front-ends are possible. Focused on image data at the moment, could also easily be more generic.
 
 Datago handles, outside of the Python GIL
 
@@ -26,109 +26,57 @@ Using Python 3.11, you can simply install datago with `pip install datago`
 ## Use the package from Python
 
 ```python
-from datago import datago
+from datago import DatagoClient
+import os
 import json
 
-client_config = {
-    # two sources are supported at the moment, DB (API and stack to be shared) & local filesystem
-    # in the case of the filesystem, datago will serve the jpg/png files, ID being filepath
-    "source_type": datago.SourceTypeFileSystem,
+config = {
     "source_config": {
-        "page_size": 512,
-        "root_path": root_path,
+        "sources": os.environ.get("DATAROOM_TEST_SOURCE", ""),
+        "page_size": 500,
     },
-    # this governs the image pre-processing, which will resize and crop to aspect ratio buckets
-    # resizing is high quality by default
-    "image_config": {
-        "crop_and_resize": crop_and_resize,
-        "default_image_size": 512,
-        "downsampling_ratio": 16,
-        "min_aspect_ratio": 0.5,
-        "max_aspect_ratio": 2.0,
-        "pre_encode_images": False,
-    },
-    # some performance options, best settings will depend on your machine
-    "prefetch_buffer_size": 64,
-    "samples_buffer_size": 128,
+    "limit": 200,
+    "rank": 0,
+    "world_size": 1,
+    "samples_buffer_size": 32,
 }
 
-client = datago.GetClientFromJSON(json.dumps(config)) # Will return None if something goes wrong, check the logs
-client.Start()  # This can be done early for convenience, not mandatory
+client = DatagoClient(json.dumps(config))
 
 for _ in range(10):
-    sample = client.GetSample()
+    sample = client.get_sample()
 ```
 
 Please note that the image buffers will be passed around as raw pointers, see below.
 
 ## Match the raw exported buffers with typical python types
 
-See helper functions provided in `types.py`, should be self explanatory. Check python benchmarks for examples.
+See helper functions provided in `raw_types.py`, should be self explanatory. Check python benchmarks for examples.
 
 </details><details> <summary><strong>Build it</strong></summary>
 
-## Install deps
+## Preamble
 
-```bash
-$ sudo apt install golang libjpeg-turbo8-dev libvips-dev
-$ sudo ldconfig
-```
+Just install the rust toolchain via rustup
 
 ## Build a benchmark CLI
+`cargo run --release --  -h` to get all the information, should be fairly straightforward
 
-From the root of this project:
+## Run the rust test suite
 
-```bash
-$ go build cmd/main.go
-```
-
-Running it:
+From the datago folder
 
 ```bash
-$ ./main --help` will tell you all about it
+cargo test
 ```
-
-Running it with additional sanity checks
-
-```bash
-$ go run -race cmd/main/main.go
-```
-
-## Run the go test suite
-
-From the root folder
-
-```bash
-$ go test -v tests/*
-```
-
-## Refresh the python package and its binaries
-
-- Install the dependencies as detailed in the next point
-- Run the `generate_python_package.sh` script
 
 ## Generate the python package binaries manually
 
 ```bash
-$ python3 -m pip install pybindgen
-$ go install golang.org/x/tools/cmd/goimports@latest
-$ go install github.com/go-python/gopy@latest
-$ go install golang.org/x/image/draw
+maturin build -i python3.11 --release --target "x86_64-unknown-linux-gnu"
 ```
 
-NOTE:
-
-- you may need to add `~/go/bin` to your PATH so that gopy is found.
-- - Either `export PATH=$PATH:~/go/bin` or add it to your .bashrc
-- you may need this to make sure that LDD looks at the current folder `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.`
-
-then from the /pkg folder:
-
-```bash
-$ gopy pkg -author="Photoroom" -email="team@photoroom.com" -url="" -name="datago" -version="0.0.1" .
-```
-
-then you can `pip install -e .` from here.
+then you can `pip install` from `target/wheels`
 
 ## Update the pypi release (maintainers)
 
@@ -138,24 +86,24 @@ Create a new tag and a new release in this repo, a new package will be pushed au
 
 # License
 
-    MIT License
+MIT License
 
-    Copyright (c) 2024 Photoroom
+Copyright (c) 2024 Photoroom
 
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the "Software"), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

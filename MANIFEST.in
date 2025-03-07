@@ -1,5 +1,0 @@
-include *.md
-include *.py
-include datago/*.h
-include datago/*.c
-include datago/*.so
