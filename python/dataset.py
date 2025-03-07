@@ -45,7 +45,7 @@ class DatagoIterDataset:
             raise StopIteration
 
         sample = self.client.get_sample()
-        if sample.id == "":
+        if not sample or sample.id == "":
             raise StopIteration
 
         if self.return_python_types:

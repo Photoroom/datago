@@ -1,13 +1,14 @@
 use crate::image_processing;
 use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, UrlLatent};
 use serde::{Deserialize, Serialize};
+use std::cmp::min;
 use std::io::Cursor;
 use std::sync::Arc;
 
 // We'll share a single connection pool across all worker threads
 #[derive(Clone)]
 pub struct SharedClient {
-    pub client: reqwest::blocking::Client,
+    pub client: reqwest::Client,
     pub semaphore: Arc<tokio::sync::Semaphore>,
 }
 
@@ -24,16 +25,21 @@ struct SampleMetadata {
     coca_embedding: Option<CocaEmbedding>,
 }
 
-fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u8>> {
+async fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u8>> {
     // Retry on the request a few times
     let retries = 5;
     let timeout = std::time::Duration::from_secs(30);
     for _ in 0..retries {
         let permit = shared_client.semaphore.acquire();
 
-        if let Ok(response) = shared_client.client.get(url).timeout(timeout).send() {
-            if let Ok(bytes) = response.bytes() {
-                return Some(bytes.to_vec());
+        match shared_client.client.get(url).timeout(timeout).send().await {
+            Ok(response) => {
+                if let Ok(bytes) = response.bytes().await {
+                    return Some(bytes.to_vec());
+                }
+            }
+            Err(e) => {
+                println!("Failed to fetch image bytes: {}", e);
             }
         }
         drop(permit);
@@ -41,14 +47,14 @@ fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u8>> {
     None
 }
 
-fn image_from_url(
+async fn image_from_url(
     client: &SharedClient,
     url: &str,
 ) -> Result<image::DynamicImage, image::ImageError> {
     // Retry on the fetch and decode a few times, could happen that we get a broken packet
     let retries = 5;
     for _ in 0..retries {
-        if let Some(bytes) = bytes_from_url(client, url) {
+        if let Some(bytes) = bytes_from_url(client, url).await {
             return image::load_from_memory(&bytes);
         }
     }
@@ -58,14 +64,14 @@ fn image_from_url(
     )))
 }
 
-fn image_payload_from_url(
+async fn image_payload_from_url(
     client: &SharedClient,
     url: &str,
     img_tfm: &Option<image_processing::ARAwareTransform>,
     aspect_ratio: &String,
     encode_images: bool,
 ) -> Result<ImagePayload, image::ImageError> {
-    match image_from_url(client, url) {
+    match image_from_url(client, url).await {
         Ok(mut new_image) => {
             let original_height = new_image.height() as usize;
             let original_width = new_image.width() as usize;
@@ -80,7 +86,10 @@ fn image_payload_from_url(
                     Some(aspect_ratio)
                 };
 
-                new_image = img_tfm.crop_and_resize(&new_image, aspect_ratio_input);
+                // TODO: tokio::spawn this
+                new_image = img_tfm
+                    .crop_and_resize(&new_image, aspect_ratio_input)
+                    .await;
             }
 
             let height = new_image.height() as usize;
@@ -118,14 +127,13 @@ fn image_payload_from_url(
     }
 }
 
-fn pull_sample(
-    client: &SharedClient,
+async fn pull_sample(
+    client: SharedClient,
     sample_json: serde_json::Value,
-    img_tfm: &Option<image_processing::ARAwareTransform>,
+    img_tfm: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
-) -> Option<Sample> {
-    // TODO: Make this whole function async
-
+    samples_tx: kanal::Sender<Option<Sample>>,
+) -> Result<(), ()> {
     // Deserialize the sample metadata
     let sample: SampleMetadata = serde_json::from_value(sample_json).unwrap(); // Ok to surface an error here, return type will catch it
 
@@ -134,22 +142,28 @@ fn pull_sample(
     let mut aspect_ratio = String::new();
 
     if let Some(image_url) = &sample.image_direct_url {
-        image_payload =
-            match image_payload_from_url(client, image_url, img_tfm, &String::new(), encode_images)
-            {
-                Ok(payload) => {
-                    aspect_ratio = image_processing::aspect_ratio_to_str((
-                        payload.width as i32,
-                        payload.height as i32,
-                    ));
-                    Some(payload)
-                }
-                Err(e) => {
-                    println!("Failed to get image from URL: {}", image_url);
-                    println!("Error: {:?}", e);
-                    return None;
-                }
-            };
+        image_payload = match image_payload_from_url(
+            &client,
+            image_url,
+            &img_tfm,
+            &String::new(),
+            encode_images,
+        )
+        .await
+        {
+            Ok(payload) => {
+                aspect_ratio = image_processing::aspect_ratio_to_str((
+                    payload.width as i32,
+                    payload.height as i32,
+                ));
+                Some(payload)
+            }
+            Err(e) => {
+                println!("Failed to get image from URL: {}", image_url);
+                println!("Error: {:?}", e);
+                return Err(());
+            }
+        };
     }
 
     // Same for the latents, mask and masked images, if they exist
@@ -165,12 +179,14 @@ fn pull_sample(
             if latent.latent_type.contains("image") && !latent.latent_type.contains("latent_") {
                 // Image types, registered as latents but they need to be jpg-decoded
                 match image_payload_from_url(
-                    client,
+                    &client,
                     &latent.file_direct_url,
-                    img_tfm,
+                    &img_tfm,
                     &aspect_ratio,
                     encode_images,
-                ) {
+                )
+                .await
+                {
                     Ok(additional_image_payload) => {
                         additional_images
                             .insert(latent.latent_type.clone(), additional_image_payload);
@@ -181,18 +197,20 @@ fn pull_sample(
                             "Failed to get additional image from URL: {} {} {:?}",
                             latent.latent_type, latent.file_direct_url, e
                         );
-                        return None;
+                        return Err(());
                     }
                 }
             } else if latent.is_mask {
                 // Mask types, registered as latents but they need to be png-decoded
                 match image_payload_from_url(
-                    client,
+                    &client,
                     &latent.file_direct_url,
-                    img_tfm,
+                    &img_tfm,
                     &aspect_ratio,
                     encode_images,
-                ) {
+                )
+                .await
+                {
                     Ok(mask_payload) => {
                         masks.insert(latent.latent_type.clone(), mask_payload);
                     }
@@ -202,12 +220,12 @@ fn pull_sample(
                             "Failed to get mask from URL: {} {} {:?}",
                             latent.latent_type, latent.file_direct_url, e
                         );
-                        return None;
+                        return Err(());
                     }
                 }
             } else {
                 // Vanilla latents, pure binary payloads
-                match bytes_from_url(client, &latent.file_direct_url) {
+                match bytes_from_url(&client, &latent.file_direct_url).await {
                     Some(latent_payload) => {
                         latents.insert(
                             latent.latent_type.clone(),
@@ -219,7 +237,7 @@ fn pull_sample(
                     }
                     None => {
                         println!("Error fetching latent: {}", latent.file_direct_url);
-                        return None;
+                        return Err(());
                     }
                 }
             }
@@ -247,17 +265,26 @@ fn pull_sample(
         coca_embedding: sample.coca_embedding.unwrap_or_default().vector,
         tags: sample.tags.unwrap_or_default(),
     };
-    Some(pulled_sample)
+    if samples_tx.send(Some(pulled_sample)).is_err() {
+        // Channel is closed, wrapping up
+        return Err(());
+    }
+    Ok(())
 }
 
-pub fn pull_samples(
+async fn async_pull_samples(
     client: SharedClient,
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<Sample>,
-    worker_done_count: Arc<std::sync::atomic::AtomicUsize>,
-    image_transform: &Option<image_processing::ARAwareTransform>,
+    samples_tx: kanal::Sender<Option<Sample>>,
+    image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
+    limit: usize,
 ) {
+    // We use async-await here, to better use IO stalls
+    // We'll keep a pool of N async tasks in parallel
+    let max_tasks_per_thread = min(num_cpus::get() * 2, limit);
+    let mut tasks = std::collections::VecDeque::new();
+    let mut count = 0;
     while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
             println!("http_worker: end of stream received, stopping there");
@@ -265,15 +292,69 @@ pub fn pull_samples(
             break;
         }
 
-        if let Some(sample) = pull_sample(&client, received, image_transform, encode_images) {
-            if samples_tx.send(sample).is_err() {
-                println!("http_worker: failed to send a sample");
-                break;
+        // Append a new task to the queue
+        tasks.push_back(tokio::spawn(pull_sample(
+            client.clone(),
+            received,
+            image_transform.clone(),
+            encode_images,
+            samples_tx.clone(),
+        )));
+
+        // If we have enough tasks, we'll wait for the older one to finish
+        if tasks.len() >= max_tasks_per_thread {
+            match tasks.pop_front().unwrap().await {
+                Ok(_) => {
+                    count += 1;
+                }
+                Err(e) => {
+                    println!("worker: sample skipped {}", e);
+                }
             }
-        } else {
+        }
+        if count >= limit {
             break;
         }
     }
 
-    worker_done_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // Make sure to wait for all the remaining tasks
+    while !tasks.is_empty() {
+        match tasks.pop_front().unwrap().await {
+            Ok(_) => {
+                count += 1;
+            }
+            Err(e) => {
+                println!("worker: sample skipped {}", e);
+            }
+        }
+    }
+    println!("http_worker: total samples sent: {}\n", count);
+
+    // Signal the end of the stream
+    samples_tx.send(None).unwrap();
+}
+
+pub fn pull_samples(
+    client: SharedClient,
+    samples_meta_rx: kanal::Receiver<serde_json::Value>,
+    samples_tx: kanal::Sender<Option<Sample>>,
+    image_transform: Option<image_processing::ARAwareTransform>,
+    encode_images: bool,
+    limit: usize,
+) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            async_pull_samples(
+                client,
+                samples_meta_rx,
+                samples_tx,
+                image_transform,
+                encode_images,
+                limit,
+            )
+            .await;
+        });
 }

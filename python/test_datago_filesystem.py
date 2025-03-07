@@ -5,12 +5,12 @@ import tempfile
 
 
 def test_get_sample_filesystem():
-    samples = 10
+    limit = 10
 
     with tempfile.TemporaryDirectory() as tmpdirname:
         cwd = tmpdirname
         # Dump a sample image to the filesystem
-        for i in range(samples):
+        for i in range(limit):
             img = Image.new("RGB", (100, 100))
             img.save(cwd + f"/test_{i}.png")
 
@@ -28,7 +28,7 @@ def test_get_sample_filesystem():
                 "max_aspect_ratio": 2.0,
                 "pre_encode_images": False,
             },
-            "limit": samples,
+            "limit": limit,
             "prefetch_buffer_size": 64,
             "samples_buffer_size": 10,
             "rank": 0,
@@ -36,11 +36,17 @@ def test_get_sample_filesystem():
         }
 
         client = DatagoClient(json.dumps(client_config))
-        for i in range(samples):
+        count = 0
+        for i in range(limit):
             data = client.get_sample()
+            if not data:
+                break
+            count += 1
             assert data.id != ""
             assert data.image.width == 100
             assert data.image.height == 100
+
+        assert count == limit
 
 
 if __name__ == "__main__":
