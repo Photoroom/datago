@@ -1,4 +1,4 @@
-name: Rust-py
+name: Push to PyPI
 
 on:
   push:
@@ -22,6 +22,10 @@ jobs:
         platform:
           - runner: ubuntu-latest
             target: x86_64
+
+    environment:
+      name: release
+      url: https://pypi.org/p/datago
 
     steps:
       - uses: actions/checkout@v4

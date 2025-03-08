@@ -1,7 +1,7 @@
 # datago
 
 [![Rust](https://github.com/Photoroom/datago/actions/workflows/rust.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/rust.yml)
-[![Rust-py](https://github.com/Photoroom/datago/actions/workflows/rust-py.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/rust-py.yml)
+[![Rust-py](https://github.com/Photoroom/datago/actions/workflows/rust-py.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/ci-cd.yml)
 
 A Rust-written data loader which can be used from Python. Compatible with a [soon-to-be open sourced](https://github.com/Photoroom/dataroom) VectorDB-enabled data stack, which exposes HTTP requests, and with a local filesystem, more front-ends are possible. Focused on image data at the moment, could also easily be more generic.
 
