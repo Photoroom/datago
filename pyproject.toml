@@ -13,6 +13,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
 ]
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"
@@ -25,7 +26,7 @@ target = "x86_64-unknown-linux-gnu"
 
 [tool.maturin]
 # Include additional files
-include = []
+include = ["LICENCE", "README.md"]
 # Exclude files
 exclude = []
 # Bindings type
@@ -36,8 +37,6 @@ compatibility = "linux"
 auditwheel = "repair"
 # Don't check for manylinux compliance, deprecated in favor of auditwheel = "audit"
 skip-auditwheel = false
-# Python source directory
-python-source = "src"
 # Python packages to include
 python-packages = []
 # Strip the library for minimum file size
