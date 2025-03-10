@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "datago"
-version = "0.0.0"
+version = "2015.3.2"
 dependencies = [
  "clap",
  "image",

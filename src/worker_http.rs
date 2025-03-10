@@ -331,7 +331,7 @@ async fn async_pull_samples(
     println!("http_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream
-    samples_tx.send(None).unwrap();
+    if samples_tx.send(None).is_ok() {} // Channel could have been closed by a .stop() call
 }
 
 pub fn pull_samples(
