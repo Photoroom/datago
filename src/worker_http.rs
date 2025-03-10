@@ -76,7 +76,8 @@ async fn image_payload_from_url(
             let original_height = new_image.height() as usize;
             let original_width = new_image.width() as usize;
             let mut channels = new_image.color().channel_count() as i8;
-            let bit_depth = new_image.color().bits_per_pixel() as usize;
+            let bit_depth = (new_image.color().bits_per_pixel()
+                / new_image.color().channel_count() as u16) as usize;
 
             // Optionally transform the additional image in the same way the main image was
             if let Some(img_tfm) = img_tfm {
@@ -331,7 +332,7 @@ async fn async_pull_samples(
     println!("http_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream
-    samples_tx.send(None).unwrap();
+    if samples_tx.send(None).is_ok() {} // Channel could have been closed by a .stop() call
 }
 
 pub fn pull_samples(

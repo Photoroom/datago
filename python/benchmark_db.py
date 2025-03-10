@@ -20,7 +20,7 @@ def benchmark(
 ):
     print(f"Running benchmark for {source} - {limit} samples")
     client_config = {
-        # "source_type": datago.SourceTypeDB,
+        "source_type": "db",
         "source_config": {
             "page_size": 512,
             "sources": source,
