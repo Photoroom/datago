@@ -185,7 +185,7 @@ impl DatagoClient {
         if !self.is_started {
             self.start();
         }
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
         // If no more samples and workers are closed, then wrap it up
         if self.samples_rx.is_closed() {
