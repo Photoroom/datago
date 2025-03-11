@@ -21,8 +21,7 @@ Depending on the front ends, datago can be rank and world-size aware, in which c
 
 <details> <summary><strong>Use it</strong></summary>
 
-~Using Python 3.11, you can simply install datago with `pip install datago`~
-See https://github.com/Photoroom/datago/issues/83, needs fixing
+Using Python 3.11, you can simply install datago with `pip install datago`
 
 ## Use the package from Python
 
@@ -97,8 +96,20 @@ cargo test
 
 ## Generate the python package binaries manually
 
+Build a wheel useable locally
+
 ```bash
 maturin build -i python3.11 --release --target "x86_64-unknown-linux-gnu"
+```
+
+Build a wheel which can be uploaded to pypi or related
+
+- either use a manylinux docker image
+
+- or cross compile using zip
+
+```bash
+maturin build -i python3.11 --release --target "x86_64-unknown-linux-gnu" --manylinux 2014 --zig
 ```
 
 then you can `pip install` from `target/wheels`

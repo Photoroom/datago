@@ -1,4 +1,4 @@
-name: Push to PyPI
+name: Python bindings
 
 on:
   push:
@@ -22,6 +22,7 @@ jobs:
         platform:
           - runner: ubuntu-latest
             target: x86_64
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
 
     environment:
       name: release
@@ -33,11 +34,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: ${{ matrix.python-version }}
 
-      - name: Install maturin
+      - name: Install deps
         run: |
           python3 -m pip install maturin twine
+          sudo snap install zig --classic --beta
 
       # Gather the name of the latest tag on the current main branch
       - name: Get the latest tag
@@ -46,26 +48,27 @@ jobs:
 
       - name: Build the package
         run: |
-          maturin build -i python3.11 --release --out dist --target "x86_64-unknown-linux-gnu"
-          mv dist/datago-0.0.0-cp311-cp311-linux_x86_64.whl dist/datago-${{ steps.get_tag.outputs.tag }}-cp311-cp311-linux_x86_64.whl
+          maturin build -i python${{ matrix.python-version }} --release --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2014 --zig
 
       - name: Test package
         env:
           DATAROOM_API_KEY: ${{ secrets.DATAROOM_API_KEY }}
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
-
-        # needs to be replaced with the live version of the package / evolving version number
         run: |
-          python3 -m pip install dist/datago-${{ steps.get_tag.outputs.tag }}-cp311-cp311-linux_x86_64.whl
-          python3 -m pip install -r requirements-tests.txt
-          cd python
-          python3 -m pytest -v .
+            if [ "${{ matrix.python-version }}" == "3.11" ]; then
+            python3 -m pip install dist/*.whl
+            python3 -m pip install -r requirements-tests.txt
+            cd python
+            python3 -m pytest -v .
+            else
+            echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
+            fi
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.platform.target }}
+          name: wheels-linux-${{ matrix.platform.target }}-py${{ matrix.python-version }}
           path: dist
 
   sdist:
