@@ -108,7 +108,9 @@ fn check_image(img: &ImagePayload) {
         assert!(img.channels == 3 || img.channels == 1);
         assert!(img.width > 0);
         assert!(img.height > 0);
-        assert!(img.data.len() * 8 == img.width * img.height * img.bit_depth);
+        assert!(
+            img.data.len() * 8 == img.width * img.height * img.bit_depth * img.channels as usize
+        );
     } else {
         // Encoded image
         assert!(img.width > 0);
