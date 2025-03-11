@@ -356,8 +356,9 @@ pub fn dispatch_pages(
     // Send a bit more than the requested samples, in case some are invalid
     // 10% arbitrary margin, the workers will stop early if not useful
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
+    let mut keep_going = true;
 
-    loop {
+    while keep_going {
         match pages_rx.recv() {
             Ok(serde_json::Value::Null) => {
                 println!("dispatch_pages: end of stream received, stopping there");
@@ -371,9 +372,12 @@ pub fn dispatch_pages(
                             let sample_json = serde_json::from_value(sample.clone()).unwrap();
 
                             // Push the sample to the channel
-                            if samples_meta_tx.send(sample_json).is_err() {
-                                println!("dispatch_pages: stream already closed, wrapping up");
-                                pages_rx.close();
+                            if let Err(e) = samples_meta_tx.send(sample_json) {
+                                println!(
+                                    "dispatch_pages: stream already closed, wrapping up {}",
+                                    e
+                                );
+                                keep_going = false;
                                 break;
                             }
 
@@ -384,6 +388,7 @@ pub fn dispatch_pages(
                                 println!(
                                     "dispatch_pages: reached the limit of samples requested. Shutting down"
                                 );
+                                keep_going = false;
                                 break;
                             }
                         }
@@ -397,12 +402,10 @@ pub fn dispatch_pages(
             }
             Err(_) => {
                 println!("dispatch_pages: stream already closed, wrapping up");
-                break;
+                break; // already in the outer loop
             }
         }
     }
-
-    pages_rx.close();
 
     // Either we don't have any more samples or we have reached the limit
     println!(
