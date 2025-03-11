@@ -372,8 +372,11 @@ pub fn dispatch_pages(
                             let sample_json = serde_json::from_value(sample.clone()).unwrap();
 
                             // Push the sample to the channel
-                            if samples_meta_tx.send(sample_json).is_err() {
-                                println!("dispatch_pages: stream already closed, wrapping up");
+                            if let Err(e) = samples_meta_tx.send(sample_json) {
+                                println!(
+                                    "dispatch_pages: stream already closed, wrapping up {}",
+                                    e
+                                );
                                 keep_going = false;
                                 break;
                             }
