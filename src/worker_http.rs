@@ -343,7 +343,7 @@ pub fn pull_samples(
     encode_images: bool,
     limit: usize,
 ) {
-    tokio::runtime::Builder::new_current_thread()
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap()
