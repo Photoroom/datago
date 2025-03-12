@@ -100,10 +100,11 @@ impl DatagoClient {
 
         match self.source_type {
             SourceType::Db => {
-                println!("Using DB as source");
                 // convert the source_config to a SourceDBConfig
                 let source_db_config: generator_http::SourceDBConfig =
                     serde_json::from_value(self.source_config.clone()).unwrap();
+
+                println!("Using DB as source");
 
                 self.pinger = Some(thread::spawn(move || {
                     generator_http::ping_pages(pages_tx, source_db_config, rank, world_size, limit);

@@ -112,6 +112,8 @@ fn main() {
         "samples_buffer_size": samples_buffer_size
     });
 
+    println!("{}", config);
+
     let mut client = client::DatagoClient::new(config.to_string());
 
     // -----------------------------------------------------------------

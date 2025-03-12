@@ -1,5 +1,6 @@
 use crate::image_processing;
 use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, UrlLatent};
+use crate::worker_files::consume_oldest_task;
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::io::Cursor;
@@ -129,11 +130,11 @@ async fn image_payload_from_url(
 }
 
 async fn pull_sample(
-    client: SharedClient,
+    client: Arc<SharedClient>,
     sample_json: serde_json::Value,
-    img_tfm: Option<image_processing::ARAwareTransform>,
+    img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encode_images: bool,
-    samples_tx: kanal::Sender<Option<Sample>>,
+    samples_tx: Arc<kanal::Sender<Option<Sample>>>,
 ) -> Result<(), ()> {
     // Deserialize the sample metadata
     let sample: SampleMetadata = serde_json::from_value(sample_json).unwrap(); // Ok to surface an error here, return type will catch it
@@ -281,11 +282,21 @@ async fn async_pull_samples(
     encode_images: bool,
     limit: usize,
 ) {
+    // TODO: Join with the other workers' implementation, same logic
+
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
-    let max_tasks_per_thread = min(num_cpus::get() * 2, limit);
+    let max_tasks_per_thread = min(num_cpus::get(), limit);
+    println!(
+        "Using {} threads in the async threadpool",
+        max_tasks_per_thread
+    );
     let mut tasks = std::collections::VecDeque::new();
     let mut count = 0;
+    let shareable_client = Arc::new(client);
+    let shareable_channel_tx = Arc::new(samples_tx);
+    let shareable_img_tfm = Arc::new(image_transform);
+
     while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
             println!("http_worker: end of stream received, stopping there");
@@ -295,23 +306,16 @@ async fn async_pull_samples(
 
         // Append a new task to the queue
         tasks.push_back(tokio::spawn(pull_sample(
-            client.clone(),
+            shareable_client.clone(),
             received,
-            image_transform.clone(),
+            shareable_img_tfm.clone(),
             encode_images,
-            samples_tx.clone(),
+            shareable_channel_tx.clone(),
         )));
 
         // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks_per_thread {
-            match tasks.pop_front().unwrap().await {
-                Ok(_) => {
-                    count += 1;
-                }
-                Err(e) => {
-                    println!("worker: sample skipped {}", e);
-                }
-            }
+        if tasks.len() >= max_tasks_per_thread && consume_oldest_task(&mut tasks).await.is_ok() {
+            count += 1;
         }
         if count >= limit {
             break;
@@ -320,19 +324,14 @@ async fn async_pull_samples(
 
     // Make sure to wait for all the remaining tasks
     while !tasks.is_empty() {
-        match tasks.pop_front().unwrap().await {
-            Ok(_) => {
-                count += 1;
-            }
-            Err(e) => {
-                println!("worker: sample skipped {}", e);
-            }
+        if consume_oldest_task(&mut tasks).await.is_ok() {
+            count += 1;
         }
     }
     println!("http_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream
-    if samples_tx.send(None).is_ok() {} // Channel could have been closed by a .stop() call
+    if shareable_channel_tx.send(None).is_ok() {} // Channel could have been closed by a .stop() call
 }
 
 pub fn pull_samples(
