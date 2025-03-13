@@ -121,7 +121,7 @@ async fn async_pull_samples(
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
-    let max_tasks_per_thread = min(num_cpus::get() * 2, limit);
+    let max_tasks = min(num_cpus::get() * 2, limit);
     let mut tasks = std::collections::VecDeque::new();
     let mut count = 0;
 
@@ -141,7 +141,7 @@ async fn async_pull_samples(
         )));
 
         // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks_per_thread && consume_oldest_task(&mut tasks).await.is_ok() {
+        if tasks.len() >= max_tasks && consume_oldest_task(&mut tasks).await.is_ok() {
             count += 1;
         }
         if count >= limit {

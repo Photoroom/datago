@@ -39,9 +39,7 @@ async fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u
                     return Some(bytes.to_vec());
                 }
             }
-            Err(e) => {
-                println!("Failed to fetch image bytes: {}", e);
-            }
+            Err(_) => {}
         }
         drop(permit);
     }
@@ -99,7 +97,14 @@ async fn image_payload_from_url(
 
             // Encode the image if needed
             let mut image_bytes: Vec<u8> = Vec::new();
+
             if encode_images {
+                // If the image is 16 bits or 2 channels, standardize to 8 bits, 3 channels
+                if new_image.color() != image::ColorType::Rgb8 {
+                    new_image = image::DynamicImage::ImageRgb8(new_image.to_rgb8());
+                }
+
+                // Pre-encode the payload as requested, we move everything to PNGs
                 if new_image
                     .write_to(&mut Cursor::new(&mut image_bytes), image::ImageFormat::Png)
                     .is_err()
@@ -286,11 +291,8 @@ async fn async_pull_samples(
 
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
-    let max_tasks_per_thread = min(num_cpus::get(), limit);
-    println!(
-        "Using {} threads in the async threadpool",
-        max_tasks_per_thread
-    );
+    let max_tasks = min(num_cpus::get(), limit);
+    println!("Using {} tasks in the async threadpool", max_tasks);
     let mut tasks = std::collections::VecDeque::new();
     let mut count = 0;
     let shareable_client = Arc::new(client);
@@ -314,7 +316,7 @@ async fn async_pull_samples(
         )));
 
         // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks_per_thread && consume_oldest_task(&mut tasks).await.is_ok() {
+        if tasks.len() >= max_tasks && consume_oldest_task(&mut tasks).await.is_ok() {
             count += 1;
         }
         if count >= limit {
@@ -343,6 +345,7 @@ pub fn pull_samples(
     limit: usize,
 ) {
     tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(num_cpus::get())
         .enable_all()
         .build()
         .unwrap()

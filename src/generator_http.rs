@@ -97,7 +97,7 @@ struct DbRequest {
 
 // implement a helper to get the http request which corresponds to the db request structure above
 impl DbRequest {
-    fn get_http_request(&self, api_url: &str, api_key: &str) -> reqwest::blocking::Request {
+    async fn get_http_request(&self, api_url: &str, api_key: &str) -> reqwest::Request {
         let mut url = if self.random_sampling {
             Url::parse(&format!("{}images/random/", api_url))
         } else {
@@ -145,7 +145,7 @@ impl DbRequest {
             maybe_add_field("partition", &self.partition);
         }
 
-        let mut req = reqwest::blocking::Request::new(reqwest::Method::GET, url);
+        let mut req = reqwest::Request::new(reqwest::Method::GET, url);
         req.headers_mut().append(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Token {}", api_key))
@@ -158,15 +158,7 @@ impl DbRequest {
     }
 }
 
-pub fn ping_pages(
-    pages_tx: kanal::Sender<serde_json::Value>,
-    source_config: SourceDBConfig,
-    rank: usize,
-    world_size: usize,
-    limit: usize,
-) {
-    let retries = 5;
-
+fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) -> DbRequest {
     // Build the request to the DB, given the source configuration
     // There are a lot of straight copies, but also some internal logic
     let mut fields = "id,source,attributes,height,width,tags".to_string();
@@ -212,7 +204,7 @@ pub fn ping_pages(
         }
     };
 
-    let db_request = DbRequest {
+    DbRequest {
         fields,
         sources: source_config.sources,
         sources_ne: source_config.sources_ne,
@@ -242,7 +234,39 @@ pub fn ping_pages(
         } else {
             "".to_string()
         },
-    };
+    }
+}
+
+async fn get_response(
+    client: &reqwest::Client,
+    request: &reqwest::Request,
+    retries: i8,
+) -> Result<serde_json::Value, reqwest::Error> {
+    for _ in 0..retries {
+        match client.execute(request.try_clone().unwrap()).await {
+            Ok(response) => match response.text().await {
+                Ok(response_text) => {
+                    return Ok(
+                        serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null)
+                    );
+                }
+                Err(e) => return Err(e),
+            },
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(serde_json::Value::Null)
+}
+
+async fn async_ping_pages(
+    pages_tx: kanal::Sender<serde_json::Value>,
+    source_config: SourceDBConfig,
+    rank: usize,
+    world_size: usize,
+    limit: usize,
+) {
+    let retries = 5;
 
     let api_url = std::env::var("DATAROOM_API_URL").expect("DATAROOM_API_URL not set");
     let api_key = std::env::var("DATAROOM_API_KEY").expect("DATAROOM_API_KEY not set");
@@ -252,30 +276,25 @@ pub fn ping_pages(
         HeaderValue::from_str(&format!("Token  {}", api_key)).unwrap(),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
+    let db_request = build_request(source_config.clone(), rank, world_size);
 
     // Send the request and dispatch the response to the channel
-    let mut response_json = serde_json::Value::Null;
+    let mut response_json: serde_json::Value;
     let mut next_url = &serde_json::Value::Null;
 
-    let initial_request = db_request.get_http_request(&api_url, &api_key);
+    let initial_request = db_request.get_http_request(&api_url, &api_key).await;
 
-    for _ in 0..retries {
-        if let Ok(response) = client.execute(initial_request.try_clone().unwrap()) {
-            // We can now deserialize the response, extract the "result" and "next" fields.
-            if let Ok(response_text) = response.text() {
-                response_json =
-                    serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
-
-                if let Some(next) = response_json.get("next") {
-                    next_url = next;
-                } else {
-                    println!("No next URL in the response");
-                    println!("{:?}", response_text);
-                }
-                break;
-            }
+    if let Ok(tentative_json) = get_response(&client, &initial_request, retries).await {
+        response_json = tentative_json.clone();
+        if let Some(next) = response_json.get("next") {
+            next_url = &next;
+        } else {
+            println!("No next URL in the response {:?}", response_json);
         }
+    } else {
+        println!("Couldn't get first page from DB");
+        return;
     }
 
     if response_json == serde_json::Value::Null {
@@ -299,34 +318,18 @@ pub fn ping_pages(
             println!("No more pages, exiting");
             break;
         }
-        let mut new_request = reqwest::blocking::Request::new(
+        let mut new_request = reqwest::Request::new(
             reqwest::Method::GET,
             reqwest::Url::parse(next_url.as_str().unwrap()).unwrap(),
         );
         new_request.headers_mut().extend(headers.clone());
 
         next_url = &serde_json::Value::Null;
-        for _ in 0..retries {
-            if let Ok(new_response) = client.execute(new_request.try_clone().unwrap()) {
-                if !new_response.status().is_success() {
-                    println!("Error: {:?}", new_response);
-                    continue;
-                }
-
-                if let Ok(response_text) = new_response.text() {
-                    let decoded_response = serde_json::from_str(&response_text);
-                    if decoded_response.is_err() {
-                        println!("Failed to decode the response");
-                        println!("{:?}", response_text);
-                        break;
-                    }
-                    response_json = decoded_response.unwrap();
-                    next_url = response_json
-                        .get("next")
-                        .unwrap_or(&serde_json::Value::Null);
-                    break;
-                }
-            }
+        if let Ok(tentative_json) = get_response(&client, &new_request, retries).await {
+            response_json = tentative_json.clone();
+            next_url = response_json
+                .get("next")
+                .unwrap_or(&serde_json::Value::Null);
         }
     }
 
@@ -335,13 +338,26 @@ pub fn ping_pages(
         "ping_pages: total samples requested: {}. page samples served {}",
         limit, count
     );
+}
+
+pub fn ping_pages(
+    pages_tx: kanal::Sender<serde_json::Value>,
+    source_config: SourceDBConfig,
+    rank: usize,
+    world_size: usize,
+    limit: usize,
+) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            async_ping_pages(pages_tx.clone(), source_config, rank, world_size, limit).await;
+        });
 
     // Send an empty value to signal the end of the stream
-    match pages_tx.send(serde_json::Value::Null) {
-        Ok(_) => {}
-        Err(_) => {
-            println!("ping_pages: stream already closed, all good");
-        }
+    if pages_tx.send(serde_json::Value::Null).is_err() {
+        println!("ping_pages: stream already closed, all good");
     };
 }
 
@@ -414,10 +430,7 @@ pub fn dispatch_pages(
     );
 
     // Send an empty value to signal the end of the stream
-    match samples_meta_tx.send(serde_json::Value::Null) {
-        Ok(_) => {}
-        Err(_) => {
-            println!("dispatch_pages: stream already closed, all good");
-        }
+    if samples_meta_tx.send(serde_json::Value::Null).is_err() {
+        println!("dispatch_pages: stream already closed, all good");
     }
 }
