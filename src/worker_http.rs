@@ -35,13 +35,16 @@ async fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u
 
         match shared_client.client.get(url).timeout(timeout).send().await {
             Ok(response) => {
+                drop(permit);
+
                 if let Ok(bytes) = response.bytes().await {
                     return Some(bytes.to_vec());
                 }
             }
-            Err(_) => {}
+            Err(_) => {
+                drop(permit);
+            }
         }
-        drop(permit);
     }
     None
 }

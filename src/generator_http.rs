@@ -325,11 +325,16 @@ async fn async_ping_pages(
         new_request.headers_mut().extend(headers.clone());
 
         next_url = &serde_json::Value::Null;
-        if let Ok(tentative_json) = get_response(&client, &new_request, retries).await {
-            response_json = tentative_json.clone();
-            next_url = response_json
-                .get("next")
-                .unwrap_or(&serde_json::Value::Null);
+        match get_response(&client, &new_request, retries).await {
+            Ok(tentative_json) => {
+                response_json = tentative_json.clone();
+                next_url = response_json
+                    .get("next")
+                    .unwrap_or(&serde_json::Value::Null);
+            }
+            Err(e) => {
+                println!("Failed fetching a new page: {}", e)
+            }
         }
     }
 

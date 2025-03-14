@@ -138,8 +138,14 @@ impl DatagoClient {
         }));
 
         // Spawn threads which will receive the pages
+        let base_client = reqwest::Client::builder()
+            .pool_idle_timeout(Some(std::time::Duration::from_secs(30))) // Or set shorter idle timeout
+            .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+            .build()
+            .unwrap();
+
         let http_client = worker_http::SharedClient {
-            client: reqwest::Client::new(),
+            client: base_client,
             semaphore: Arc::new(tokio::sync::Semaphore::new(self.max_connections)),
         };
 
