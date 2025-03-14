@@ -1,6 +1,8 @@
 use crate::image_processing;
 use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, UrlLatent};
 use crate::worker_files::consume_oldest_task;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::io::Cursor;
@@ -9,8 +11,26 @@ use std::sync::Arc;
 // We'll share a single connection pool across all worker threads
 #[derive(Clone)]
 pub struct SharedClient {
-    pub client: reqwest::Client,
+    pub client: ClientWithMiddleware,
     pub semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+pub fn new_shared_client(max_connections: usize) -> SharedClient {
+    let retry_policy = ExponentialBackoff::builder()
+        .retry_bounds(
+            std::time::Duration::from_millis(100), // min_retry_interval
+            std::time::Duration::from_secs(3),
+        )
+        .build_with_max_retries(3);
+
+    let client = ClientBuilder::new(reqwest::Client::new())
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
+
+    SharedClient {
+        client,
+        semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
+    }
 }
 
 // ------------------------------------------------------------------
@@ -28,33 +48,24 @@ struct SampleMetadata {
 
 async fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u8>> {
     // Retry on the request a few times
-    let retries = 5;
     let timeout = std::time::Duration::from_secs(30);
-    for _ in 0..retries {
-        let permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire();
 
-        match shared_client.client.get(url).timeout(timeout).send().await {
-            Ok(response) => {
-                drop(permit);
-
-                if let Ok(bytes) = response.bytes().await {
-                    return Some(bytes.to_vec());
-                }
-            }
-            Err(_) => {
-                drop(permit);
-            }
+    if let Ok(response) = shared_client.client.get(url).timeout(timeout).send().await {
+        if let Ok(bytes) = response.bytes().await {
+            return Some(bytes.to_vec());
         }
     }
+
     None
 }
 
 async fn image_from_url(
     client: &SharedClient,
     url: &str,
+    retries: i32,
 ) -> Result<image::DynamicImage, image::ImageError> {
     // Retry on the fetch and decode a few times, could happen that we get a broken packet
-    let retries = 5;
     for _ in 0..retries {
         if let Some(bytes) = bytes_from_url(client, url).await {
             return image::load_from_memory(&bytes);
@@ -73,7 +84,9 @@ async fn image_payload_from_url(
     aspect_ratio: &String,
     encode_images: bool,
 ) -> Result<ImagePayload, image::ImageError> {
-    match image_from_url(client, url).await {
+    let retries = 5;
+
+    match image_from_url(client, url, retries).await {
         Ok(mut new_image) => {
             let original_height = new_image.height() as usize;
             let original_width = new_image.width() as usize;
@@ -279,6 +292,7 @@ async fn pull_sample(
         coca_embedding: sample.coca_embedding.unwrap_or_default().vector,
         tags: sample.tags.unwrap_or_default(),
     };
+
     if samples_tx.send(Some(pulled_sample)).is_err() {
         // Channel is closed, wrapping up
         return Err(());
@@ -287,7 +301,7 @@ async fn pull_sample(
 }
 
 async fn async_pull_samples(
-    client: SharedClient,
+    client: Arc<SharedClient>,
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
@@ -302,8 +316,7 @@ async fn async_pull_samples(
     println!("Using {} tasks in the async threadpool", max_tasks);
     let mut tasks = std::collections::VecDeque::new();
     let mut count = 0;
-    let shareable_client = Arc::new(client);
-    let shareable_channel_tx = Arc::new(samples_tx);
+    let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
     let shareable_img_tfm = Arc::new(image_transform);
 
     while let Ok(received) = samples_meta_rx.recv() {
@@ -315,7 +328,7 @@ async fn async_pull_samples(
 
         // Append a new task to the queue
         tasks.push_back(tokio::spawn(pull_sample(
-            shareable_client.clone(),
+            client.clone(),
             received,
             shareable_img_tfm.clone(),
             encode_images,
@@ -344,7 +357,7 @@ async fn async_pull_samples(
 }
 
 pub fn pull_samples(
-    client: SharedClient,
+    client: Arc<SharedClient>,
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
