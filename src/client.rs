@@ -98,6 +98,18 @@ impl DatagoClient {
             "Rank cannot be greater than or equal to world size"
         );
 
+        let base_client = reqwest::Client::builder()
+            .pool_idle_timeout(Some(std::time::Duration::from_secs(30)))
+            .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+
+        let http_client = Arc::new(worker_http::SharedClient {
+            client: base_client,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(self.max_connections)),
+        });
+
         match self.source_type {
             SourceType::Db => {
                 // convert the source_config to a SourceDBConfig
@@ -105,9 +117,17 @@ impl DatagoClient {
                     serde_json::from_value(self.source_config.clone()).unwrap();
 
                 println!("Using DB as source");
+                let http_client = http_client.clone();
 
                 self.pinger = Some(thread::spawn(move || {
-                    generator_http::ping_pages(pages_tx, source_db_config, rank, world_size, limit);
+                    generator_http::ping_pages(
+                        http_client,
+                        pages_tx,
+                        source_db_config,
+                        rank,
+                        world_size,
+                        limit,
+                    );
                 }));
             }
             SourceType::File => {
@@ -137,18 +157,6 @@ impl DatagoClient {
             generator_http::dispatch_pages(pages_rx, samples_meta_tx, limit);
         }));
 
-        // Spawn threads which will receive the pages
-        let base_client = reqwest::Client::builder()
-            .pool_idle_timeout(Some(std::time::Duration::from_secs(30))) // Or set shorter idle timeout
-            .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
-            .build()
-            .unwrap();
-
-        let http_client = worker_http::SharedClient {
-            client: base_client,
-            semaphore: Arc::new(tokio::sync::Semaphore::new(self.max_connections)),
-        };
-
         // Spawn a thread which will handle the async workers
         // Need to clone all these trivial values to move them into the thread
         // FIXME: this is a bit ugly, there must be a better way
@@ -159,11 +167,10 @@ impl DatagoClient {
 
         match self.source_type {
             SourceType::Db => {
-                let thread_local_client = http_client.clone();
-
+                // Spawn threads which will receive the pages
                 self.worker = Some(thread::spawn(move || {
                     worker_http::pull_samples(
-                        thread_local_client,
+                        http_client,
                         samples_meta_rx_local,
                         samples_tx_local,
                         local_image_transform,

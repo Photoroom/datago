@@ -3,6 +3,9 @@ use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::worker_http::SharedClient;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDBConfig {
@@ -238,12 +241,18 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 }
 
 async fn get_response(
-    client: &reqwest::Client,
+    shared_client: Arc<SharedClient>,
     request: &reqwest::Request,
     retries: i8,
 ) -> Result<serde_json::Value, reqwest::Error> {
     for _ in 0..retries {
-        match client.execute(request.try_clone().unwrap()).await {
+        let _permit = shared_client.semaphore.acquire();
+
+        match shared_client
+            .client
+            .execute(request.try_clone().unwrap())
+            .await
+        {
             Ok(response) => match response.text().await {
                 Ok(response_text) => {
                     return Ok(
@@ -260,6 +269,7 @@ async fn get_response(
 }
 
 async fn async_ping_pages(
+    shared_client: Arc<SharedClient>,
     pages_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     rank: usize,
@@ -276,7 +286,6 @@ async fn async_ping_pages(
         HeaderValue::from_str(&format!("Token  {}", api_key)).unwrap(),
     );
 
-    let client = reqwest::Client::new();
     let db_request = build_request(source_config.clone(), rank, world_size);
 
     // Send the request and dispatch the response to the channel
@@ -285,7 +294,8 @@ async fn async_ping_pages(
 
     let initial_request = db_request.get_http_request(&api_url, &api_key).await;
 
-    if let Ok(tentative_json) = get_response(&client, &initial_request, retries).await {
+    if let Ok(tentative_json) = get_response(shared_client.clone(), &initial_request, retries).await
+    {
         response_json = tentative_json.clone();
         if let Some(next) = response_json.get("next") {
             next_url = &next;
@@ -310,6 +320,8 @@ async fn async_ping_pages(
         if pages_tx.send(response_json.clone()).is_err() {
             println!("ping_pages: stream already closed, wrapping up");
             break;
+        } else {
+            println!("Pushed new page");
         }
         count += source_config.page_size;
 
@@ -325,7 +337,7 @@ async fn async_ping_pages(
         new_request.headers_mut().extend(headers.clone());
 
         next_url = &serde_json::Value::Null;
-        match get_response(&client, &new_request, retries).await {
+        match get_response(shared_client.clone(), &new_request, retries).await {
             Ok(tentative_json) => {
                 response_json = tentative_json.clone();
                 next_url = response_json
@@ -346,6 +358,7 @@ async fn async_ping_pages(
 }
 
 pub fn ping_pages(
+    shared_client: Arc<SharedClient>,
     pages_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     rank: usize,
@@ -357,7 +370,15 @@ pub fn ping_pages(
         .build()
         .unwrap()
         .block_on(async {
-            async_ping_pages(pages_tx.clone(), source_config, rank, world_size, limit).await;
+            async_ping_pages(
+                shared_client.clone(),
+                pages_tx.clone(),
+                source_config,
+                rank,
+                world_size,
+                limit,
+            )
+            .await;
         });
 
     // Send an empty value to signal the end of the stream
