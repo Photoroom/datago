@@ -24,7 +24,9 @@ async fn image_payload_from_path(
             let original_height = new_image.height() as usize;
             let original_width = new_image.width() as usize;
             let mut channels = new_image.color().channel_count() as i8;
-            let bit_depth = new_image.color().bits_per_pixel() as usize;
+            let mut bit_depth = (new_image.color().bits_per_pixel()
+                / new_image.color().channel_count() as u16)
+                as usize;
 
             // Optionally transform the additional image in the same way the main image was
             if let Some(img_tfm) = img_tfm {
@@ -37,6 +39,13 @@ async fn image_payload_from_path(
             // Encode the image if needed
             let mut image_bytes: Vec<u8> = Vec::new();
             if encode_images {
+                if new_image.color() != image::ColorType::Rgb8 {
+                    new_image = image::DynamicImage::ImageRgb8(new_image.to_rgb8());
+                    bit_depth = (new_image.color().bits_per_pixel()
+                        / new_image.color().channel_count() as u16)
+                        as usize;
+                }
+
                 if new_image
                     .write_to(&mut Cursor::new(&mut image_bytes), image::ImageFormat::Png)
                     .is_err()
@@ -121,7 +130,7 @@ async fn async_pull_samples(
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
-    let max_tasks_per_thread = min(num_cpus::get() * 2, limit);
+    let max_tasks = min(num_cpus::get() * 2, limit);
     let mut tasks = std::collections::VecDeque::new();
     let mut count = 0;
 
@@ -141,7 +150,7 @@ async fn async_pull_samples(
         )));
 
         // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks_per_thread && consume_oldest_task(&mut tasks).await.is_ok() {
+        if tasks.len() >= max_tasks && consume_oldest_task(&mut tasks).await.is_ok() {
             count += 1;
         }
         if count >= limit {

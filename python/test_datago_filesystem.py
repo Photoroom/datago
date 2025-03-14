@@ -2,16 +2,26 @@ from PIL import Image
 from datago import DatagoClient
 import json
 import tempfile
+import pytest
+import random
 
 
-def test_get_sample_filesystem():
+@pytest.mark.parametrize("pre_encode_images", [False, True])
+def test_get_sample_filesystem(pre_encode_images: bool):
     limit = 10
 
     with tempfile.TemporaryDirectory() as tmpdirname:
         cwd = tmpdirname
-        # Dump a sample image to the filesystem
+
         for i in range(limit):
-            img = Image.new("RGB", (100, 100))
+            # Prepare an ephemeral test set
+            mode = "RGB" if random.random() > 0.5 else "RGBA"
+            img = Image.new(mode, (100, 100))
+
+            # Randomly make the image 16 bits
+            if random.random() > 0.5:
+                img = img.convert("I;16")
+
             img.save(cwd + f"/test_{i}.png")
 
         # Check that we can instantiate a client and get a sample, nothing more
@@ -26,7 +36,7 @@ def test_get_sample_filesystem():
                 "downsampling_ratio": 16,
                 "min_aspect_ratio": 0.5,
                 "max_aspect_ratio": 2.0,
-                "pre_encode_images": False,
+                "pre_encode_images": pre_encode_images,
             },
             "limit": limit,
             "prefetch_buffer_size": 64,
@@ -46,8 +56,11 @@ def test_get_sample_filesystem():
             assert data.image.width == 100
             assert data.image.height == 100
 
+            if pre_encode_images:
+                assert data.image.bit_depth == 8
+
         assert count == limit
 
 
 if __name__ == "__main__":
-    test_get_sample_filesystem()
+    test_get_sample_filesystem(True)

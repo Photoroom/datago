@@ -119,10 +119,12 @@ fn main() {
     // -----------------------------------------------------------------
     let mut size_buckets: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
     let start_time = std::time::Instant::now();
+    let mut rolling_time = std::time::Instant::now();
+
     let mut num_samples_received = 0;
 
     client.start();
-    for _ in 0..num_samples {
+    for i in 0..num_samples {
         if let Some(sample) = client.get_sample() {
             if crop_and_resize {
                 // Count the number of samples per size
@@ -139,6 +141,17 @@ fn main() {
         } else {
             println!("Failed to get a sample");
             break;
+        }
+
+        if i % 100 == 0 {
+            println!(
+                "{}",
+                format!(
+                    "{i}: Samples/s {:.2}",
+                    100 as f64 / rolling_time.elapsed().as_secs_f64()
+                )
+            );
+            rolling_time = std::time::Instant::now();
         }
     }
     client.stop();

@@ -17,6 +17,7 @@ def benchmark(
     require_images: bool = typer.Option(True, help="Request the original images"),
     require_embeddings: bool = typer.Option(False, help="Request embeddings"),
     test_masks: bool = typer.Option(True, help="Test masks"),
+    encode_images: bool = typer.Option(True, help="Re-compress all the images in PNG"),
 ):
     print(f"Running benchmark for {source} - {limit} samples")
     client_config = {
@@ -34,7 +35,7 @@ def benchmark(
             "downsampling_ratio": 32,
             "min_aspect_ratio": 0.5,
             "max_aspect_ratio": 2.0,
-            "pre_encode_images": True,
+            "pre_encode_images": encode_images,
         },
         "prefetch_buffer_size": 128,
         "samples_buffer_size": 64,
