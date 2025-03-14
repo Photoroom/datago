@@ -75,8 +75,9 @@ async fn image_payload_from_url(
             let original_height = new_image.height() as usize;
             let original_width = new_image.width() as usize;
             let mut channels = new_image.color().channel_count() as i8;
-            let bit_depth = (new_image.color().bits_per_pixel()
-                / new_image.color().channel_count() as u16) as usize;
+            let mut bit_depth = (new_image.color().bits_per_pixel()
+                / new_image.color().channel_count() as u16)
+                as usize;
 
             // Optionally transform the additional image in the same way the main image was
             if let Some(img_tfm) = img_tfm {
@@ -102,6 +103,9 @@ async fn image_payload_from_url(
                 // If the image is 16 bits or 2 channels, standardize to 8 bits, 3 channels
                 if new_image.color() != image::ColorType::Rgb8 {
                     new_image = image::DynamicImage::ImageRgb8(new_image.to_rgb8());
+                    bit_depth = (new_image.color().bits_per_pixel()
+                        / new_image.color().channel_count() as u16)
+                        as usize;
                 }
 
                 // Pre-encode the payload as requested, we move everything to PNGs
