@@ -3,6 +3,9 @@ use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::worker_http::SharedClient;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDBConfig {
@@ -238,36 +241,34 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 }
 
 async fn get_response(
-    client: &reqwest::Client,
+    shared_client: Arc<SharedClient>,
     request: &reqwest::Request,
-    retries: i8,
-) -> Result<serde_json::Value, reqwest::Error> {
-    for _ in 0..retries {
-        match client.execute(request.try_clone().unwrap()).await {
-            Ok(response) => match response.text().await {
-                Ok(response_text) => {
-                    return Ok(
-                        serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null)
-                    );
-                }
-                Err(e) => return Err(e),
-            },
-            Err(e) => return Err(e),
-        }
-    }
+) -> Result<serde_json::Value, reqwest_middleware::Error> {
+    let _permit = shared_client.semaphore.acquire();
 
-    Ok(serde_json::Value::Null)
+    match shared_client
+        .client
+        .execute(request.try_clone().unwrap())
+        .await
+    {
+        Ok(response) => match response.text().await {
+            Ok(response_text) => {
+                Ok(serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null))
+            }
+            Err(e) => Err(reqwest_middleware::Error::from(e)),
+        },
+        Err(e) => Err(e),
+    }
 }
 
 async fn async_ping_pages(
+    shared_client: Arc<SharedClient>,
     pages_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     rank: usize,
     world_size: usize,
     limit: usize,
 ) {
-    let retries = 5;
-
     let api_url = std::env::var("DATAROOM_API_URL").expect("DATAROOM_API_URL not set");
     let api_key = std::env::var("DATAROOM_API_KEY").expect("DATAROOM_API_KEY not set");
     let mut headers = HeaderMap::new();
@@ -276,7 +277,6 @@ async fn async_ping_pages(
         HeaderValue::from_str(&format!("Token  {}", api_key)).unwrap(),
     );
 
-    let client = reqwest::Client::new();
     let db_request = build_request(source_config.clone(), rank, world_size);
 
     // Send the request and dispatch the response to the channel
@@ -285,10 +285,10 @@ async fn async_ping_pages(
 
     let initial_request = db_request.get_http_request(&api_url, &api_key).await;
 
-    if let Ok(tentative_json) = get_response(&client, &initial_request, retries).await {
+    if let Ok(tentative_json) = get_response(shared_client.clone(), &initial_request).await {
         response_json = tentative_json.clone();
         if let Some(next) = response_json.get("next") {
-            next_url = &next;
+            next_url = next;
         } else {
             println!("No next URL in the response {:?}", response_json);
         }
@@ -297,12 +297,7 @@ async fn async_ping_pages(
         return;
     }
 
-    if response_json == serde_json::Value::Null {
-        println!("Failed to get the initial response from the DB");
-        return;
-    }
-
-    // While we have something in the Send the samples to the channel
+    // Walk the pages and send them to the channel
     let mut count = 0;
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
     while count < max_submitted_samples {
@@ -325,11 +320,16 @@ async fn async_ping_pages(
         new_request.headers_mut().extend(headers.clone());
 
         next_url = &serde_json::Value::Null;
-        if let Ok(tentative_json) = get_response(&client, &new_request, retries).await {
-            response_json = tentative_json.clone();
-            next_url = response_json
-                .get("next")
-                .unwrap_or(&serde_json::Value::Null);
+        match get_response(shared_client.clone(), &new_request).await {
+            Ok(tentative_json) => {
+                response_json = tentative_json.clone();
+                next_url = response_json
+                    .get("next")
+                    .unwrap_or(&serde_json::Value::Null);
+            }
+            Err(e) => {
+                println!("Failed fetching a new page: {}", e)
+            }
         }
     }
 
@@ -341,6 +341,7 @@ async fn async_ping_pages(
 }
 
 pub fn ping_pages(
+    shared_client: Arc<SharedClient>,
     pages_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     rank: usize,
@@ -352,7 +353,15 @@ pub fn ping_pages(
         .build()
         .unwrap()
         .block_on(async {
-            async_ping_pages(pages_tx.clone(), source_config, rank, world_size, limit).await;
+            async_ping_pages(
+                shared_client.clone(),
+                pages_tx.clone(),
+                source_config,
+                rank,
+                world_size,
+                limit,
+            )
+            .await;
         });
 
     // Send an empty value to signal the end of the stream
@@ -381,6 +390,10 @@ pub fn dispatch_pages(
                 break;
             }
             Ok(response_json) => {
+                println!(
+                    "Got a new page to dispatch. Recipient channel current cap: {}",
+                    samples_meta_tx.len()
+                );
                 match response_json.get("results") {
                     Some(results) => {
                         // Go over the samples from the current page
@@ -410,8 +423,7 @@ pub fn dispatch_pages(
                         }
                     }
                     None => {
-                        println!("No results in the response");
-                        println!("{:?}", response_json);
+                        println!("No results in the response: {:?}", response_json);
                         break;
                     }
                 }

@@ -47,7 +47,10 @@ impl DatagoClient {
         let config: DatagoClientConfig = serde_json::from_str(&str_config).unwrap(); // Ok to panic here, no way we can recover
 
         let (pages_tx, pages_rx) = bounded(2);
-        let (samples_meta_tx, samples_meta_rx) = bounded(config.samples_buffer_size);
+
+        // Logic here is that the final results buffer should be around the threadpool size, so that threads are not blocked in the worst case
+        // metadata channel is cheap, no payload yet, so we can overprovision it in comparison
+        let (samples_meta_tx, samples_meta_rx) = bounded(config.samples_buffer_size * 2);
         let (samples_tx, samples_rx) = bounded(config.samples_buffer_size);
 
         let mut image_transform: Option<ARAwareTransform> = None;
@@ -65,7 +68,7 @@ impl DatagoClient {
             source_type: config.source_type,
             source_config: config.source_config,
             limit: config.limit,
-            max_connections: 512,
+            max_connections: 256,
             rank: config.rank,
             world_size: config.world_size,
             pages_tx,
@@ -98,6 +101,8 @@ impl DatagoClient {
             "Rank cannot be greater than or equal to world size"
         );
 
+        let http_client = Arc::new(worker_http::new_shared_client(self.max_connections));
+
         match self.source_type {
             SourceType::Db => {
                 // convert the source_config to a SourceDBConfig
@@ -105,9 +110,17 @@ impl DatagoClient {
                     serde_json::from_value(self.source_config.clone()).unwrap();
 
                 println!("Using DB as source");
+                let http_client = http_client.clone();
 
                 self.pinger = Some(thread::spawn(move || {
-                    generator_http::ping_pages(pages_tx, source_db_config, rank, world_size, limit);
+                    generator_http::ping_pages(
+                        http_client,
+                        pages_tx,
+                        source_db_config,
+                        rank,
+                        world_size,
+                        limit,
+                    );
                 }));
             }
             SourceType::File => {
@@ -137,12 +150,6 @@ impl DatagoClient {
             generator_http::dispatch_pages(pages_rx, samples_meta_tx, limit);
         }));
 
-        // Spawn threads which will receive the pages
-        let http_client = worker_http::SharedClient {
-            client: reqwest::Client::new(),
-            semaphore: Arc::new(tokio::sync::Semaphore::new(self.max_connections)),
-        };
-
         // Spawn a thread which will handle the async workers
         // Need to clone all these trivial values to move them into the thread
         // FIXME: this is a bit ugly, there must be a better way
@@ -153,11 +160,10 @@ impl DatagoClient {
 
         match self.source_type {
             SourceType::Db => {
-                let thread_local_client = http_client.clone();
-
+                // Spawn threads which will receive the pages
                 self.worker = Some(thread::spawn(move || {
                     worker_http::pull_samples(
-                        thread_local_client,
+                        http_client,
                         samples_meta_rx_local,
                         samples_tx_local,
                         local_image_transform,
