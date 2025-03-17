@@ -145,11 +145,8 @@ fn main() {
 
         if i % 100 == 0 {
             println!(
-                "{}",
-                format!(
-                    "{i}: Samples/s {:.2}",
-                    100 as f64 / rolling_time.elapsed().as_secs_f64()
-                )
+                "{i}: Samples/s {:.2}",
+                100_f64 / rolling_time.elapsed().as_secs_f64()
             );
             rolling_time = std::time::Instant::now();
         }

@@ -3,7 +3,7 @@ name = "datago"
 authors = [
   { name="Photoroom", email="team@photoroom.com" },
 ]
-description = "A high performance dataloader for Python, written in Golang"
+description = "A high performance dataloader for Python, written in Rust"
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
