@@ -3,6 +3,7 @@ use crate::structs::{ImagePayload, Sample};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
     // Load bytes from the file
@@ -77,7 +78,7 @@ async fn image_payload_from_path(
 
 async fn pull_sample(
     sample_json: serde_json::Value,
-    img_tfm: Option<image_processing::ARAwareTransform>,
+    img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encode_images: bool,
     samples_tx: kanal::Sender<Option<Sample>>,
 ) -> Result<(), ()> {
@@ -133,6 +134,7 @@ async fn async_pull_samples(
     let max_tasks = min(num_cpus::get() * 2, limit);
     let mut tasks = std::collections::VecDeque::new();
     let mut count = 0;
+    let shareable_img_tfm = Arc::new(image_transform);
 
     while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
@@ -144,7 +146,7 @@ async fn async_pull_samples(
         // Append a new task to the queue
         tasks.push_back(tokio::spawn(pull_sample(
             received,
-            image_transform.clone(),
+            shareable_img_tfm.clone(),
             encode_images,
             samples_tx.clone(),
         )));

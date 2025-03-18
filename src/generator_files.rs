@@ -1,3 +1,4 @@
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::hash::Hash;
@@ -5,6 +6,9 @@ use std::hash::Hash;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
     pub root_path: String,
+
+    #[serde(default)]
+    pub random_order: bool,
 }
 
 // Hash function to be able to dispatch the samples to the correct rank
@@ -32,18 +36,29 @@ pub fn ping_files(
         .into_iter()
         .filter_map(|e| e.ok());
 
-    let files = files.filter_map(|entry| {
-        let path = entry.path();
-        let file_name = path.to_str().unwrap().to_string();
-        if supported_extensions
-            .iter()
-            .any(|&ext| file_name.ends_with(ext))
-        {
-            Some(entry)
-        } else {
-            None
-        }
-    });
+    let mut files_list: Vec<walkdir::DirEntry> = files
+        .filter_map(|entry| {
+            let path = entry.path();
+            let file_name = path.to_str().unwrap().to_string();
+            if supported_extensions
+                .iter()
+                .any(|&ext| file_name.ends_with(ext))
+            {
+                Some(entry)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // If random_order is set, shuffle the files
+    let files_iter = if source_config.random_order {
+        let mut rng = rand::rng(); // Falls back to OsRng, which will differ over time
+        files_list.shuffle(&mut rng);
+        files_list.into_iter()
+    } else {
+        files_list.into_iter()
+    };
 
     // Make sure that we always send at least one page
     let page_size = min(50, limit);
@@ -54,7 +69,7 @@ pub fn ping_files(
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
 
     // Build a page from the files iterator
-    for entry in files {
+    for entry in files_iter {
         let file_name = entry.path().to_str().unwrap().to_string();
 
         // If world_size is not 0, we need to dispatch the samples to the correct rank

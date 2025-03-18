@@ -48,7 +48,9 @@ for _ in range(10):
 ```
 
 Please note that the image buffers will be passed around as raw pointers, see below.
-To test datago while serving local files (jpg, png, ..), code would look like the following
+To test datago while serving local files (jpg, png, ..), code would look like the following.
+**Note that datago serving files with a lot of concurrent threads means that, even if random_order is not set,
+there will be some randomness in the sample ordering.**
 
 ```python
 from datago import DatagoClient
@@ -59,6 +61,7 @@ config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
+        "random_order": False, # True if used directly for training
     },
     "limit": 200,
     "rank": 0,

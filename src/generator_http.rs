@@ -390,10 +390,6 @@ pub fn dispatch_pages(
                 break;
             }
             Ok(response_json) => {
-                println!(
-                    "Got a new page to dispatch. Recipient channel current cap: {}",
-                    samples_meta_tx.len()
-                );
                 match response_json.get("results") {
                     Some(results) => {
                         // Go over the samples from the current page

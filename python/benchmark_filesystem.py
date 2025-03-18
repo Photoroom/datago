@@ -18,9 +18,7 @@ def benchmark(
     print(f"Running benchmark for {root_path} - {limit} samples")
     client_config = {
         "source_type": "file",
-        "source_config": {
-            "root_path": root_path,
-        },
+        "source_config": {"root_path": root_path},
         "image_config": {
             "crop_and_resize": crop_and_resize,
             "default_image_size": 1024,
