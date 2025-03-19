@@ -303,7 +303,6 @@ async fn async_ping_pages(
     while count < max_submitted_samples {
         // Push the page to the channel
         if pages_tx.send(response_json.clone()).is_err() {
-            println!("ping_pages: stream already closed, wrapping up");
             break;
         }
         count += source_config.page_size;
@@ -397,11 +396,7 @@ pub fn dispatch_pages(
                             let sample_json = serde_json::from_value(sample.clone()).unwrap();
 
                             // Push the sample to the channel
-                            if let Err(e) = samples_meta_tx.send(sample_json) {
-                                println!(
-                                    "dispatch_pages: stream already closed, wrapping up {}",
-                                    e
-                                );
+                            if samples_meta_tx.send(sample_json).is_err() {
                                 keep_going = false;
                                 break;
                             }
@@ -425,7 +420,6 @@ pub fn dispatch_pages(
                 }
             }
             Err(_) => {
-                println!("dispatch_pages: stream already closed, wrapping up");
                 break; // already in the outer loop
             }
         }

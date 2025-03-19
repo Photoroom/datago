@@ -34,4 +34,5 @@ rand = "0.9.0"
 
 [profile.release]
 opt-level = 3  # Optimize for speed
-lto = true     # Enable link-time optimization
+lto = "fat"     # Enable link-time optimization
+codegen-units = 1
