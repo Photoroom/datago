@@ -139,7 +139,7 @@ async fn async_pull_samples(
     while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
             println!("file_worker: end of stream received, stopping there");
-            samples_meta_rx.close();
+            let _ = samples_meta_rx.close();
             break;
         }
 

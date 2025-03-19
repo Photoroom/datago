@@ -224,9 +224,9 @@ impl DatagoClient {
             return;
         }
 
-        self.samples_meta_rx.close();
-        self.pages_rx.close();
-        self.samples_tx.close();
+        let _ = self.samples_meta_rx.close();
+        let _ = self.pages_rx.close();
+        let _ = self.samples_tx.close();
 
         if let Some(pinger) = self.pinger.take() {
             if pinger.join().is_err() {
