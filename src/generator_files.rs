@@ -94,7 +94,6 @@ pub fn ping_files(
 
             // Push the page to the channel
             if pages_tx.send(page_json).is_err() {
-                println!("ping_pages: stream already closed, wrapping up");
                 break;
             }
             filepaths.clear();
