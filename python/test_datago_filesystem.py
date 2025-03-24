@@ -3,28 +3,31 @@ from datago import DatagoClient
 import json
 import tempfile
 import pytest
-import random
+from io import BytesIO
 
 
-def generate_tmp_files(dir, limit):
+def generate_tmp_files(dir: str, limit: int, rgb16: bool = False, rgba: bool = False):
     for i in range(limit):
         # Prepare an ephemeral test set
-        mode = "RGB" if random.random() > 0.5 else "RGBA"
+        mode = "RGBA" if rgba else "RGB"
         img = Image.new(mode, (100, 100))
 
         # Randomly make the image 16 bits
-        if random.random() > 0.5:
+        if rgb16:
             img = img.convert("I;16")
 
         img.save(dir + f"/test_{i}.png")
 
 
-@pytest.mark.parametrize("pre_encode_images", [False, True])
-def test_get_sample_filesystem(pre_encode_images: bool):
+@pytest.mark.parametrize(
+    ["pre_encode_images", "rgb16", "rgba"],
+    [(a, b, c) for a in [True, False] for b in [True, False] for c in [True, False]],
+)
+def test_get_sample_filesystem(pre_encode_images: bool, rgb16: bool, rgba: bool):
     limit = 10
 
     with tempfile.TemporaryDirectory() as tmpdirname:
-        generate_tmp_files(tmpdirname, limit)
+        generate_tmp_files(tmpdirname, limit, rgb16, rgba)
 
         # Check that we can instantiate a client and get a sample, nothing more
         client_config = {
@@ -39,6 +42,7 @@ def test_get_sample_filesystem(pre_encode_images: bool):
                 "min_aspect_ratio": 0.5,
                 "max_aspect_ratio": 2.0,
                 "pre_encode_images": pre_encode_images,
+                "image_to_rgb8": rgb16 or rgba,
             },
             "limit": limit,
             "prefetch_buffer_size": 64,
@@ -58,8 +62,15 @@ def test_get_sample_filesystem(pre_encode_images: bool):
             assert data.image.width == 100
             assert data.image.height == 100
 
-            if pre_encode_images:
+            if rgb16:
                 assert data.image.bit_depth == 8
+
+            # Open the image in python scope and check properties
+            if pre_encode_images:
+                test_image = Image.open(BytesIO(data.image.data))
+                assert test_image.width == 100
+                assert test_image.height == 100
+                assert test_image.mode == "RGB"
 
         assert count == limit
 
@@ -112,4 +123,4 @@ def test_random_walk():
 
 
 if __name__ == "__main__":
-    test_get_sample_filesystem(True)
+    test_get_sample_filesystem(True, True, True)

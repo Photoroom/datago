@@ -10,6 +10,7 @@ use crate::worker_http::SharedClient;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDBConfig {
     pub sources: String,
+    pub page_size: usize,
 
     #[serde(default)]
     pub sources_ne: String,
@@ -61,7 +62,6 @@ pub struct SourceDBConfig {
 
     #[serde(default)]
     pub random_sampling: bool,
-    pub page_size: usize,
 }
 
 // TODO: Derive from the above

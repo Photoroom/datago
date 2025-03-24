@@ -172,6 +172,7 @@ fn test_crop_resize() {
         min_aspect_ratio: 0.5,
         max_aspect_ratio: 2.0,
         pre_encode_images: false,
+        image_to_rgb8: false
     });
 
     let mut client = DatagoClient::new(config.to_string());
@@ -203,6 +204,7 @@ fn test_img_compression() {
         min_aspect_ratio: 0.5,
         max_aspect_ratio: 2.0,
         pre_encode_images: true, // new part being tested
+        image_to_rgb8: false
     });
 
     let mut client = DatagoClient::new(config.to_string());
