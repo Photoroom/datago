@@ -2,7 +2,6 @@ use crate::image_processing;
 use crate::structs::{ImagePayload, Sample};
 use std::cmp::min;
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
@@ -19,58 +18,18 @@ async fn image_payload_from_path(
     path: &str,
     img_tfm: &Option<image_processing::ARAwareTransform>,
     encode_images: bool,
+    img_to_rgb8: bool,
 ) -> Result<ImagePayload, image::ImageError> {
     match image_from_path(path).await {
-        Ok(mut new_image) => {
-            let original_height = new_image.height() as usize;
-            let original_width = new_image.width() as usize;
-            let mut channels = new_image.color().channel_count() as i8;
-            let mut bit_depth = (new_image.color().bits_per_pixel()
-                / new_image.color().channel_count() as u16)
-                as usize;
-
-            // Optionally transform the additional image in the same way the main image was
-            if let Some(img_tfm) = img_tfm {
-                new_image = img_tfm.crop_and_resize(&new_image, None).await;
-            }
-
-            let height = new_image.height() as usize;
-            let width = new_image.width() as usize;
-
-            // Encode the image if needed
-            let mut image_bytes: Vec<u8> = Vec::new();
-            if encode_images {
-                if new_image.color() != image::ColorType::Rgb8 {
-                    new_image = image::DynamicImage::ImageRgb8(new_image.to_rgb8());
-                    bit_depth = (new_image.color().bits_per_pixel()
-                        / new_image.color().channel_count() as u16)
-                        as usize;
-                }
-
-                if new_image
-                    .write_to(&mut Cursor::new(&mut image_bytes), image::ImageFormat::Png)
-                    .is_err()
-                {
-                    return Err(image::ImageError::IoError(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "Failed to encode image",
-                    )));
-                }
-
-                channels = -1; // Signal the fact that the image is encoded
-            } else {
-                image_bytes = new_image.into_bytes();
-            }
-
-            Ok(ImagePayload {
-                data: image_bytes,
-                original_height,
-                original_width,
-                height,
-                width,
-                channels,
-                bit_depth,
-            })
+        Ok(new_image) => {
+            image_processing::image_to_payload(
+                new_image,
+                img_tfm,
+                &"".to_string(),
+                encode_images,
+                img_to_rgb8,
+            )
+            .await
         }
         Err(e) => Err(e),
     }
@@ -80,9 +39,17 @@ async fn pull_sample(
     sample_json: serde_json::Value,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encode_images: bool,
+    img_to_rgb8: bool,
     samples_tx: kanal::Sender<Option<Sample>>,
 ) -> Result<(), ()> {
-    match image_payload_from_path(sample_json.as_str().unwrap(), &img_tfm, encode_images).await {
+    match image_payload_from_path(
+        sample_json.as_str().unwrap(),
+        &img_tfm,
+        encode_images,
+        img_to_rgb8,
+    )
+    .await
+    {
         Ok(image) => {
             let sample = Sample {
                 id: sample_json.to_string(),
@@ -127,6 +94,7 @@ async fn async_pull_samples(
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
+    img_to_rgb8: bool,
     limit: usize,
 ) {
     // We use async-await here, to better use IO stalls
@@ -148,6 +116,7 @@ async fn async_pull_samples(
             received,
             shareable_img_tfm.clone(),
             encode_images,
+            img_to_rgb8,
             samples_tx.clone(),
         )));
 
@@ -177,6 +146,7 @@ pub fn pull_samples(
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
+    img_to_rgb8: bool,
     limit: usize,
 ) {
     tokio::runtime::Builder::new_multi_thread()
@@ -189,6 +159,7 @@ pub fn pull_samples(
                 samples_tx,
                 image_transform,
                 encode_images,
+                img_to_rgb8,
                 limit,
             )
             .await;

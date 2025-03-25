@@ -94,6 +94,7 @@ fn main() {
             min_aspect_ratio: 0.5,
             max_aspect_ratio: 2.0,
             pre_encode_images: true,
+            image_to_rgb8: false,
         })
     } else {
         None

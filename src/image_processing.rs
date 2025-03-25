@@ -1,6 +1,9 @@
-// --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+use crate::structs::ImagePayload;
 use serde::Deserialize;
 use serde::Serialize;
+use std::io::Cursor;
+
+// --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImageTransformConfig {
@@ -9,7 +12,12 @@ pub struct ImageTransformConfig {
     pub downsampling_ratio: i32,
     pub min_aspect_ratio: f64,
     pub max_aspect_ratio: f64,
+
+    #[serde(default)]
     pub pre_encode_images: bool,
+
+    #[serde(default)]
+    pub image_to_rgb8: bool, // Convert all images to RGB 8 bits format
 }
 
 impl ImageTransformConfig {
@@ -130,6 +138,70 @@ impl ARAwareTransform {
     }
 }
 
+// ------------------------------------------------------------------------
+pub async fn image_to_payload(
+    mut image: image::DynamicImage,
+    img_tfm: &Option<ARAwareTransform>,
+    aspect_ratio: &String,
+    encode_images: bool,
+    img_to_rgb8: bool,
+) -> Result<ImagePayload, image::ImageError> {
+    let original_height = image.height() as usize;
+    let original_width = image.width() as usize;
+    let mut channels = image.color().channel_count() as i8;
+    let mut bit_depth =
+        (image.color().bits_per_pixel() / image.color().channel_count() as u16) as usize;
+
+    // Optionally transform the additional image in the same way the main image was
+    if let Some(img_tfm) = img_tfm {
+        let aspect_ratio_input = if aspect_ratio.is_empty() {
+            None
+        } else {
+            Some(aspect_ratio)
+        };
+        image = img_tfm.crop_and_resize(&image, aspect_ratio_input).await;
+    }
+
+    let height = image.height() as usize;
+    let width = image.width() as usize;
+
+    // Image to RGB8 if requested
+    if img_to_rgb8 && image.color() != image::ColorType::Rgb8 {
+        image = image::DynamicImage::ImageRgb8(image.to_rgb8());
+        bit_depth = 8;
+        channels = 3;
+        assert!((image.color().bits_per_pixel() / image.color().channel_count() as u16) == 8);
+    }
+
+    // Encode the image if needed
+    let mut image_bytes: Vec<u8> = Vec::new();
+    if encode_images {
+        if image
+            .write_to(&mut Cursor::new(&mut image_bytes), image::ImageFormat::Png)
+            .is_err()
+        {
+            return Err(image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to encode image",
+            )));
+        }
+
+        channels = -1; // Signal the fact that the image is encoded
+    } else {
+        image_bytes = image.into_bytes();
+    }
+
+    Ok(ImagePayload {
+        data: image_bytes,
+        original_height,
+        original_width,
+        height,
+        width,
+        channels,
+        bit_depth,
+    })
+}
+
 // ------------------------------------------------------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -147,6 +219,7 @@ mod tests {
             min_aspect_ratio: 0.5,
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
+            image_to_rgb8: false,
         };
 
         let transform = config.get_ar_aware_transform();

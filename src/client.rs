@@ -33,6 +33,7 @@ pub struct DatagoClient {
     // Sample processing
     image_transform: Option<ARAwareTransform>,
     encode_images: bool,
+    image_to_rgb8: bool, // Convert all images to RGB 8 bits format
 
     // Threads
     pinger: Option<thread::JoinHandle<()>>,
@@ -55,12 +56,13 @@ impl DatagoClient {
 
         let mut image_transform: Option<ARAwareTransform> = None;
         let mut encode_images = false;
-
+        let mut image_to_rgb8 = false;
         if let Some(image_config) = config.image_config {
             if image_config.crop_and_resize {
                 image_transform = Some(image_config.get_ar_aware_transform());
             }
             encode_images = image_config.pre_encode_images;
+            image_to_rgb8 = image_config.image_to_rgb8;
         }
 
         DatagoClient {
@@ -79,6 +81,7 @@ impl DatagoClient {
             samples_rx,
             image_transform,
             encode_images,
+            image_to_rgb8,
             pinger: None,
             feeder: None,
             worker: None,
@@ -157,6 +160,7 @@ impl DatagoClient {
         let samples_tx_local = self.samples_tx.clone();
         let local_image_transform = self.image_transform.clone();
         let encode_images = self.encode_images;
+        let image_to_rgb8 = self.image_to_rgb8;
 
         match self.source_type {
             SourceType::Db => {
@@ -168,6 +172,7 @@ impl DatagoClient {
                         samples_tx_local,
                         local_image_transform,
                         encode_images,
+                        image_to_rgb8,
                         limit,
                     );
                 }));
@@ -179,6 +184,7 @@ impl DatagoClient {
                         samples_tx_local,
                         local_image_transform,
                         encode_images,
+                        image_to_rgb8,
                         limit,
                     );
                 }));
