@@ -1,8 +1,8 @@
 use crate::structs::ImagePayload;
+use image::ImageEncoder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::Cursor;
-
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -176,15 +176,24 @@ pub async fn image_to_payload(
     // Encode the image if needed
     let mut image_bytes: Vec<u8> = Vec::new();
     if encode_images {
-        if image
-            .write_to(&mut Cursor::new(&mut image_bytes), image::ImageFormat::Png)
-            .is_err()
-        {
-            return Err(image::ImageError::IoError(std::io::Error::new(
+        // Use the encoder directly with the raw bytes
+        image::codecs::png::PngEncoder::new_with_quality(
+            &mut Cursor::new(&mut image_bytes),
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::Adaptive,
+        )
+        .write_image(
+            image.as_bytes(),
+            image.width(),
+            image.height(),
+            image.color().into(),
+        )
+        .map_err(|e| {
+            image::ImageError::IoError(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                "Failed to encode image",
-            )));
-        }
+                e.to_string(),
+            ))
+        })?;
 
         channels = -1; // Signal the fact that the image is encoded
     } else {
