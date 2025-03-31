@@ -19,6 +19,9 @@ fn get_test_config() -> serde_json::Value {
             "require_embeddings": false,
             "tags": "",
             "tags_ne": "",
+            "tags_all": "",
+            "tags_ne_all": "",
+            "tags_empty": "",
             "has_attributes": "",
             "lacks_attributes": "",
             "has_masks": "",
@@ -30,6 +33,7 @@ fn get_test_config() -> serde_json::Value {
             "min_pixel_count": -1,
             "max_pixel_count": -1,
             "duplicate_state": -1,
+            "attributes": "",
             "random_sampling": false,
             "page_size": 10,
         },
@@ -250,6 +254,116 @@ fn test_tags() {
     let sample = sample.unwrap();
     assert!(!sample.id.is_empty());
     assert!(!sample.tags.contains(&tag.to_string()));
+    client.stop();
+}
+
+#[test]
+fn test_tags_all() {
+    let mut config = get_test_config();
+    let tags = "v4_trainset_hq,photo";
+    config["source_config"]["tags_all"] = tags.into();
+    let mut client = DatagoClient::new(config.to_string());
+
+    let sample = client.get_sample();
+    assert!(sample.is_some());
+
+    let sample = sample.unwrap();
+    assert!(!sample.id.is_empty());
+    // Check that sample.tags contains all the tags in the tags string
+    for tag in tags.split(',') {
+        assert!(sample.tags.contains(&tag.to_string()));
+    }
+    client.stop();
+}
+
+#[test]
+fn test_tags_ne() {
+    let mut config = get_test_config();
+    let tags = "v4_trainset_hq,photo";
+    config["source_config"]["tags_ne"] = tags.into();
+    let mut client = DatagoClient::new(config.to_string());
+
+    let sample = client.get_sample();
+    assert!(sample.is_some());
+
+    let sample = sample.unwrap();
+    assert!(!sample.id.is_empty());
+    // Check that sample.tags does not contain any of the tags in the tags string
+    println!("{:?}", sample.tags);
+    for tag in tags.split(',') {
+        assert!(!sample.tags.contains(&tag.to_string()));
+    }
+    client.stop();
+}
+
+#[test]
+fn test_tags_empty() {
+    let mut config = get_test_config();
+    config["source_config"]["tags_empty"] = "true".into();
+    let mut client = DatagoClient::new(config.to_string());
+
+    let sample = client.get_sample();
+    assert!(sample.is_some());
+
+    let sample = sample.unwrap();
+    assert!(sample.tags.is_empty());
+    client.stop();
+}
+
+#[test]
+fn test_tags_ne_all() {
+    let mut config = get_test_config();
+    let tag1 = "photo";
+    let tag2 = "graphic";
+    config["source_config"]["tags_ne_all"] = format!("{},{}", tag1, tag2).into();
+    let mut client = DatagoClient::new(config.to_string());
+
+    let sample = client.get_sample();
+    assert!(sample.is_some());
+
+    let sample = sample.unwrap();
+    assert!(!sample.id.is_empty());
+    // Assert that the sample does not contain both tags at the same time
+    let has_first = sample.tags.contains(&tag1.to_string());
+    let has_second = sample.tags.contains(&tag2.to_string());
+    assert!(
+        !(has_first && has_second),
+        "Sample should not contain both tags at the same time"
+    );
+    client.stop();
+}
+
+#[test]
+fn test_attributes_filter() {
+    let mut config = get_test_config();
+    config["source_config"]["attributes"] = "aesthetic_score__gte:0.5".into();
+    let mut client = DatagoClient::new(config.to_string());
+
+    let sample = client.get_sample();
+    assert!(sample.is_some());
+
+    let sample = sample.unwrap();
+    assert!(!sample.id.is_empty());
+    assert!(sample.attributes.contains_key("aesthetic_score"));
+    assert!(sample.attributes["aesthetic_score"].as_f64().unwrap() >= 0.5);
+    client.stop();
+}
+
+#[test]
+fn test_pixel_count_filter() {
+    let mut config = get_test_config();
+    config["source_config"]["min_pixel_count"] = 1000000.into();
+    config["source_config"]["max_pixel_count"] = 2000000.into();
+    config["source_config"]["require_images"] = json!(true);
+    let mut client = DatagoClient::new(config.to_string());
+
+    let sample = client.get_sample();
+    assert!(sample.is_some());
+
+    let sample = sample.unwrap();
+    assert!(!sample.id.is_empty());
+    assert!(sample.image.width * sample.image.height >= 1000000);
+    assert!(sample.image.width * sample.image.height <= 2000000);
     client.stop();
 }
 
