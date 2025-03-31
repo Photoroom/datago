@@ -198,29 +198,48 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
         );
     }
 
-    if !source_config.tags.is_empty()  {
+    if !source_config.tags.is_empty() {
         fields.push_str(",tags");
-        println!("Including some tags, must have any of: {}", source_config.tags);
+        println!(
+            "Including some tags, must have any of: {}",
+            source_config.tags
+        );
     }
 
     if !source_config.tags_all.is_empty() {
         fields.push_str(",tags");
-        println!("Including tags, must have all of: {}", source_config.tags_all);
+        println!(
+            "Including tags, must have all of: {}",
+            source_config.tags_all
+        );
     }
 
     if !source_config.tags_ne.is_empty() {
         fields.push_str(",tags");
-        println!("Including tags, must not have any of: {}", source_config.tags_ne);
+        println!(
+            "Including tags, must not have any of: {}",
+            source_config.tags_ne
+        );
     }
 
     if !source_config.tags_empty.is_empty() {
         fields.push_str(",tags");
-        println!("Tags must{} be empty", if source_config.tags_empty == "true" { " not" } else { "" });
+        println!(
+            "Tags must{} be empty",
+            if source_config.tags_empty == "true" {
+                " not"
+            } else {
+                ""
+            }
+        );
     }
 
     if !source_config.tags_ne_all.is_empty() {
         fields.push_str(",tags");
-        println!("Including tags, must not have all of: {}", source_config.tags_ne_all);
+        println!(
+            "Including tags, must not have all of: {}",
+            source_config.tags_ne_all
+        );
     }
 
     if source_config.require_embeddings {
