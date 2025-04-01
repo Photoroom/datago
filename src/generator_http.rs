@@ -225,13 +225,20 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
     if !source_config.tags_empty.is_empty() {
         fields.push_str(",tags");
         println!(
-            "Tags must{} be empty",
+            "Using filter: Tags must{} be empty",
             if source_config.tags_empty == "true" {
                 " not"
             } else {
                 ""
             }
         );
+        if !source_config.tags_all.is_empty()
+            || !source_config.tags.is_empty()
+            || !source_config.tags_ne.is_empty()
+            || !source_config.tags_ne_all.is_empty()
+        {
+            println!("WARNING: you've set `tags_empty` in addition to `tags`, `tags_all`, `tags_ne` or `tags_ne_all`. The combination might be incompatible or redundant.");
+        }
     }
 
     if !source_config.tags_ne_all.is_empty() {
