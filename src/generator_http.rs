@@ -25,7 +25,16 @@ pub struct SourceDBConfig {
     pub tags: String,
 
     #[serde(default)]
+    pub tags_all: String,
+
+    #[serde(default)]
     pub tags_ne: String,
+
+    #[serde(default)]
+    pub tags_ne_all: String,
+
+    #[serde(default)]
+    pub tags_empty: String,
 
     #[serde(default)]
     pub has_attributes: String,
@@ -61,6 +70,9 @@ pub struct SourceDBConfig {
     pub duplicate_state: i32,
 
     #[serde(default)]
+    pub attributes: String,
+
+    #[serde(default)]
     pub random_sampling: bool,
 }
 
@@ -73,7 +85,10 @@ struct DbRequest {
     pub page_size: String,
 
     pub tags: String,
+    pub tags_all: String,
     pub tags_ne: String,
+    pub tags_ne_all: String,
+    pub tags_empty: String,
 
     pub has_attributes: String,
     pub lacks_attributes: String,
@@ -92,6 +107,7 @@ struct DbRequest {
     pub max_pixel_count: String,
 
     pub duplicate_state: String,
+    pub attributes: String,
     pub random_sampling: bool,
 
     pub partitions_count: String,
@@ -131,7 +147,10 @@ impl DbRequest {
             maybe_add_field("page_size", &self.page_size);
 
             maybe_add_field("tags", &self.tags);
+            maybe_add_field("tags__all", &self.tags_all);
             maybe_add_field("tags__ne", &self.tags_ne);
+            maybe_add_field("tags__ne_all", &self.tags_ne_all);
+            maybe_add_field("tags__empty", &self.tags_empty);
             maybe_add_field("has_attributes", &self.has_attributes);
             maybe_add_field("lacks_attributes", &self.lacks_attributes);
             maybe_add_field("has_masks", &self.has_masks);
@@ -144,6 +163,7 @@ impl DbRequest {
             maybe_add_field("pixel_count__gte", &self.min_pixel_count);
             maybe_add_field("pixel_count__lte", &self.max_pixel_count);
             maybe_add_field("duplicate_state", &self.duplicate_state);
+            maybe_add_field("attributes", &self.attributes);
             maybe_add_field("partitions_count", &self.partitions_count);
             maybe_add_field("partition", &self.partition);
         }
@@ -180,7 +200,53 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 
     if !source_config.tags.is_empty() {
         fields.push_str(",tags");
-        println!("Including some tags: {}", source_config.tags);
+        println!(
+            "Including some tags, must have any of: {}",
+            source_config.tags
+        );
+    }
+
+    if !source_config.tags_all.is_empty() {
+        fields.push_str(",tags");
+        println!(
+            "Including tags, must have all of: {}",
+            source_config.tags_all
+        );
+    }
+
+    if !source_config.tags_ne.is_empty() {
+        fields.push_str(",tags");
+        println!(
+            "Including tags, must not have any of: {}",
+            source_config.tags_ne
+        );
+    }
+
+    if !source_config.tags_empty.is_empty() {
+        fields.push_str(",tags");
+        println!(
+            "Using filter: Tags must{} be empty",
+            if source_config.tags_empty == "true" {
+                " not"
+            } else {
+                ""
+            }
+        );
+        if !source_config.tags_all.is_empty()
+            || !source_config.tags.is_empty()
+            || !source_config.tags_ne.is_empty()
+            || !source_config.tags_ne_all.is_empty()
+        {
+            println!("WARNING: you've set `tags_empty` in addition to `tags`, `tags_all`, `tags_ne` or `tags_ne_all`. The combination might be incompatible or redundant.");
+        }
+    }
+
+    if !source_config.tags_ne_all.is_empty() {
+        fields.push_str(",tags");
+        println!(
+            "Including tags, must not have all of: {}",
+            source_config.tags_ne_all
+        );
     }
 
     if source_config.require_embeddings {
@@ -213,7 +279,10 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
         sources_ne: source_config.sources_ne,
         page_size: source_config.page_size.to_string(),
         tags: source_config.tags,
+        tags_all: source_config.tags_all,
         tags_ne: source_config.tags_ne,
+        tags_ne_all: source_config.tags_ne_all,
+        tags_empty: source_config.tags_empty,
         has_attributes: source_config.has_attributes,
         lacks_attributes: source_config.lacks_attributes,
         has_masks: source_config.has_masks,
@@ -226,6 +295,7 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
         min_pixel_count: maybe_add_int(source_config.min_pixel_count),
         max_pixel_count: maybe_add_int(source_config.max_pixel_count),
         duplicate_state: maybe_add_int(source_config.duplicate_state),
+        attributes: source_config.attributes,
         random_sampling: source_config.random_sampling,
         partition: if world_size > 1 {
             format!("{}", rank)

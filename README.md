@@ -86,6 +86,23 @@ See helper functions provided in `raw_types.py`, should be self explanatory. Che
 
 Just install the rust toolchain via rustup
 
+## [Apple Silicon MacOS only]
+
+If you are using an Apple Silicon Mac OS machine, create a `.cargo/config` file and paste the following:
+```
+[target.x86_64-apple-darwin]
+rustflags = [
+  "-C", "link-arg=-undefined",
+  "-C", "link-arg=dynamic_lookup",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+  "-C", "link-arg=-undefined",
+  "-C", "link-arg=dynamic_lookup",
+]
+```
+
 ## Build a benchmark CLI
 `cargo run --release --  -h` to get all the information, should be fairly straightforward
 
