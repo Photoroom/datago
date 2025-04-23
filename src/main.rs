@@ -1,7 +1,7 @@
 use clap::{Arg, Command};
 use prettytable::{row, Table};
 use serde_json::json;
-
+use std::collections::HashMap;
 mod client;
 mod generator_files;
 mod generator_http;
@@ -118,7 +118,7 @@ fn main() {
     let mut client = client::DatagoClient::new(config.to_string());
 
     // -----------------------------------------------------------------
-    let mut size_buckets: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+    let mut size_buckets: HashMap<String, i32> = HashMap::new();
     let start_time = std::time::Instant::now();
     let mut rolling_time = std::time::Instant::now();
 

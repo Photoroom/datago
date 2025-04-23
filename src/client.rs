@@ -198,7 +198,6 @@ impl DatagoClient {
         if !self.is_started {
             self.start();
         }
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
         // If no more samples and workers are closed, then wrap it up
         if self.samples_rx.is_closed() {
@@ -208,6 +207,10 @@ impl DatagoClient {
         }
 
         // Try to fetch a new sample from the queue
+        // The client will timeout if zero sample is received in 5 minutes
+        // At this point it will stop and wrap everything up
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
         match self.samples_rx.recv_timeout(TIMEOUT) {
             Ok(sample) => match sample {
                 Some(sample) => Some(sample),

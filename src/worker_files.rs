@@ -2,6 +2,7 @@ use crate::image_processing;
 use crate::structs::{ImagePayload, Sample};
 use std::cmp::min;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
@@ -78,7 +79,7 @@ async fn pull_sample(
 }
 
 pub async fn consume_oldest_task(
-    tasks: &mut std::collections::VecDeque<tokio::task::JoinHandle<Result<(), ()>>>,
+    tasks: &mut VecDeque<tokio::task::JoinHandle<Result<(), ()>>>,
 ) -> Result<(), ()> {
     match tasks.pop_front().unwrap().await {
         Ok(_) => Ok(()),
@@ -100,7 +101,7 @@ async fn async_pull_samples(
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
     let max_tasks = min(num_cpus::get() * 2, limit);
-    let mut tasks = std::collections::VecDeque::new();
+    let mut tasks = VecDeque::new();
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);
 
