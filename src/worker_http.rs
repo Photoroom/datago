@@ -84,8 +84,13 @@ async fn payload_from_url(
 ) -> Result<Vec<u8>, std::io::Error> {
     // Retry on the fetch and decode a few times, could happen that we get a broken packet
     for _ in 0..retries {
-        if let Some(bytes) = bytes_from_url(client, url).await {
-            return Ok(bytes);
+        match bytes_from_url(client, url).await {
+            Some(bytes) => {
+                return Ok(bytes);
+            }
+            None => {
+                println!("Failed to get bytes from URL: {}. Retrying", url);
+            }
         }
     }
     Err(std::io::Error::new(
