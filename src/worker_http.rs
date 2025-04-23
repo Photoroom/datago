@@ -5,6 +5,7 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 // We'll share a single connection pool across all worker threads
@@ -37,7 +38,7 @@ pub fn new_shared_client(max_connections: usize) -> SharedClient {
 struct SampleMetadata {
     id: String,
     source: String,
-    attributes: std::collections::HashMap<String, serde_json::Value>,
+    attributes: HashMap<String, serde_json::Value>,
     duplicate_state: Option<i32>,
     image_direct_url: Option<String>,
     latents: Option<Vec<UrlLatent>>,
@@ -74,6 +75,23 @@ async fn image_from_url(
         std::io::ErrorKind::Other,
         "Failed to fetch image bytes",
     )))
+}
+
+async fn payload_from_url(
+    client: &SharedClient,
+    url: &str,
+    retries: i32,
+) -> Result<Vec<u8>, std::io::Error> {
+    // Retry on the fetch and decode a few times, could happen that we get a broken packet
+    for _ in 0..retries {
+        if let Some(bytes) = bytes_from_url(client, url).await {
+            return Ok(bytes);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        "Failed to fetch bytes buffer",
+    ))
 }
 
 async fn image_payload_from_url(
@@ -143,12 +161,9 @@ async fn pull_sample(
     }
 
     // Same for the latents, mask and masked images, if they exist
-    let mut masks: std::collections::HashMap<String, ImagePayload> =
-        std::collections::HashMap::new();
-    let mut additional_images: std::collections::HashMap<String, ImagePayload> =
-        std::collections::HashMap::new();
-    let mut latents: std::collections::HashMap<String, LatentPayload> =
-        std::collections::HashMap::new();
+    let mut masks: HashMap<String, ImagePayload> = HashMap::new();
+    let mut additional_images: HashMap<String, ImagePayload> = HashMap::new();
+    let mut latents: HashMap<String, LatentPayload> = HashMap::new();
 
     if let Some(exposed_latents) = &sample.latents {
         for latent in exposed_latents {
@@ -203,8 +218,8 @@ async fn pull_sample(
                 }
             } else {
                 // Vanilla latents, pure binary payloads
-                match bytes_from_url(&client, &latent.file_direct_url).await {
-                    Some(latent_payload) => {
+                match payload_from_url(&client, &latent.file_direct_url, 5).await {
+                    Ok(latent_payload) => {
                         latents.insert(
                             latent.latent_type.clone(),
                             LatentPayload {
@@ -213,8 +228,8 @@ async fn pull_sample(
                             },
                         );
                     }
-                    None => {
-                        println!("Error fetching latent: {}", latent.file_direct_url);
+                    Err(e) => {
+                        println!("Error fetching latent: {} {}", latent.file_direct_url, e);
                         return Err(());
                     }
                 }

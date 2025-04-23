@@ -1,6 +1,7 @@
 use crate::image_processing::ImageTransformConfig;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -64,7 +65,7 @@ pub struct Sample {
     pub source: String,
 
     #[doc(hidden)]
-    pub attributes: std::collections::HashMap<String, serde_json::Value>,
+    pub attributes: HashMap<String, serde_json::Value>,
 
     #[pyo3(get, set)]
     pub duplicate_state: i32,
@@ -73,13 +74,13 @@ pub struct Sample {
     pub image: ImagePayload,
 
     #[pyo3(get, set)]
-    pub masks: std::collections::HashMap<String, ImagePayload>,
+    pub masks: HashMap<String, ImagePayload>,
 
     #[pyo3(get, set)]
-    pub additional_images: std::collections::HashMap<String, ImagePayload>,
+    pub additional_images: HashMap<String, ImagePayload>,
 
     #[pyo3(get, set)]
-    pub latents: std::collections::HashMap<String, LatentPayload>,
+    pub latents: HashMap<String, LatentPayload>,
 
     #[pyo3(get, set)]
     pub coca_embedding: Vec<f32>,
