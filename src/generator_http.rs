@@ -1,3 +1,5 @@
+use crate::client::DatagoClient;
+use crate::worker_http;
 use log::{debug, error, warn};
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
@@ -6,7 +8,11 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::worker_http::SharedClient;
+use crate::structs::{new_shared_client, DatagoEngine, SharedClient};
+use kanal::bounded;
+use kanal::Receiver;
+use kanal::Sender;
+use std::thread;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDBConfig {
@@ -333,7 +339,7 @@ async fn get_response(
 }
 
 async fn async_ping_pages(
-    shared_client: Arc<SharedClient>,
+    shared_client: &Arc<SharedClient>,
     pages_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     rank: usize,
@@ -411,7 +417,7 @@ async fn async_ping_pages(
 }
 
 pub fn ping_pages(
-    shared_client: Arc<SharedClient>,
+    shared_client: &Arc<SharedClient>,
     pages_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     rank: usize,
@@ -424,7 +430,7 @@ pub fn ping_pages(
         .unwrap()
         .block_on(async {
             async_ping_pages(
-                shared_client.clone(),
+                shared_client,
                 pages_tx.clone(),
                 source_config,
                 rank,
@@ -441,8 +447,8 @@ pub fn ping_pages(
 }
 
 pub fn dispatch_pages(
-    pages_rx: kanal::Receiver<serde_json::Value>,
-    samples_meta_tx: kanal::Sender<serde_json::Value>,
+    pages_rx: Receiver<serde_json::Value>,
+    samples_meta_tx: Sender<serde_json::Value>,
     limit: usize,
 ) {
     // While we have something, send the samples to the channel
@@ -506,5 +512,268 @@ pub fn dispatch_pages(
     // Send an empty value to signal the end of the stream
     if samples_meta_tx.send(serde_json::Value::Null).is_err() {
         debug!("dispatch_pages: stream already closed, all good");
+    }
+}
+
+pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+    let http_client = Arc::new(new_shared_client(client.max_connections));
+
+    // Allocate all the message passing pipes
+    let (pages_tx, pages_rx) = bounded(2);
+    let (samples_meta_tx, samples_meta_rx) = bounded(client.samples_buffer * 2);
+    let (samples_tx, samples_rx) = bounded(client.samples_buffer);
+
+    // Convert the source_config to a SourceDBConfig
+    let source_db_config: SourceDBConfig =
+        serde_json::from_value(client.source_config.clone()).unwrap();
+
+    println!("Using DB as source");
+    let rank = client.rank;
+    let limit = client.limit;
+    let world_size = client.world_size;
+    let source_config = source_db_config.clone();
+    let shared_client = http_client.clone();
+
+    // Spawn a thread which will ping the DB
+    let pinger = Some(thread::spawn(move || {
+        ping_pages(
+            &shared_client,
+            pages_tx,
+            source_config,
+            rank,
+            world_size,
+            limit,
+        );
+    }));
+
+    // Spawn a thread which will dispatch the pages to the workers
+    let pages_rx_feeder = pages_rx.clone();
+    let feeder = Some(thread::spawn(move || {
+        dispatch_pages(pages_rx_feeder, samples_meta_tx, limit);
+    }));
+
+    // Spawn a thread which will handle the async workers
+    let image_transform = client.image_transform.clone();
+    let encode_images = client.encode_images;
+    let img_to_rgb8 = client.image_to_rgb8;
+    let limit = client.limit;
+    let samples_tx_worker = samples_tx.clone();
+
+    let worker = Some(thread::spawn(move || {
+        worker_http::pull_samples(
+            &http_client,
+            samples_meta_rx,
+            samples_tx_worker,
+            image_transform,
+            encode_images,
+            img_to_rgb8,
+            limit,
+        );
+    }));
+
+    DatagoEngine {
+        pages_rx,
+        samples_tx,
+        samples_rx,
+        pinger,
+        feeder,
+        worker,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn test_build_request() {
+        let config = SourceDBConfig {
+            sources: "source1,source2".to_string(),
+            page_size: 10,
+            sources_ne: "source3".to_string(),
+            require_images: true,
+            require_embeddings: true,
+            tags: "tag1,tag2".to_string(),
+            tags_all: "tag3,tag4".to_string(),
+            tags_ne: "tag5".to_string(),
+            tags_ne_all: "tag6".to_string(),
+            tags_empty: "false".to_string(),
+            has_attributes: "attr1".to_string(),
+            lacks_attributes: "attr2".to_string(),
+            has_masks: "mask1".to_string(),
+            lacks_masks: "mask2".to_string(),
+            has_latents: "latent1".to_string(),
+            lacks_latents: "latent2".to_string(),
+            min_short_edge: 100,
+            max_short_edge: 1000,
+            min_pixel_count: 10000,
+            max_pixel_count: 1000000,
+            duplicate_state: 1,
+            attributes: "attr=val".to_string(),
+            random_sampling: false,
+        };
+
+        let request = build_request(config, 1, 2);
+
+        assert!(request.fields.contains("id,source,attributes"));
+        assert!(request.fields.contains("image_direct_url"));
+        assert!(request.fields.contains("coca_embedding"));
+        assert!(request.fields.contains("latents"));
+        assert!(request.fields.contains("tags"));
+        assert_eq!(request.sources, "source1,source2");
+        assert_eq!(request.sources_ne, "source3");
+        assert_eq!(request.page_size, "10");
+        assert_eq!(request.tags, "tag1,tag2");
+        assert_eq!(request.tags_all, "tag3,tag4");
+        assert_eq!(request.tags_ne, "tag5");
+        assert_eq!(request.tags_ne_all, "tag6");
+        assert_eq!(request.tags_empty, "false");
+        assert_eq!(request.has_attributes, "attr1");
+        assert_eq!(request.lacks_attributes, "attr2");
+        assert_eq!(request.has_masks, "mask1");
+        assert_eq!(request.lacks_masks, "mask2");
+        assert_eq!(request.has_latents, "latent1");
+        assert_eq!(request.lacks_latents, "latent2");
+        assert_eq!(request.min_short_edge, "100");
+        assert_eq!(request.max_short_edge, "1000");
+        assert_eq!(request.min_pixel_count, "10000");
+        assert_eq!(request.max_pixel_count, "1000000");
+        assert_eq!(request.duplicate_state, "1");
+        assert_eq!(request.attributes, "attr=val");
+        assert_eq!(request.random_sampling, false);
+        assert_eq!(request.partition, "1");
+        assert_eq!(request.partitions_count, "2");
+    }
+
+    #[test]
+    fn test_build_request_minimal() {
+        let config = SourceDBConfig {
+            sources: "source1".to_string(),
+            page_size: 20,
+            sources_ne: "".to_string(),
+            require_images: false,
+            require_embeddings: false,
+            tags: "".to_string(),
+            tags_all: "".to_string(),
+            tags_ne: "".to_string(),
+            tags_ne_all: "".to_string(),
+            tags_empty: "".to_string(),
+            has_attributes: "".to_string(),
+            lacks_attributes: "".to_string(),
+            has_masks: "".to_string(),
+            lacks_masks: "".to_string(),
+            has_latents: "".to_string(),
+            lacks_latents: "".to_string(),
+            min_short_edge: 0,
+            max_short_edge: 0,
+            min_pixel_count: 0,
+            max_pixel_count: 0,
+            duplicate_state: -1,
+            attributes: "".to_string(),
+            random_sampling: true,
+        };
+
+        let request = build_request(config, 0, 1);
+
+        assert_eq!(request.fields, "id,source,attributes,height,width,tags");
+        assert_eq!(request.sources, "source1");
+        assert_eq!(request.sources_ne, "");
+        assert_eq!(request.page_size, "20");
+        assert_eq!(request.min_short_edge, "");
+        assert_eq!(request.max_short_edge, "");
+        assert_eq!(request.duplicate_state, "");
+        assert!(request.random_sampling);
+        assert_eq!(request.partition, "");
+        assert_eq!(request.partitions_count, "");
+    }
+
+    #[tokio::test]
+    async fn test_get_http_request() {
+        env::set_var("DATAROOM_API_URL", "https://api.example.com/");
+        env::set_var("DATAROOM_API_KEY", "test_key");
+
+        let db_request = DbRequest {
+            fields: "id,source".to_string(),
+            sources: "source1".to_string(),
+            sources_ne: "".to_string(),
+            page_size: "10".to_string(),
+            tags: "tag1".to_string(),
+            tags_all: "".to_string(),
+            tags_ne: "".to_string(),
+            tags_ne_all: "".to_string(),
+            tags_empty: "".to_string(),
+            has_attributes: "".to_string(),
+            lacks_attributes: "".to_string(),
+            has_masks: "".to_string(),
+            lacks_masks: "".to_string(),
+            has_latents: "".to_string(),
+            lacks_latents: "".to_string(),
+            return_latents: "".to_string(),
+            min_short_edge: "".to_string(),
+            max_short_edge: "".to_string(),
+            min_pixel_count: "".to_string(),
+            max_pixel_count: "".to_string(),
+            duplicate_state: "".to_string(),
+            attributes: "".to_string(),
+            random_sampling: false,
+            partitions_count: "".to_string(),
+            partition: "".to_string(),
+        };
+
+        let request = db_request
+            .get_http_request("https://api.example.com/", "test_key")
+            .await;
+        let url = request.url().to_string();
+
+        assert!(url.starts_with("https://api.example.com/images/"));
+        assert!(url.contains("fields=id%2Csource"));
+        assert!(url.contains("sources=source1"));
+        assert!(url.contains("tags=tag1"));
+        assert!(url.contains("page_size=10"));
+
+        let auth_header = request.headers().get(AUTHORIZATION).unwrap();
+        assert_eq!(auth_header, "Token test_key");
+    }
+
+    #[tokio::test]
+    async fn test_get_http_request_random_sampling() {
+        env::set_var("DATAROOM_API_URL", "https://api.example.com/");
+        env::set_var("DATAROOM_API_KEY", "test_key");
+
+        let db_request = DbRequest {
+            fields: "id,source".to_string(),
+            sources: "source1".to_string(),
+            sources_ne: "".to_string(),
+            page_size: "10".to_string(),
+            tags: "".to_string(),
+            tags_all: "".to_string(),
+            tags_ne: "".to_string(),
+            tags_ne_all: "".to_string(),
+            tags_empty: "".to_string(),
+            has_attributes: "".to_string(),
+            lacks_attributes: "".to_string(),
+            has_masks: "".to_string(),
+            lacks_masks: "".to_string(),
+            has_latents: "".to_string(),
+            lacks_latents: "".to_string(),
+            return_latents: "".to_string(),
+            min_short_edge: "".to_string(),
+            max_short_edge: "".to_string(),
+            min_pixel_count: "".to_string(),
+            max_pixel_count: "".to_string(),
+            duplicate_state: "".to_string(),
+            attributes: "".to_string(),
+            random_sampling: true,
+            partitions_count: "".to_string(),
+            partition: "".to_string(),
+        };
+
+        let request = db_request
+            .get_http_request("https://api.example.com/", "test_key")
+            .await;
+        let url = request.url().to_string();
+
+        assert!(url.starts_with("https://api.example.com/images/random/"));
     }
 }

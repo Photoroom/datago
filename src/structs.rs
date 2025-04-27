@@ -1,7 +1,11 @@
 use crate::image_processing::ImageTransformConfig;
 use pyo3::prelude::*;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::thread;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -25,6 +29,17 @@ pub struct DatagoClientConfig {
     pub rank: usize,
     pub world_size: usize,
     pub samples_buffer_size: usize,
+}
+
+#[derive(Debug)]
+pub struct DatagoEngine {
+    pub pages_rx: kanal::Receiver<serde_json::Value>,
+    pub samples_tx: kanal::Sender<Option<Sample>>,
+    pub samples_rx: kanal::Receiver<Option<Sample>>,
+
+    pub pinger: Option<thread::JoinHandle<()>>,
+    pub feeder: Option<thread::JoinHandle<()>>,
+    pub worker: Option<thread::JoinHandle<()>>,
 }
 
 #[pyclass]
@@ -107,4 +122,29 @@ pub struct UrlLatent {
     pub file_direct_url: String,
     pub latent_type: String,
     pub is_mask: bool,
+}
+
+// We'll share a single connection pool across all worker threads
+#[derive(Clone)]
+pub struct SharedClient {
+    pub client: ClientWithMiddleware,
+    pub semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+pub fn new_shared_client(max_connections: usize) -> SharedClient {
+    let retry_policy = ExponentialBackoff::builder()
+        .retry_bounds(
+            std::time::Duration::from_millis(100), // min_retry_interval
+            std::time::Duration::from_secs(3),
+        )
+        .build_with_max_retries(3);
+
+    let client = ClientBuilder::new(reqwest::Client::new())
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
+
+    SharedClient {
+        client,
+        semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
+    }
 }
