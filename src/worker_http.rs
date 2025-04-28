@@ -1,6 +1,7 @@
 use crate::image_processing;
 use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, UrlLatent};
 use crate::worker_files::consume_oldest_task;
+use log::{debug, error, warn};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use serde::{Deserialize, Serialize};
@@ -89,7 +90,7 @@ async fn payload_from_url(
                 return Ok(bytes);
             }
             None => {
-                println!("Failed to get bytes from URL: {}. Retrying", url);
+                warn!("Failed to get bytes from URL: {}. Retrying", url);
             }
         }
     }
@@ -158,8 +159,8 @@ async fn pull_sample(
                 Some(payload)
             }
             Err(e) => {
-                println!("Failed to get image from URL: {}", image_url);
-                println!("Error: {:?}", e);
+                error!("Failed to get image from URL: {}\n {:?}", image_url, e);
+                error!("Error: {:?}", e);
                 return Err(());
             }
         };
@@ -234,7 +235,7 @@ async fn pull_sample(
                         );
                     }
                     Err(e) => {
-                        println!("Error fetching latent: {} {}", latent.file_direct_url, e);
+                        error!("Error fetching latent: {} {}", latent.file_direct_url, e);
                         return Err(());
                     }
                 }
@@ -285,7 +286,7 @@ async fn async_pull_samples(
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
     let max_tasks = min(num_cpus::get(), limit);
-    println!("Using {} tasks in the async threadpool", max_tasks);
+    debug!("Using {} tasks in the async threadpool", max_tasks);
     let mut tasks = std::collections::VecDeque::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
@@ -293,7 +294,7 @@ async fn async_pull_samples(
 
     while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
-            println!("http_worker: end of stream received, stopping there");
+            debug!("http_worker: end of stream received, stopping there");
             let _ = samples_meta_rx.close();
             break;
         }
@@ -323,7 +324,7 @@ async fn async_pull_samples(
             count += 1;
         }
     }
-    println!("http_worker: total samples sent: {}\n", count);
+    debug!("http_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream
     if shareable_channel_tx.send(None).is_ok() {} // Channel could have been closed by a .stop() call

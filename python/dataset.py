@@ -1,4 +1,4 @@
-from datago import DatagoClient
+from datago import DatagoClient, initialize_logging
 import json
 from typing import Dict, Any
 from raw_types import raw_array_to_pil_image, raw_array_to_numpy
@@ -62,6 +62,7 @@ class DatagoIterDataset:
 
 
 if __name__ == "__main__":
+    initialize_logging("warn")
     # Example config, using this for filesystem walkthrough would work just as well
     client_config = client_config = {
         "source_type": "db",

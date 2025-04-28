@@ -1,7 +1,7 @@
 [package]
 name = "datago"
 edition = "2021"
-version = "2025.4.3"
+version = "2025.4.5"
 
 [lib]
 # exposed by pyo3
@@ -31,6 +31,8 @@ num_cpus = "1.16.0"
 reqwest-middleware = "0.4.1"
 reqwest-retry = "0.7.0"
 rand = "0.9.0"
+log = "0.4.27"
+env_logger = "0.11.8"
 
 [profile.release]
 opt-level = 3  # Optimize for speed

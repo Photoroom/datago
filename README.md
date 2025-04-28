@@ -26,9 +26,13 @@ Using Python 3.11, you can simply install datago with `pip install datago`
 ## Use the package from Python
 
 ```python
-from datago import DatagoClient
+from datago import DatagoClient, initialize_logging
 import os
 import json
+
+# Respects RUST_LOG=INFO env var for setting log level
+# If omitted the logger will be initialized when the client starts.
+initialize_logging()
 
 config = {
     "source_config": {
@@ -53,9 +57,12 @@ To test datago while serving local files (jpg, png, ..), code would look like th
 there will be some randomness in the sample ordering.**
 
 ```python
-from datago import DatagoClient
+from datago import DatagoClient, initialize_logging
 import os
 import json
+
+# Can also set the log level directly instead of using RUST_LOG env var
+initialize_logging(log_level="warn")
 
 config = {
     "source_type": "file",
@@ -79,6 +86,12 @@ for _ in range(10):
 ## Match the raw exported buffers with typical python types
 
 See helper functions provided in `raw_types.py`, should be self explanatory. Check python benchmarks for examples.
+
+## Logging
+We are using the [log](https://docs.rs/log/latest/log/) crate with [env_logger](https://docs.rs/env_logger/latest/env_logger/).
+You can set the log level using the RUST_LOG environment variable. E.g. `RUST_LOG=INFO`.
+
+When using the library from Python, `env_logger` will be initialized automatically when creating a `DatagoClient`. There is also a `initialize_logging` function in the `datago` module, which if called before using a client, allows to customize the log level. This only works if RUST_LOG is not set.
 
 </details><details> <summary><strong>Build it</strong></summary>
 
@@ -104,7 +117,7 @@ rustflags = [
 ```
 
 ## Build a benchmark CLI
-`cargo run --release --  -h` to get all the information, should be fairly straightforward
+`Cargo run --release --  -h` to get all the information, should be fairly straightforward
 
 ## Run the rust test suite
 

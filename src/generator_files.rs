@@ -1,3 +1,4 @@
+use log::debug;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
@@ -101,13 +102,13 @@ pub fn ping_files(
 
         if count >= max_submitted_samples {
             // NOTE: This doesn´t count the samples which have actually been processed
-            println!("ping_pages: reached the limit of samples requested. Shutting down");
+            debug!("ping_pages: reached the limit of samples requested. Shutting down");
             break;
         }
     }
 
     // Either we don't have any more samples or we have reached the limit
-    println!(
+    debug!(
         "ping_pages: total samples requested: {}. page samples served {}",
         limit, count
     );
@@ -116,7 +117,7 @@ pub fn ping_files(
     match pages_tx.send(serde_json::Value::Null) {
         Ok(_) => {}
         Err(_) => {
-            println!("ping_pages: stream already closed, all good");
+            debug!("ping_pages: stream already closed, all good");
         }
     };
 }
