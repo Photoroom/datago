@@ -1,4 +1,5 @@
 use clap::{Arg, Command};
+use log::{error, info};
 use prettytable::{row, Table};
 use serde_json::json;
 use std::collections::HashMap;
@@ -11,6 +12,8 @@ mod worker_files;
 mod worker_http;
 
 fn main() {
+    client::initialize_logging(Some("info".to_string()));
+
     // -----------------------------------------------------------------
     // Handle CLI arguments
     let matches = Command::new("Datago-rs")
@@ -113,7 +116,7 @@ fn main() {
         "samples_buffer_size": samples_buffer_size
     });
 
-    println!("{}", config);
+    info!("{}", config);
 
     let mut client = client::DatagoClient::new(config.to_string());
 
@@ -140,12 +143,13 @@ fn main() {
             }
             num_samples_received += 1;
         } else {
-            println!("Failed to get a sample");
+            error!("Failed to get a sample.");
+            error!("Make sure you use a non-empty source and you set the DATAROOM_API_URL and DATAROOM_API_KEY env vars correctly");
             break;
         }
 
         if i % 100 == 0 {
-            println!(
+            info!(
                 "{i}: Samples/s {:.2}",
                 100_f64 / rolling_time.elapsed().as_secs_f64()
             );
@@ -153,18 +157,18 @@ fn main() {
         }
     }
     client.stop();
-    println!(
+    info!(
         "All samples processed. Got {:?} samples\n",
         num_samples_received
     );
 
     // Report the per-bucket occupancy, good sanity check
     if crop_and_resize {
-        println!("Size buckets:");
+        let mut size_buckets_str = String::from("Size buckets:\n");
         for (size, count) in size_buckets.iter() {
-            println!("{}: {}", size, count);
+            size_buckets_str.push_str(&format!("{}: {}\n", size, count));
         }
-        println!();
+        info!("{}", size_buckets_str);
     }
 
     let elapsed_secs = start_time.elapsed().as_secs_f64();

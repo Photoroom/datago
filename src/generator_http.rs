@@ -1,3 +1,4 @@
+use log::{debug, error, warn};
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
@@ -175,7 +176,7 @@ impl DbRequest {
                 .expect("Couldn't parse the provided API key"),
         );
 
-        println!("Request URL: {:?}\n", req.url().as_str());
+        debug!("Request URL: {:?}\n", req.url().as_str());
 
         req
     }
@@ -192,7 +193,7 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 
     if !source_config.has_latents.is_empty() || !source_config.has_masks.is_empty() {
         fields.push_str(",latents");
-        println!(
+        debug!(
             "Including some latents: {} {}",
             source_config.has_latents, source_config.has_masks
         );
@@ -200,7 +201,7 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 
     if !source_config.tags.is_empty() {
         fields.push_str(",tags");
-        println!(
+        debug!(
             "Including some tags, must have any of: {}",
             source_config.tags
         );
@@ -208,7 +209,7 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 
     if !source_config.tags_all.is_empty() {
         fields.push_str(",tags");
-        println!(
+        debug!(
             "Including tags, must have all of: {}",
             source_config.tags_all
         );
@@ -216,7 +217,7 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 
     if !source_config.tags_ne.is_empty() {
         fields.push_str(",tags");
-        println!(
+        debug!(
             "Including tags, must not have any of: {}",
             source_config.tags_ne
         );
@@ -224,7 +225,7 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 
     if !source_config.tags_empty.is_empty() {
         fields.push_str(",tags");
-        println!(
+        debug!(
             "Using filter: Tags must{} be empty",
             if source_config.tags_empty == "true" {
                 " not"
@@ -237,13 +238,13 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
             || !source_config.tags_ne.is_empty()
             || !source_config.tags_ne_all.is_empty()
         {
-            println!("WARNING: you've set `tags_empty` in addition to `tags`, `tags_all`, `tags_ne` or `tags_ne_all`. The combination might be incompatible or redundant.");
+            warn!("You've set `tags_empty` in addition to `tags`, `tags_all`, `tags_ne` or `tags_ne_all`. The combination might be incompatible or redundant.");
         }
     }
 
     if !source_config.tags_ne_all.is_empty() {
         fields.push_str(",tags");
-        println!(
+        debug!(
             "Including tags, must not have all of: {}",
             source_config.tags_ne_all
         );
@@ -251,15 +252,15 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
 
     if source_config.require_embeddings {
         fields.push_str(",coca_embedding");
-        println!("Including embeddings");
+        debug!("Including embeddings");
     }
 
     if source_config.duplicate_state >= 0 {
         fields.push_str(",duplicate_state");
     }
 
-    println!("Fields: {}", fields);
-    println!("Rank: {}, World size: {}", rank, world_size);
+    debug!("Fields: {}", fields);
+    debug!("Rank: {}, World size: {}", rank, world_size);
     let mut return_latents = source_config.has_latents.clone();
     if !source_config.has_masks.is_empty() {
         return_latents.push_str(&format!(",{}", source_config.has_masks));
@@ -360,10 +361,10 @@ async fn async_ping_pages(
         if let Some(next) = response_json.get("next") {
             next_url = next;
         } else {
-            println!("No next URL in the response {:?}", response_json);
+            debug!("No next URL in the response {:?}", response_json);
         }
     } else {
-        println!("Couldn't get first page from DB");
+        error!("Couldn't get first page from DB");
         return;
     }
 
@@ -379,7 +380,7 @@ async fn async_ping_pages(
 
         // Ask for the next page
         if next_url == &serde_json::Value::Null {
-            println!("No more pages, exiting");
+            debug!("No more pages, exiting");
             break;
         }
         let mut new_request = reqwest::Request::new(
@@ -397,13 +398,13 @@ async fn async_ping_pages(
                     .unwrap_or(&serde_json::Value::Null);
             }
             Err(e) => {
-                println!("Failed fetching a new page: {}", e)
+                error!("Failed fetching a new page: {}", e);
             }
         }
     }
 
     // Either we don't have any more samples or we have reached the limit
-    println!(
+    debug!(
         "ping_pages: total samples requested: {}. page samples served {}",
         limit, count
     );
@@ -435,7 +436,7 @@ pub fn ping_pages(
 
     // Send an empty value to signal the end of the stream
     if pages_tx.send(serde_json::Value::Null).is_err() {
-        println!("ping_pages: stream already closed, all good");
+        debug!("ping_pages: stream already closed, all good");
     };
 }
 
@@ -455,7 +456,7 @@ pub fn dispatch_pages(
     while keep_going {
         match pages_rx.recv() {
             Ok(serde_json::Value::Null) => {
-                println!("dispatch_pages: end of stream received, stopping there");
+                debug!("dispatch_pages: end of stream received, stopping there");
                 break;
             }
             Ok(response_json) => {
@@ -475,7 +476,7 @@ pub fn dispatch_pages(
 
                             if count >= max_submitted_samples {
                                 // NOTE: This doesn´t count the samples which have actually been processed
-                                println!(
+                                debug!(
                                     "dispatch_pages: reached the limit of samples requested. Shutting down"
                                 );
                                 keep_going = false;
@@ -484,25 +485,26 @@ pub fn dispatch_pages(
                         }
                     }
                     None => {
-                        println!("No results in the response: {:?}", response_json);
+                        debug!("No results in the response: {:?}", response_json);
                         break;
                     }
                 }
             }
             Err(_) => {
+                // This error indicates that the channel has been closed.
                 break; // already in the outer loop
             }
         }
     }
 
     // Either we don't have any more samples or we have reached the limit
-    println!(
+    debug!(
         "dispatch_pages: total samples requested: {}. served {}",
         limit, count
     );
 
     // Send an empty value to signal the end of the stream
     if samples_meta_tx.send(serde_json::Value::Null).is_err() {
-        println!("dispatch_pages: stream already closed, all good");
+        debug!("dispatch_pages: stream already closed, all good");
     }
 }

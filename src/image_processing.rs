@@ -1,5 +1,6 @@
 use crate::structs::ImagePayload;
 use image::ImageEncoder;
+use log::debug;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::Cursor;
@@ -29,7 +30,7 @@ impl ImageTransformConfig {
             self.max_aspect_ratio,
         );
 
-        println!(
+        debug!(
             "Cropping and resizing images. Target image sizes:\n{:?}\n",
             target_image_sizes
         );

@@ -1,5 +1,6 @@
 use crate::image_processing;
 use crate::structs::{ImagePayload, Sample};
+use log::{debug, error, warn};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -72,7 +73,7 @@ async fn pull_sample(
             Ok(())
         }
         Err(e) => {
-            println!("Failed to load image from path {} {}", sample_json, e);
+            error!("Failed to load image from path {} {}", sample_json, e);
             Err(())
         }
     }
@@ -84,7 +85,7 @@ pub async fn consume_oldest_task(
     match tasks.pop_front().unwrap().await {
         Ok(_) => Ok(()),
         Err(e) => {
-            println!("worker: sample skipped {}", e);
+            warn!("worker: sample skipped {}", e);
             Err(())
         }
     }
@@ -107,7 +108,7 @@ async fn async_pull_samples(
 
     while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
-            println!("file_worker: end of stream received, stopping there");
+            debug!("file_worker: end of stream received, stopping there");
             let _ = samples_meta_rx.close();
             break;
         }
@@ -136,7 +137,7 @@ async fn async_pull_samples(
             count += 1;
         }
     }
-    println!("file_worker: total samples sent: {}\n", count);
+    debug!("file_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream
     if samples_tx.send(None).is_ok() {};
