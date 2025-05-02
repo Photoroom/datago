@@ -56,7 +56,7 @@ impl DatagoClient {
             source_config: config.source_config,
             samples_buffer: config.samples_buffer_size,
             limit: config.limit,
-            max_connections: 256,
+            max_connections: 128,
             rank: config.rank,
             world_size: config.world_size,
             image_transform,
