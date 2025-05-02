@@ -12,6 +12,7 @@ use std::thread;
 pub enum SourceType {
     Db,
     File,
+    WebDataset,
 }
 
 fn default_source_type() -> SourceType {
@@ -33,10 +34,7 @@ pub struct DatagoClientConfig {
 
 #[derive(Debug)]
 pub struct DatagoEngine {
-    pub samples_metadata_rx: kanal::Receiver<serde_json::Value>,
-    pub samples_tx: kanal::Sender<Option<Sample>>,
     pub samples_rx: kanal::Receiver<Option<Sample>>,
-
     pub feeder: Option<thread::JoinHandle<()>>,
     pub worker: Option<thread::JoinHandle<()>>,
 }
@@ -147,3 +145,11 @@ pub fn new_shared_client(max_connections: usize) -> SharedClient {
         semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WDSContent {
+    pub filename: String,
+    pub buffer: Vec<u8>,
+}
+
+pub type TarballContent = Vec<WDSContent>;

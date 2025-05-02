@@ -1,6 +1,6 @@
 use crate::client::DatagoClient;
 use crate::worker_http;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
@@ -503,7 +503,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let source_db_config: SourceDBConfig =
         serde_json::from_value(client.source_config.clone()).unwrap();
 
-    println!("Using DB as source");
+    info!("Using DB as source");
     let rank = client.rank; // TODO: we could share the config directly and remove all these copies
     let limit = client.limit;
     let world_size = client.world_size;
@@ -543,8 +543,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     DatagoEngine {
-        samples_metadata_rx,
-        samples_tx,
         samples_rx,
         feeder,
         worker,
@@ -610,7 +608,7 @@ mod tests {
         assert_eq!(request.max_pixel_count, "1000000");
         assert_eq!(request.duplicate_state, "1");
         assert_eq!(request.attributes, "attr=val");
-        assert_eq!(request.random_sampling, false);
+        assert!(!request.random_sampling);
         assert_eq!(request.partition, "1");
         assert_eq!(request.partitions_count, "2");
     }

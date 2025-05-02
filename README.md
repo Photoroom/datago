@@ -3,7 +3,7 @@
 [![Rust](https://github.com/Photoroom/datago/actions/workflows/rust.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/rust.yml)
 [![Rust-py](https://github.com/Photoroom/datago/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/ci-cd.yml)
 
-A Rust-written data loader which can be used from Python. Compatible with a [soon-to-be open sourced](https://github.com/Photoroom/dataroom) VectorDB-enabled data stack, which exposes HTTP requests, and with a local filesystem, more front-ends are possible. Focused on image data at the moment, could also easily be more generic.
+A Rust-written data loader which can be used as a python module. Handles several data sources, from local files to webdataset or a VectorDB focused http stack [soon-to-be open sourced](https://github.com/Photoroom/dataroom). Focused on image data at the moment, could also easily be more generic.
 
 Datago handles, outside of the Python GIL
 
@@ -12,10 +12,7 @@ Datago handles, outside of the Python GIL
 - some optional vision processing (aligning different image payloads)
 - optional serialization
 
-Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types.
-Speed will be network dependent, but GB/s is typical.
-
-Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash. Only an iterator is exposed at the moment, but a map interface wouldn't be too hard.
+Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types. Speed will be network dependent, but GB/s is typical. Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
 
 <img width="922" alt="Screenshot 2024-09-24 at 9 39 44 PM" src="https://github.com/user-attachments/assets/b58002ce-f961-438b-af72-9e1338527365">
 
@@ -24,6 +21,17 @@ Depending on the front ends, datago can be rank and world-size aware, in which c
 You can simply install datago with `[uv] pip install datago`
 
 ## Use the package from Python
+Please note that in all the of the following cases, you can directly get an IterableDataset (torch compatible) with the following code snippet
+
+```python
+from dataset import DatagoIterDataset
+client_config = {} # See below for examples
+datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
+```
+
+`return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
+
+<details> <summary><strong>Dataroom</strong></summary>
 
 Please note that in all the of the following cases, you can directly get an IterableDataset (torch compatible) with the following code snippet
 
@@ -97,6 +105,53 @@ for _ in range(10):
     sample = client.get_sample()
 ```
 
+</details><details> <summary><strong>[experimental] Webdataset</strong></summary>
+
+Please note that this implementation is very new, and probably has significant limitations still. It has not yet been tested at scale.
+
+```python
+from datago import DatagoClient, initialize_logging
+import os
+import json
+
+# Can also set the log level directly instead of using RUST_LOG env var
+initialize_logging(log_level="warn")
+
+# URL of the test bucket
+bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
+dataset = "/imagenet-train-{000000..001281}.tar"
+url = bucket + dataset
+
+print(f"Running benchmark for {limit} samples")
+client_config = {
+    "source_type": "webdataset",
+    "source_config": {
+        "url": url,
+        "shuffle": False,
+        "max_tasks_in_flight": 16 # The number of tarballs which should be handled concurrently
+    },
+    # Optional pre-processing of the images, placing them in an aspect ratio bucket to preseve as much as possible of the original content
+    "image_config": {
+        "crop_and_resize": crop_and_resize,
+        "default_image_size": 1024,
+        "downsampling_ratio": 32,
+        "min_aspect_ratio": 0.5,
+        "max_aspect_ratio": 2.0,
+        "pre_encode_images": False,
+    },
+    "prefetch_buffer_size": 128,
+    "samples_buffer_size": 64,
+    "limit": limit,
+    "rank": 0,
+    "world_size": 1,
+}
+
+client = DatagoClient(json.dumps(config))
+
+for _ in range(10):
+    sample = client.get_sample()
+```
+
 </details>
 
 
@@ -105,6 +160,7 @@ for _ in range(10):
 See helper functions provided in `raw_types.py`, should be self explanatory. Check python benchmarks for examples. As mentioned above, we also provide a wrapper so that you get a `dataset` directly.
 
 ## Logging
+
 We are using the [log](https://docs.rs/log/latest/log/) crate with [env_logger](https://docs.rs/env_logger/latest/env_logger/).
 You can set the log level using the RUST_LOG environment variable. E.g. `RUST_LOG=INFO`.
 
@@ -119,7 +175,8 @@ Just install the rust toolchain via rustup
 ## [Apple Silicon MacOS only]
 
 If you are using an Apple Silicon Mac OS machine, create a `.cargo/config` file and paste the following:
-```
+
+``` cfg
 [target.x86_64-apple-darwin]
 rustflags = [
   "-C", "link-arg=-undefined",
@@ -134,6 +191,7 @@ rustflags = [
 ```
 
 ## Build a benchmark CLI
+
 `Cargo run --release --  -h` to get all the information, should be fairly straightforward
 
 ## Run the rust test suite
@@ -170,11 +228,11 @@ Create a new tag and a new release in this repo, a new package will be pushed au
 
 </details>
 
-# License
+## License
 
 MIT License
 
-Copyright (c) 2024 Photoroom
+Copyright (c) 2025 Photoroom
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
