@@ -20,12 +20,21 @@ struct SampleMetadata {
     coca_embedding: Option<CocaEmbedding>,
 }
 
-async fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u8>> {
+pub async fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u8>> {
     // Retry on the request a few times
-    let timeout = std::time::Duration::from_secs(30);
+    let timeout = std::time::Duration::from_secs(120);
     let _permit = shared_client.semaphore.acquire();
 
-    if let Ok(response) = shared_client.client.get(url).timeout(timeout).send().await {
+    // Get a client reference with optimized settings
+    let client = &shared_client.client;
+    // Send request with specific timeout and connection settings
+    if let Ok(response) = client
+        .get(url)
+        .timeout(timeout)
+        .header(reqwest::header::CONNECTION, "keep-alive")
+        .send()
+        .await
+    {
         if let Ok(bytes) = response.bytes().await {
             return Some(bytes.to_vec());
         }

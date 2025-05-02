@@ -1,5 +1,6 @@
 use crate::generator_files;
 use crate::generator_http;
+use crate::generator_wds;
 use crate::image_processing::ARAwareTransform;
 use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
@@ -83,6 +84,9 @@ impl DatagoClient {
             SourceType::File => {
                 self.engine = Some(generator_files::orchestrate(self));
             }
+            SourceType::WebDataset => {
+                self.engine = Some(generator_wds::orchestrate(self));
+            }
         }
 
         self.is_started = true;
@@ -132,7 +136,6 @@ impl DatagoClient {
         }
 
         if let Some(engine) = &mut self.engine {
-            // let _ = engine.samples_meta_rx.close();
             let _ = engine.pages_rx.close();
             let _ = engine.samples_tx.close();
 

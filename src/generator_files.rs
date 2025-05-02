@@ -108,7 +108,7 @@ fn enumerate_files(
     match samples_metadata_tx.send(serde_json::Value::Null) {
         Ok(_) => {}
         Err(_) => {
-            debug!("ping_pages: stream already closed, all good");
+            debug!("ping_pages: stream already closed, wrapping up");
         }
     };
 }
