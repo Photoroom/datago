@@ -93,6 +93,53 @@ for _ in range(10):
     sample = client.get_sample()
 ```
 
+</details><details> <summary><strong>[experimental] Webdataset</strong></summary>
+
+Please note that this implementation is very new, and probably has significant limitations still. It has not yet been tested at scale.
+
+```python
+from datago import DatagoClient, initialize_logging
+import os
+import json
+
+# Can also set the log level directly instead of using RUST_LOG env var
+initialize_logging(log_level="warn")
+
+# URL of the test bucket
+bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
+dataset = "/imagenet-train-{000000..001281}.tar"
+url = bucket + dataset
+
+print(f"Running benchmark for {limit} samples")
+client_config = {
+    "source_type": "webdataset",
+    "source_config": {
+        "url": url,
+        "random_sampling": False,
+        "max_tasks_in_flight": 16 # The number of tarballs which should be handled concurrently
+        "rank": 0,
+        "world_size": 1,
+    },
+    # Optional pre-processing of the images, placing them in an aspect ratio bucket to preseve as much as possible of the original content
+    "image_config": {
+        "crop_and_resize": crop_and_resize,
+        "default_image_size": 1024,
+        "downsampling_ratio": 32,
+        "min_aspect_ratio": 0.5,
+        "max_aspect_ratio": 2.0,
+        "pre_encode_images": False,
+    },
+    "prefetch_buffer_size": 128,
+    "samples_buffer_size": 64,
+    "limit": limit,
+}
+
+client = DatagoClient(json.dumps(config))
+
+for _ in range(10):
+    sample = client.get_sample()
+```
+
 </details>
 
 

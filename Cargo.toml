@@ -33,6 +33,12 @@ reqwest-retry = "0.7.0"
 rand = "0.9.0"
 log = "0.4.27"
 env_logger = "0.11.8"
+tar = "0.4.44"
+futures = "0.3.31"
+flate2 = "1.1.1"
+async-tar = "0.5.0"
+tokio-util = { version = "0.7.15", features = ["io", "compat"] } # Add "compat"
+async-compression = {version= "0.4.23", features=["tokio"]}
 
 [profile.release]
 opt-level = 3  # Optimize for speed

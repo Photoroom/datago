@@ -1,5 +1,6 @@
 use crate::generator_files;
 use crate::generator_http;
+use crate::generator_wds;
 use crate::image_processing::ARAwareTransform;
 use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
@@ -79,6 +80,10 @@ impl DatagoClient {
             }
             SourceType::File => {
                 self.engine = Some(generator_files::orchestrate(self));
+            }
+            SourceType::WebDataset => {
+                warn!("WebDataset source type is new and experimental, use with caution!\nPlease report any issues you encounter to https://github.com/Photoroom/datago/issues.");
+                self.engine = Some(generator_wds::orchestrate(self));
             }
         }
 
