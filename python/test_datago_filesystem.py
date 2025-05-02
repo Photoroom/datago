@@ -34,6 +34,9 @@ def test_get_sample_filesystem(pre_encode_images: bool, rgb16: bool, rgba: bool)
             "source_type": "file",
             "source_config": {
                 "root_path": tmpdirname,
+                "rank": 0,
+                "world_size": 1,
+                "random_sampling": True,
             },
             "image_config": {
                 "crop_and_resize": False,
@@ -47,8 +50,6 @@ def test_get_sample_filesystem(pre_encode_images: bool, rgb16: bool, rgba: bool)
             "limit": limit,
             "prefetch_buffer_size": 64,
             "samples_buffer_size": 10,
-            "rank": 0,
-            "world_size": 1,
         }
 
         client = DatagoClient(json.dumps(client_config))
@@ -86,7 +87,9 @@ def test_random_walk():
             "source_type": "file",
             "source_config": {
                 "root_path": tmpdirname,
-                "random_order": True,
+                "rank": 0,
+                "world_size": 1,
+                "random_sampling": True,
             },
             "image_config": {
                 "crop_and_resize": False,

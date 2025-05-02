@@ -3,7 +3,7 @@
 [![Rust](https://github.com/Photoroom/datago/actions/workflows/rust.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/rust.yml)
 [![Rust-py](https://github.com/Photoroom/datago/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/Photoroom/datago/actions/workflows/ci-cd.yml)
 
-A Rust-written data loader which can be used from Python. Compatible with a [soon-to-be open sourced](https://github.com/Photoroom/dataroom) VectorDB-enabled data stack, which exposes HTTP requests, and with a local filesystem, more front-ends are possible. Focused on image data at the moment, could also easily be more generic.
+A Rust-written data loader which can be used as a python module. Handles several data sources, from local files to webdataset or a VectorDB focused http stack [soon-to-be open sourced](https://github.com/Photoroom/dataroom). Focused on image data at the moment, could also easily be more generic.
 
 Datago handles, outside of the Python GIL
 
@@ -12,18 +12,28 @@ Datago handles, outside of the Python GIL
 - some optional vision processing (aligning different image payloads)
 - optional serialization
 
-Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types.
-Speed will be network dependent, but GB/s is typical.
+Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types. Speed will be network dependent, but GB/s is typical. Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
 
-Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash. Only an iterator is exposed at the moment, but a map interface wouldn't be too hard.
+how can I add in a markdown readme in github a reference to an existing image in the repository ?
 
-<img width="922" alt="Screenshot 2024-09-24 at 9 39 44 PM" src="https://github.com/user-attachments/assets/b58002ce-f961-438b-af72-9e1338527365">
+![Datago organization](assets/447175851-2277afcb-8abf-4d17-b2db-dae27c6056d0.png)
 
 <details> <summary><strong>Use it</strong></summary>
 
 You can simply install datago with `[uv] pip install datago`
 
 ## Use the package from Python
+Please note that in all the of the following cases, you can directly get an IterableDataset (torch compatible) with the following code snippet
+
+```python
+from dataset import DatagoIterDataset
+client_config = {} # See below for examples
+datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
+```
+
+`return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
+
+<details> <summary><strong>Dataroom</strong></summary>
 
 Please note that in all the of the following cases, you can directly get an IterableDataset (torch compatible) with the following code snippet
 
@@ -68,7 +78,7 @@ Please note that the image buffers will be passed around as raw pointers, see be
 </details><details> <summary><strong>Local files</strong></summary>
 
 To test datago while serving local files (jpg, png, ..), code would look like the following.
-**Note that datago serving files with a lot of concurrent threads means that, even if random_order is not set,
+**Note that datago serving files with a lot of concurrent threads means that, even if shuffle is not set,
 there will be some randomness in the sample ordering.**
 
 ```python
@@ -83,11 +93,11 @@ config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
-        "random_order": False, # True if used directly for training
+        "shuffle": False, # True if used directly for training
+        "rank": 0,
+        "world_size": 1,
     },
     "limit": 200,
-    "rank": 0,
-    "world_size": 1,
     "samples_buffer_size": 32,
 }
 
@@ -105,6 +115,7 @@ for _ in range(10):
 See helper functions provided in `raw_types.py`, should be self explanatory. Check python benchmarks for examples. As mentioned above, we also provide a wrapper so that you get a `dataset` directly.
 
 ## Logging
+
 We are using the [log](https://docs.rs/log/latest/log/) crate with [env_logger](https://docs.rs/env_logger/latest/env_logger/).
 You can set the log level using the RUST_LOG environment variable. E.g. `RUST_LOG=INFO`.
 
@@ -119,7 +130,8 @@ Just install the rust toolchain via rustup
 ## [Apple Silicon MacOS only]
 
 If you are using an Apple Silicon Mac OS machine, create a `.cargo/config` file and paste the following:
-```
+
+``` cfg
 [target.x86_64-apple-darwin]
 rustflags = [
   "-C", "link-arg=-undefined",
@@ -134,6 +146,7 @@ rustflags = [
 ```
 
 ## Build a benchmark CLI
+
 `Cargo run --release --  -h` to get all the information, should be fairly straightforward
 
 ## Run the rust test suite
@@ -170,11 +183,11 @@ Create a new tag and a new release in this repo, a new package will be pushed au
 
 </details>
 
-# License
+## License
 
 MIT License
 
-Copyright (c) 2024 Photoroom
+Copyright (c) 2025 Photoroom
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

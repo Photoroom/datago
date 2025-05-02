@@ -6,6 +6,7 @@ use std::collections::HashMap;
 mod client;
 mod generator_files;
 mod generator_http;
+
 mod image_processing;
 mod structs;
 mod worker_files;
@@ -18,7 +19,7 @@ fn main() {
     // Handle CLI arguments
     let matches = Command::new("Datago-rs")
         .version("1.0")
-        .author("Author Name <ml@photoroom.com>")
+        .author("ML Team <ml@photoroom.com>")
         .about("Processes data with multiple threads")
         .arg(
             Arg::new("backlog")
