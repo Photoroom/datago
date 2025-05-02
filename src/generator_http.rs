@@ -453,7 +453,7 @@ pub fn ping_pages(
 
     // Send an empty value to signal the end of the stream
     if pages_tx.send(serde_json::Value::Null).is_err() {
-        debug!("ping_pages: stream already closed, all good");
+        debug!("ping_pages: stream already closed, wrapping up");
     };
 }
 
@@ -659,7 +659,7 @@ mod tests {
         assert_eq!(request.max_pixel_count, "1000000");
         assert_eq!(request.duplicate_state, "1");
         assert_eq!(request.attributes, "attr=val");
-        assert_eq!(request.random_sampling, false);
+        assert!(!request.random_sampling);
         assert_eq!(request.partition, "1");
         assert_eq!(request.partitions_count, "2");
     }

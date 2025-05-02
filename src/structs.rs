@@ -12,6 +12,7 @@ use std::thread;
 pub enum SourceType {
     Db,
     File,
+    WebDataset,
 }
 
 fn default_source_type() -> SourceType {
@@ -148,3 +149,11 @@ pub fn new_shared_client(max_connections: usize) -> SharedClient {
         semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WDSContent {
+    pub filename: String,
+    pub buffer: Vec<u8>,
+}
+
+pub type TarballContent = Vec<WDSContent>;
