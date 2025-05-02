@@ -43,7 +43,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --debug --verbose
 
       - name: Run tests
         env:

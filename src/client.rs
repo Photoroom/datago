@@ -494,13 +494,16 @@ mod tests {
     fn test_tags_empty() {
         let mut config = get_test_config();
         config["source_config"]["tags_empty"] = "true".into();
+        config["source_config"]["tags_ne"] = "".into();
+        config["source_config"]["tags"] = "".into();
+
         let mut client = DatagoClient::new(config.to_string());
 
         let sample = client.get_sample();
-        assert!(sample.is_some());
+        assert!(sample.is_some(), "Sample should be present");
 
         let sample = sample.unwrap();
-        assert!(sample.tags.is_empty());
+        assert!(sample.tags.is_empty(), "Tags should be empty");
         client.stop();
     }
 

@@ -362,16 +362,23 @@ async fn async_ping_pages(
 
     let initial_request = db_request.get_http_request(&api_url, &api_key).await;
 
-    if let Ok(tentative_json) = get_response(shared_client.clone(), &initial_request).await {
-        response_json = tentative_json.clone();
-        if let Some(next) = response_json.get("next") {
-            next_url = next;
-        } else {
-            debug!("No next URL in the response {:?}", response_json);
+    match get_response(shared_client.clone(), &initial_request).await {
+        Ok(tentative_json) => {
+            response_json = tentative_json.clone();
+            if let Some(next) = response_json.get("next") {
+                next_url = next;
+            } else {
+                debug!("No next URL in the response {:?}", response_json);
+            }
         }
-    } else {
-        error!("Couldn't get first page from DB");
-        return;
+        Err(e) => {
+            error!(
+                "Failed fetching the first page: {}\nURL: {}",
+                e,
+                initial_request.url()
+            );
+            return;
+        }
     }
 
     // Walk the pages and send them to the channel
@@ -404,7 +411,11 @@ async fn async_ping_pages(
                     .unwrap_or(&serde_json::Value::Null);
             }
             Err(e) => {
-                error!("Failed fetching a new page: {}", e);
+                error!(
+                    "Failed fetching a new page: {}\nURL: {}",
+                    e,
+                    new_request.url()
+                );
             }
         }
     }
@@ -584,7 +595,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
 
     #[test]
     fn test_build_request() {
@@ -690,9 +700,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_http_request() {
-        env::set_var("DATAROOM_API_URL", "https://api.example.com/");
-        env::set_var("DATAROOM_API_KEY", "test_key");
-
         let db_request = DbRequest {
             fields: "id,source".to_string(),
             sources: "source1".to_string(),
@@ -738,9 +745,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_http_request_random_sampling() {
-        env::set_var("DATAROOM_API_URL", "https://api.example.com/");
-        env::set_var("DATAROOM_API_KEY", "test_key");
-
         let db_request = DbRequest {
             fields: "id,source".to_string(),
             sources: "source1".to_string(),
