@@ -459,7 +459,7 @@ pub fn ping_pages(
 
 pub fn dispatch_pages(
     pages_rx: Receiver<serde_json::Value>,
-    samples_meta_tx: Sender<serde_json::Value>,
+    samples_metadata_tx: Sender<serde_json::Value>,
     limit: usize,
 ) {
     // While we have something, send the samples to the channel
@@ -484,7 +484,7 @@ pub fn dispatch_pages(
                             let sample_json = serde_json::from_value(sample.clone()).unwrap();
 
                             // Push the sample to the channel
-                            if samples_meta_tx.send(sample_json).is_err() {
+                            if samples_metadata_tx.send(sample_json).is_err() {
                                 keep_going = false;
                                 break;
                             }
@@ -521,17 +521,18 @@ pub fn dispatch_pages(
     );
 
     // Send an empty value to signal the end of the stream
-    if samples_meta_tx.send(serde_json::Value::Null).is_err() {
+    if samples_metadata_tx.send(serde_json::Value::Null).is_err() {
         debug!("dispatch_pages: stream already closed, all good");
     }
 }
 
+// TODO: refactor to join with the same orchestration function in generator_files.rs
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let http_client = Arc::new(new_shared_client(client.max_connections));
 
     // Allocate all the message passing pipes
     let (pages_tx, pages_rx) = bounded(2);
-    let (samples_meta_tx, samples_meta_rx) = bounded(client.samples_buffer * 2);
+    let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
 
     // Convert the source_config to a SourceDBConfig
@@ -558,9 +559,9 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     // Spawn a thread which will dispatch the pages to the workers
-    let pages_rx_feeder = pages_rx.clone();
+    let pages_rx_feeder = pages_rx.clone(); // copy the receiver prior to moving it into a dedicated thread
     let feeder = Some(thread::spawn(move || {
-        dispatch_pages(pages_rx_feeder, samples_meta_tx, limit);
+        dispatch_pages(pages_rx_feeder, samples_metadata_tx, limit);
     }));
 
     // Spawn a thread which will handle the async workers
@@ -573,7 +574,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let worker = Some(thread::spawn(move || {
         worker_http::pull_samples(
             &http_client,
-            samples_meta_rx,
+            samples_metadata_rx,
             samples_tx_worker,
             image_transform,
             encode_images,

@@ -128,13 +128,14 @@ fn ping_files(
     };
 }
 
+// TODO: refactor to join with the same orchestration function in generator_http.rs
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Allocate all the message passing pipes
     let (pages_tx, pages_rx) = bounded(2);
-    let (samples_meta_tx, samples_meta_rx) = bounded(client.samples_buffer * 2);
+    let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
 
-    // Convert the source_config to a SourceDBConfig
+    // Convert the source_config to a SourceFileConfig
     let source_config: SourceFileConfig =
         serde_json::from_value(client.source_config.clone()).unwrap();
 
@@ -148,10 +149,9 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     // Spawn a thread which will dispatch the pages to the workers
-    let pages_rx_pinger = pages_rx.clone();
-
+    let pages_rx_feeder = pages_rx.clone();
     let feeder = Some(thread::spawn(move || {
-        generator_http::dispatch_pages(pages_rx_pinger, samples_meta_tx, limit);
+        generator_http::dispatch_pages(pages_rx_feeder, samples_metadata_tx, limit);
     }));
 
     // Spawn a thread which will handle the async workers
@@ -162,7 +162,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let samples_tx_worker = samples_tx.clone();
     let worker = Some(thread::spawn(move || {
         worker_files::pull_samples(
-            samples_meta_rx,
+            samples_metadata_rx,
             samples_tx_worker,
             image_transform,
             encode_images,
