@@ -1,38 +1,11 @@
 use crate::image_processing;
-use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, UrlLatent};
+use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, SharedClient, UrlLatent};
 use crate::worker_files::consume_oldest_task;
 use log::{debug, error, warn};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-// We'll share a single connection pool across all worker threads
-#[derive(Clone)]
-pub struct SharedClient {
-    pub client: ClientWithMiddleware,
-    pub semaphore: Arc<tokio::sync::Semaphore>,
-}
-
-pub fn new_shared_client(max_connections: usize) -> SharedClient {
-    let retry_policy = ExponentialBackoff::builder()
-        .retry_bounds(
-            std::time::Duration::from_millis(100), // min_retry_interval
-            std::time::Duration::from_secs(3),
-        )
-        .build_with_max_retries(3);
-
-    let client = ClientBuilder::new(reqwest::Client::new())
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .build();
-
-    SharedClient {
-        client,
-        semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
-    }
-}
 
 // ------------------------------------------------------------------
 #[derive(Debug, Serialize, Deserialize)]
@@ -273,7 +246,7 @@ async fn pull_sample(
 }
 
 async fn async_pull_samples(
-    client: Arc<SharedClient>,
+    client: &Arc<SharedClient>,
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
@@ -331,7 +304,7 @@ async fn async_pull_samples(
 }
 
 pub fn pull_samples(
-    client: Arc<SharedClient>,
+    client: &Arc<SharedClient>,
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,

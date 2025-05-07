@@ -1,8 +1,14 @@
+use crate::client::DatagoClient;
+use crate::generator_http;
+use crate::structs::DatagoEngine;
+use crate::worker_files;
+use kanal::bounded;
 use log::debug;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::hash::Hash;
+use std::thread;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
@@ -20,7 +26,7 @@ fn hash<T: Hash>(t: &T) -> u64 {
     s.finish()
 }
 
-pub fn ping_files(
+fn ping_files(
     pages_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceFileConfig,
     rank: usize,
@@ -120,4 +126,65 @@ pub fn ping_files(
             debug!("ping_pages: stream already closed, all good");
         }
     };
+}
+
+pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+    // Start pulling the samples, which spread across three steps. The samples will land in the last kanal,
+    // all the threads pausing when the required buffer depth is reached.
+
+    // A first thread will query the filesystem and get pages of filepaths back
+    // This meta data is then dispatched to a worker pool, which will load the files, deserialize them,
+    // do the required pre-processing then commit to the ready queue.
+
+    // TODO: refactor to join with the same orchestration function in generator_http.rs
+
+    // Allocate all the message passing pipes
+    let (pages_tx, pages_rx) = bounded(2);
+    let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
+    let (samples_tx, samples_rx) = bounded(client.samples_buffer);
+
+    // Convert the source_config to a SourceFileConfig
+    let source_config: SourceFileConfig =
+        serde_json::from_value(client.source_config.clone()).unwrap();
+
+    println!("Using file as source {}", source_config.root_path);
+    let rank = client.rank;
+    let limit = client.limit;
+    let world_size = client.world_size;
+
+    let pinger = Some(thread::spawn(move || {
+        ping_files(pages_tx, source_config, rank, world_size, limit);
+    }));
+
+    // Spawn a thread which will dispatch the pages to the workers
+    let pages_rx_feeder = pages_rx.clone();
+    let feeder = Some(thread::spawn(move || {
+        generator_http::dispatch_pages(pages_rx_feeder, samples_metadata_tx, limit);
+    }));
+
+    // Spawn a thread which will handle the async workers
+    let image_transform = client.image_transform.clone();
+    let encode_images = client.encode_images;
+    let img_to_rgb8 = client.image_to_rgb8;
+    let limit = client.limit;
+    let samples_tx_worker = samples_tx.clone();
+    let worker = Some(thread::spawn(move || {
+        worker_files::pull_samples(
+            samples_metadata_rx,
+            samples_tx_worker,
+            image_transform,
+            encode_images,
+            img_to_rgb8,
+            limit,
+        );
+    }));
+
+    DatagoEngine {
+        pages_rx,
+        samples_tx,
+        samples_rx,
+        pinger,
+        feeder,
+        worker,
+    }
 }
