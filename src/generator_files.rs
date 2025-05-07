@@ -128,8 +128,16 @@ fn ping_files(
     };
 }
 
-// TODO: refactor to join with the same orchestration function in generator_http.rs
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+    // Start pulling the samples, which spread across three steps. The samples will land in the last kanal,
+    // all the threads pausing when the required buffer depth is reached.
+
+    // A first thread will query the filesystem and get pages of filepaths back
+    // This meta data is then dispatched to a worker pool, which will load the files, deserialize them,
+    // do the required pre-processing then commit to the ready queue.
+
+    // TODO: refactor to join with the same orchestration function in generator_http.rs
+
     // Allocate all the message passing pipes
     let (pages_tx, pages_rx) = bounded(2);
     let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);

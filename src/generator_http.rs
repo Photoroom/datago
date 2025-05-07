@@ -526,8 +526,15 @@ pub fn dispatch_pages(
     }
 }
 
-// TODO: refactor to join with the same orchestration function in generator_files.rs
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+    // Start pulling the samples, which spread across three steps. The samples will land in the last kanal,
+    // all the threads pausing when the required buffer depth is reached.
+
+    // A first thread will ping the DB and get pages back, meaning documents with a lot of per-sample meta
+    // This meta data is then dispatched to a worker pool, which will download the payloads, deserialize them,
+    // do the required pre-processing then commit to the ready queue.
+
+    // TODO: refactor to join with the same orchestration function in generator_files.rs
     let http_client = Arc::new(new_shared_client(client.max_connections));
 
     // Allocate all the message passing pipes
@@ -540,7 +547,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         serde_json::from_value(client.source_config.clone()).unwrap();
 
     println!("Using DB as source");
-    let rank = client.rank;
+    let rank = client.rank; // TODO: we could share the config directly and remove all these copies
     let limit = client.limit;
     let world_size = client.world_size;
     let source_config = source_db_config.clone();
