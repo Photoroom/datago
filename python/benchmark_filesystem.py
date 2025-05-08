@@ -11,11 +11,15 @@ def benchmark(
     ),
     limit: int = typer.Option(2000, help="The number of samples to test on"),
     crop_and_resize: bool = typer.Option(
-        True, help="Crop and resize the images on the fly"
+        False, help="Crop and resize the images on the fly"
     ),
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
 ):
     print(f"Running benchmark for {root_path} - {limit} samples")
+    print(
+        "Please run the benchmark twice if you want to compare against torch dataloader, so that file caching affects both paths"
+    )
+
     client_config = {
         "source_type": "file",
         "source_config": {"root_path": root_path},
@@ -81,8 +85,14 @@ def benchmark(
         )
 
         # Create a DataLoader to allow for multiple workers
+        # Use available CPU count for num_workers
+        num_workers = os.cpu_count() or 8  # Default to 8 if cpu_count returns None
         dataloader = DataLoader(
-            dataset, batch_size=1, shuffle=False, num_workers=8, collate_fn=lambda x: x
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=lambda x: x,
         )
 
         # Iterate over the DataLoader
