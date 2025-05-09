@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "datago"
-version = "2025.4.5"
+version = "2025.5.1"
 dependencies = [
  "clap",
  "env_logger",

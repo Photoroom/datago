@@ -1,12 +1,10 @@
 use crate::client::DatagoClient;
-use crate::generator_http;
 use crate::structs::DatagoEngine;
 use crate::worker_files;
 use kanal::bounded;
 use log::debug;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::cmp::min;
 use std::hash::Hash;
 use std::thread;
 
@@ -26,8 +24,8 @@ fn hash<T: Hash>(t: &T) -> u64 {
     s.finish()
 }
 
-fn ping_files(
-    pages_tx: kanal::Sender<serde_json::Value>,
+fn enumerate_files(
+    samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceFileConfig,
     rank: usize,
     world_size: usize,
@@ -67,12 +65,8 @@ fn ping_files(
         files_list.into_iter()
     };
 
-    // Make sure that we always send at least one page
-    let page_size = min(50, limit);
-
-    // Iterate over the files and send the pages of files as they come
+    // Iterate over the files and send the paths as they come
     let mut count = 0;
-    let mut filepaths = Vec::new();
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
 
     // Build a page from the files iterator
@@ -88,23 +82,14 @@ fn ping_files(
             }
         }
 
-        filepaths.push(file_name);
-        count += 1;
-
-        if filepaths.len() >= page_size || count >= max_submitted_samples {
-            // Convert the page to a JSON
-            let page_json = serde_json::json!({
-                "results": filepaths,
-                "rank": rank,
-                "world_size": world_size,
-            });
-
-            // Push the page to the channel
-            if pages_tx.send(page_json).is_err() {
-                break;
-            }
-            filepaths.clear();
+        if samples_metadata_tx
+            .send(serde_json::Value::String(file_name))
+            .is_err()
+        {
+            break;
         }
+
+        count += 1;
 
         if count >= max_submitted_samples {
             // NOTE: This doesn´t count the samples which have actually been processed
@@ -120,7 +105,7 @@ fn ping_files(
     );
 
     // Send an empty value to signal the end of the stream
-    match pages_tx.send(serde_json::Value::Null) {
+    match samples_metadata_tx.send(serde_json::Value::Null) {
         Ok(_) => {}
         Err(_) => {
             debug!("ping_pages: stream already closed, all good");
@@ -129,45 +114,41 @@ fn ping_files(
 }
 
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
-    // Start pulling the samples, which spread across three steps. The samples will land in the last kanal,
+    // Start pulling the samples, which spread across two steps. The samples will land in the last kanal,
     // all the threads pausing when the required buffer depth is reached.
+    // - A first thread will query the filesystem and get pages of filepaths back. It will dispatch the filepaths
+    // to the worker pool.
+    // - The worker pool will load the files, deserialize them, do the required pre-processing then commit to the ready queue.
 
-    // A first thread will query the filesystem and get pages of filepaths back
-    // This meta data is then dispatched to a worker pool, which will load the files, deserialize them,
-    // do the required pre-processing then commit to the ready queue.
-
-    // TODO: refactor to join with the same orchestration function in generator_http.rs
+    // TODO: Pass over an Arc ref of the client instead of doing the current member copies
 
     // Allocate all the message passing pipes
-    let (pages_tx, pages_rx) = bounded(2);
     let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
 
     // Convert the source_config to a SourceFileConfig
     let source_config: SourceFileConfig =
         serde_json::from_value(client.source_config.clone()).unwrap();
-
     println!("Using file as source {}", source_config.root_path);
+
+    // Create a thread which will generate work as it goes. We'll query the filesystem
+    // and send the filepaths to the worker pool as we go
     let rank = client.rank;
     let limit = client.limit;
     let world_size = client.world_size;
 
-    let pinger = Some(thread::spawn(move || {
-        ping_files(pages_tx, source_config, rank, world_size, limit);
+    let generator = Some(thread::spawn(move || {
+        enumerate_files(samples_metadata_tx, source_config, rank, world_size, limit);
     }));
 
-    // Spawn a thread which will dispatch the pages to the workers
-    let pages_rx_feeder = pages_rx.clone();
-    let feeder = Some(thread::spawn(move || {
-        generator_http::dispatch_pages(pages_rx_feeder, samples_metadata_tx, limit);
-    }));
-
-    // Spawn a thread which will handle the async workers
+    // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
     let image_transform = client.image_transform.clone();
     let encode_images = client.encode_images;
     let img_to_rgb8 = client.image_to_rgb8;
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
+    let samples_metadata_rx_worker = samples_metadata_rx.clone();
+
     let worker = Some(thread::spawn(move || {
         worker_files::pull_samples(
             samples_metadata_rx,
@@ -180,11 +161,11 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     DatagoEngine {
-        pages_rx,
+        pages_rx: samples_metadata_rx_worker,
         samples_tx,
         samples_rx,
-        pinger,
-        feeder,
+        pinger: None,
+        feeder: generator,
         worker,
     }
 }

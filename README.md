@@ -21,9 +21,21 @@ Depending on the front ends, datago can be rank and world-size aware, in which c
 
 <details> <summary><strong>Use it</strong></summary>
 
-Using Python 3.11, you can simply install datago with `pip install datago`
+You can simply install datago with `[uv] pip install datago`
 
 ## Use the package from Python
+
+Please note that in all the of the following cases, you can directly get an IterableDataset (torch compatible) with the following code snippet
+
+```python
+from dataset import DatagoIterDataset
+client_config = {} # See below for examples
+datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
+```
+
+`return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
+
+<details> <summary><strong>Dataroom</strong></summary>
 
 ```python
 from datago import DatagoClient, initialize_logging
@@ -51,7 +63,10 @@ for _ in range(10):
     sample = client.get_sample()
 ```
 
-Please note that the image buffers will be passed around as raw pointers, see below.
+Please note that the image buffers will be passed around as raw pointers, see below (we provide python utils to convert to PIL types).
+
+</details><details> <summary><strong>Local files</strong></summary>
+
 To test datago while serving local files (jpg, png, ..), code would look like the following.
 **Note that datago serving files with a lot of concurrent threads means that, even if random_order is not set,
 there will be some randomness in the sample ordering.**
@@ -82,10 +97,12 @@ for _ in range(10):
     sample = client.get_sample()
 ```
 
+</details>
+
 
 ## Match the raw exported buffers with typical python types
 
-See helper functions provided in `raw_types.py`, should be self explanatory. Check python benchmarks for examples.
+See helper functions provided in `raw_types.py`, should be self explanatory. Check python benchmarks for examples. As mentioned above, we also provide a wrapper so that you get a `dataset` directly.
 
 ## Logging
 We are using the [log](https://docs.rs/log/latest/log/) crate with [env_logger](https://docs.rs/env_logger/latest/env_logger/).
