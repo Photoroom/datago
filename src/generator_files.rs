@@ -116,10 +116,9 @@ fn enumerate_files(
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Start pulling the samples, which spread across two steps. The samples will land in the last kanal,
     // all the threads pausing when the required buffer depth is reached.
-
-    // A first thread will query the filesystem and get pages of filepaths back
-    // This meta data is then dispatched to a worker pool, which will load the files, deserialize them,
-    // do the required pre-processing then commit to the ready queue.
+    // - A first thread will query the filesystem and get pages of filepaths back. It will dispatch the filepaths
+    // to the worker pool.
+    // - The worker pool will load the files, deserialize them, do the required pre-processing then commit to the ready queue.
 
     // TODO: Pass over an Arc ref of the client instead of doing the current member copies
 
