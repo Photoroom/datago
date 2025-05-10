@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use crate::structs::{new_shared_client, DatagoEngine, SharedClient};
 use kanal::bounded;
-use kanal::Receiver;
 use kanal::Sender;
 use std::thread;
 
@@ -338,9 +337,9 @@ async fn get_response(
     }
 }
 
-async fn async_ping_pages(
+async fn async_pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
-    pages_tx: kanal::Sender<serde_json::Value>,
+    samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     rank: usize,
     world_size: usize,
@@ -384,12 +383,33 @@ async fn async_ping_pages(
     // Walk the pages and send them to the channel
     let mut count = 0;
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
-    while count < max_submitted_samples {
-        // Push the page to the channel
-        if pages_tx.send(response_json.clone()).is_err() {
-            break;
+    'outer: while count < max_submitted_samples {
+        match response_json.get("results") {
+            Some(results) => {
+                // Go over the samples from the current page
+                for sample in results.as_array().unwrap() {
+                    let sample_json = serde_json::from_value(sample.clone()).unwrap();
+
+                    // Push the sample to the channel
+                    if samples_metadata_tx.send(sample_json).is_err() {
+                        break 'outer;
+                    }
+
+                    count += 1;
+
+                    if count >= max_submitted_samples {
+                        // NOTE: This doesn´t count the samples which have actually been processed
+                        debug!(
+                            "dispatch_pages: reached the limit of samples requested. Shutting down"
+                        );
+                        break 'outer;
+                    }
+                }
+            }
+            None => {
+                debug!("No results in the response: {:?}", response_json);
+            }
         }
-        count += source_config.page_size;
 
         // Ask for the next page
         if next_url == &serde_json::Value::Null {
@@ -422,14 +442,22 @@ async fn async_ping_pages(
 
     // Either we don't have any more samples or we have reached the limit
     debug!(
-        "ping_pages: total samples requested: {}. page samples served {}",
+        "pull_and_dispatch_pages: total samples requested: {}. page samples served {}",
         limit, count
     );
+
+    // Send an empty value to signal the end of the stream
+    match samples_metadata_tx.send(serde_json::Value::Null) {
+        Ok(_) => {}
+        Err(_) => {
+            debug!("pull_and_dispatch_pages: stream already closed, all good");
+        }
+    }
 }
 
-pub fn ping_pages(
+pub fn pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
-    pages_tx: kanal::Sender<serde_json::Value>,
+    samples_metadata_tx: Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     rank: usize,
     world_size: usize,
@@ -440,9 +468,9 @@ pub fn ping_pages(
         .build()
         .unwrap()
         .block_on(async {
-            async_ping_pages(
+            async_pull_and_dispatch_pages(
                 shared_client,
-                pages_tx.clone(),
+                samples_metadata_tx.clone(),
                 source_config,
                 rank,
                 world_size,
@@ -452,93 +480,22 @@ pub fn ping_pages(
         });
 
     // Send an empty value to signal the end of the stream
-    if pages_tx.send(serde_json::Value::Null).is_err() {
-        debug!("ping_pages: stream already closed, all good");
+    if samples_metadata_tx.send(serde_json::Value::Null).is_err() {
+        debug!("pull_and_dispatch_pages: stream already closed, all good");
     };
 }
 
-pub fn dispatch_pages(
-    pages_rx: Receiver<serde_json::Value>,
-    samples_metadata_tx: Sender<serde_json::Value>,
-    limit: usize,
-) {
-    // While we have something, send the samples to the channel
-    let mut count = 0;
-
-    // Send a bit more than the requested samples, in case some are invalid
-    // 10% arbitrary margin, the workers will stop early if not useful
-    let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
-    let mut keep_going = true;
-
-    while keep_going {
-        match pages_rx.recv() {
-            Ok(serde_json::Value::Null) => {
-                debug!("dispatch_pages: end of stream received, stopping there");
-                break;
-            }
-            Ok(response_json) => {
-                match response_json.get("results") {
-                    Some(results) => {
-                        // Go over the samples from the current page
-                        for sample in results.as_array().unwrap() {
-                            let sample_json = serde_json::from_value(sample.clone()).unwrap();
-
-                            // Push the sample to the channel
-                            if samples_metadata_tx.send(sample_json).is_err() {
-                                keep_going = false;
-                                break;
-                            }
-
-                            count += 1;
-
-                            if count >= max_submitted_samples {
-                                // NOTE: This doesn´t count the samples which have actually been processed
-                                debug!(
-                                    "dispatch_pages: reached the limit of samples requested. Shutting down"
-                                );
-                                keep_going = false;
-                                break;
-                            }
-                        }
-                    }
-                    None => {
-                        debug!("No results in the response: {:?}", response_json);
-                        break;
-                    }
-                }
-            }
-            Err(_) => {
-                // This error indicates that the channel has been closed.
-                break; // already in the outer loop
-            }
-        }
-    }
-
-    // Either we don't have any more samples or we have reached the limit
-    debug!(
-        "dispatch_pages: total samples requested: {}. served {}",
-        limit, count
-    );
-
-    // Send an empty value to signal the end of the stream
-    if samples_metadata_tx.send(serde_json::Value::Null).is_err() {
-        debug!("dispatch_pages: stream already closed, all good");
-    }
-}
-
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
-    // Start pulling the samples, which spread across three steps. The samples will land in the last kanal,
+    // Start pulling the samples, which spread across two steps. The samples will land in the last kanal,
     // all the threads pausing when the required buffer depth is reached.
 
-    // A first thread will ping the DB and get pages back, meaning documents with a lot of per-sample meta
+    // A first thread will ping the DB and get pages back, meaning documents with a lot of per-sample meta data.
     // This meta data is then dispatched to a worker pool, which will download the payloads, deserialize them,
     // do the required pre-processing then commit to the ready queue.
 
-    // TODO: refactor to join with the same orchestration function in generator_files.rs
     let http_client = Arc::new(new_shared_client(client.max_connections));
 
     // Allocate all the message passing pipes
-    let (pages_tx, pages_rx) = bounded(2);
     let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
 
@@ -554,21 +511,15 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let shared_client = http_client.clone();
 
     // Spawn a thread which will ping the DB
-    let pinger = Some(thread::spawn(move || {
-        ping_pages(
+    let feeder = Some(thread::spawn(move || {
+        pull_and_dispatch_pages(
             &shared_client,
-            pages_tx,
+            samples_metadata_tx,
             source_config,
             rank,
             world_size,
             limit,
         );
-    }));
-
-    // Spawn a thread which will dispatch the pages to the workers
-    let pages_rx_feeder = pages_rx.clone(); // copy the receiver prior to moving it into a dedicated thread
-    let feeder = Some(thread::spawn(move || {
-        dispatch_pages(pages_rx_feeder, samples_metadata_tx, limit);
     }));
 
     // Spawn a thread which will handle the async workers
@@ -577,11 +528,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let img_to_rgb8 = client.image_to_rgb8;
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
+    let samples_metadata_rx_worker = samples_metadata_rx.clone();
 
     let worker = Some(thread::spawn(move || {
         worker_http::pull_samples(
             &http_client,
-            samples_metadata_rx,
+            samples_metadata_rx_worker,
             samples_tx_worker,
             image_transform,
             encode_images,
@@ -591,10 +543,9 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     DatagoEngine {
-        pages_rx,
+        samples_metadata_rx,
         samples_tx,
         samples_rx,
-        pinger,
         feeder,
         worker,
     }

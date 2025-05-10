@@ -132,15 +132,8 @@ impl DatagoClient {
         }
 
         if let Some(engine) = &mut self.engine {
-            // let _ = engine.samples_meta_rx.close();
-            let _ = engine.pages_rx.close();
+            let _ = engine.samples_metadata_rx.close();
             let _ = engine.samples_tx.close();
-
-            if let Some(pinger) = engine.pinger.take() {
-                if pinger.join().is_err() {
-                    error!("Failed to join pinger thread");
-                }
-            }
 
             if let Some(feeder) = engine.feeder.take() {
                 if feeder.join().is_err() {
