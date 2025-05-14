@@ -33,11 +33,10 @@ pub struct DatagoClientConfig {
 
 #[derive(Debug)]
 pub struct DatagoEngine {
-    pub pages_rx: kanal::Receiver<serde_json::Value>,
+    pub samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     pub samples_tx: kanal::Sender<Option<Sample>>,
     pub samples_rx: kanal::Receiver<Option<Sample>>,
 
-    pub pinger: Option<thread::JoinHandle<()>>,
     pub feeder: Option<thread::JoinHandle<()>>,
     pub worker: Option<thread::JoinHandle<()>>,
 }

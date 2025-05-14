@@ -137,7 +137,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let limit = client.limit;
     let world_size = client.world_size;
 
-    let generator = Some(thread::spawn(move || {
+    let feeder = Some(thread::spawn(move || {
         enumerate_files(samples_metadata_tx, source_config, rank, world_size, limit);
     }));
 
@@ -151,7 +151,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     let worker = Some(thread::spawn(move || {
         worker_files::pull_samples(
-            samples_metadata_rx,
+            samples_metadata_rx_worker,
             samples_tx_worker,
             image_transform,
             encode_images,
@@ -161,11 +161,10 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     DatagoEngine {
-        pages_rx: samples_metadata_rx_worker,
+        samples_metadata_rx,
         samples_tx,
         samples_rx,
-        pinger: None,
-        feeder: generator,
+        feeder,
         worker,
     }
 }
