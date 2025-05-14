@@ -2,6 +2,7 @@ import time
 from tqdm import tqdm
 import typer
 from dataset import DatagoIterDataset
+import os
 
 
 def benchmark(
@@ -22,6 +23,7 @@ def benchmark(
         "source_config": {
             "url": url,
             "shuffle": True,
+            "max_tasks_in_flight": os.cpu_count() // 2,
         },
         "image_config": {
             "crop_and_resize": crop_and_resize,

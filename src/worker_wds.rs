@@ -97,6 +97,7 @@ async fn pull_sample(
             .is_err()
         {
             debug!("wds_worker: stream already closed, wrapping up");
+            return Err(());
         }
         return Ok(());
     }
@@ -105,7 +106,7 @@ async fn pull_sample(
 }
 
 async fn async_deserialize_samples(
-    samples_meta_rx: kanal::Receiver<TarballContent>,
+    samples_metadata_rx: kanal::Receiver<TarballContent>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
@@ -121,10 +122,10 @@ async fn async_deserialize_samples(
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
     let shareable_img_tfm = Arc::new(image_transform);
 
-    while let Ok(sample) = samples_meta_rx.recv() {
+    while let Ok(sample) = samples_metadata_rx.recv() {
         if sample.is_empty() {
             warn!("wds_worker: end of stream received, stopping there");
-            let _ = samples_meta_rx.close();
+            let _ = samples_metadata_rx.close();
             break;
         }
 
@@ -138,8 +139,14 @@ async fn async_deserialize_samples(
         )));
 
         // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks && consume_oldest_task(&mut tasks).await.is_ok() {
-            count += 1;
+        if tasks.len() >= max_tasks {
+            if consume_oldest_task(&mut tasks).await.is_ok() {
+                count += 1;
+            } else {
+                warn!("wds_worker: task failed, stopping there");
+                let _ = samples_metadata_rx.close(); // Stop upstream thread
+                break;
+            }
         }
         if count >= limit {
             break;
@@ -159,7 +166,7 @@ async fn async_deserialize_samples(
 }
 
 pub fn deserialize_samples(
-    samples_meta_rx: kanal::Receiver<TarballContent>,
+    samples_metadata_rx: kanal::Receiver<TarballContent>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
@@ -173,7 +180,7 @@ pub fn deserialize_samples(
         .unwrap()
         .block_on(async {
             async_deserialize_samples(
-                samples_meta_rx,
+                samples_metadata_rx,
                 samples_tx,
                 image_transform,
                 encode_images,

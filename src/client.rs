@@ -5,7 +5,7 @@ use crate::image_processing::ARAwareTransform;
 use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
 use crate::structs::DatagoEngine;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use pyo3::prelude::*;
 
 #[pyclass]
@@ -136,14 +136,10 @@ impl DatagoClient {
         }
 
         if let Some(engine) = &mut self.engine {
-            let _ = engine.pages_rx.close();
-            let _ = engine.samples_tx.close();
+            debug!("Stopping the client...");
 
-            if let Some(pinger) = engine.pinger.take() {
-                if pinger.join().is_err() {
-                    error!("Failed to join pinger thread");
-                }
-            }
+            let _ = engine.samples_rx.close();
+            debug!("Sample pipe closed...");
 
             if let Some(feeder) = engine.feeder.take() {
                 if feeder.join().is_err() {
