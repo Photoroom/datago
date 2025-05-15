@@ -92,7 +92,7 @@ pub async fn consume_oldest_task(
 }
 
 async fn async_pull_samples(
-    samples_meta_rx: kanal::Receiver<serde_json::Value>,
+    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
@@ -106,10 +106,10 @@ async fn async_pull_samples(
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);
 
-    while let Ok(received) = samples_meta_rx.recv() {
+    while let Ok(received) = samples_metadata_rx.recv() {
         if received == serde_json::Value::Null {
             debug!("file_worker: end of stream received, stopping there");
-            let _ = samples_meta_rx.close();
+            let _ = samples_metadata_rx.close();
             break;
         }
 
@@ -144,7 +144,7 @@ async fn async_pull_samples(
 }
 
 pub fn pull_samples(
-    samples_meta_rx: kanal::Receiver<serde_json::Value>,
+    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
@@ -157,7 +157,7 @@ pub fn pull_samples(
         .unwrap()
         .block_on(async {
             async_pull_samples(
-                samples_meta_rx,
+                samples_metadata_rx,
                 samples_tx,
                 image_transform,
                 encode_images,

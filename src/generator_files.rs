@@ -2,7 +2,7 @@ use crate::client::DatagoClient;
 use crate::structs::DatagoEngine;
 use crate::worker_files;
 use kanal::bounded;
-use log::debug;
+use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
@@ -108,7 +108,7 @@ fn enumerate_files(
     match samples_metadata_tx.send(serde_json::Value::Null) {
         Ok(_) => {}
         Err(_) => {
-            debug!("ping_pages: stream already closed, all good");
+            debug!("ping_pages: stream already closed, wrapping up");
         }
     };
 }
@@ -129,7 +129,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Convert the source_config to a SourceFileConfig
     let source_config: SourceFileConfig =
         serde_json::from_value(client.source_config.clone()).unwrap();
-    println!("Using file as source {}", source_config.root_path);
+    info!("Using file as source {}", source_config.root_path);
 
     // Create a thread which will generate work as it goes. We'll query the filesystem
     // and send the filepaths to the worker pool as we go
@@ -146,13 +146,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let encode_images = client.encode_images;
     let img_to_rgb8 = client.image_to_rgb8;
     let limit = client.limit;
-    let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
 
     let worker = Some(thread::spawn(move || {
         worker_files::pull_samples(
             samples_metadata_rx_worker,
-            samples_tx_worker,
+            samples_tx,
             image_transform,
             encode_images,
             img_to_rgb8,
@@ -161,8 +160,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     DatagoEngine {
-        samples_metadata_rx,
-        samples_tx,
         samples_rx,
         feeder,
         worker,
