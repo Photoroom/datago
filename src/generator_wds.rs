@@ -60,6 +60,7 @@ fn urls_from_pattern(url: &str) -> Vec<String> {
         .collect()
 }
 
+
 async fn pull_tarball(
     shared_client: Arc<SharedClient>,
     url: serde_json::Value,
