@@ -1,6 +1,6 @@
 use crate::client::DatagoClient;
 use crate::worker_http;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
@@ -80,6 +80,12 @@ pub struct SourceDBConfig {
 
     #[serde(default)]
     pub random_sampling: bool,
+
+    #[serde(default)]
+    pub rank: usize,
+
+    #[serde(default)]
+    pub world_size: usize,
 }
 
 // TODO: Derive from the above
@@ -187,7 +193,7 @@ impl DbRequest {
     }
 }
 
-fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) -> DbRequest {
+fn build_request(source_config: SourceDBConfig) -> DbRequest {
     // Build the request to the DB, given the source configuration
     // There are a lot of straight copies, but also some internal logic
     let mut fields = "id,source,attributes,height,width,tags".to_string();
@@ -265,7 +271,10 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
     }
 
     debug!("Fields: {}", fields);
-    debug!("Rank: {}, World size: {}", rank, world_size);
+    debug!(
+        "Rank: {}, World size: {}",
+        source_config.rank, source_config.world_size
+    );
     let mut return_latents = source_config.has_latents.clone();
     if !source_config.has_masks.is_empty() {
         return_latents.push_str(&format!(",{}", source_config.has_masks));
@@ -303,13 +312,13 @@ fn build_request(source_config: SourceDBConfig, rank: usize, world_size: usize) 
         duplicate_state: maybe_add_int(source_config.duplicate_state),
         attributes: source_config.attributes,
         random_sampling: source_config.random_sampling,
-        partition: if world_size > 1 {
-            format!("{}", rank)
+        partition: if source_config.world_size > 1 {
+            format!("{}", source_config.rank)
         } else {
             "".to_string()
         },
-        partitions_count: if world_size > 1 {
-            format!("{}", world_size)
+        partitions_count: if source_config.world_size > 1 {
+            format!("{}", source_config.world_size)
         } else {
             "".to_string()
         },
@@ -341,8 +350,6 @@ async fn async_pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
-    rank: usize,
-    world_size: usize,
     limit: usize,
 ) {
     let api_url = std::env::var("DATAROOM_API_URL").expect("DATAROOM_API_URL not set");
@@ -353,7 +360,7 @@ async fn async_pull_and_dispatch_pages(
         HeaderValue::from_str(&format!("Token  {}", api_key)).unwrap(),
     );
 
-    let db_request = build_request(source_config.clone(), rank, world_size);
+    let db_request = build_request(source_config.clone());
 
     // Send the request and dispatch the response to the channel
     let mut response_json: serde_json::Value;
@@ -459,8 +466,6 @@ pub fn pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
     samples_metadata_tx: Sender<serde_json::Value>,
     source_config: SourceDBConfig,
-    rank: usize,
-    world_size: usize,
     limit: usize,
 ) {
     tokio::runtime::Builder::new_current_thread()
@@ -472,8 +477,6 @@ pub fn pull_and_dispatch_pages(
                 shared_client,
                 samples_metadata_tx.clone(),
                 source_config,
-                rank,
-                world_size,
                 limit,
             )
             .await;
@@ -503,23 +506,14 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let source_db_config: SourceDBConfig =
         serde_json::from_value(client.source_config.clone()).unwrap();
 
-    println!("Using DB as source");
-    let rank = client.rank; // TODO: we could share the config directly and remove all these copies
+    info!("Using DB as source");
     let limit = client.limit;
-    let world_size = client.world_size;
     let source_config = source_db_config.clone();
     let shared_client = http_client.clone();
 
     // Spawn a thread which will ping the DB
     let feeder = Some(thread::spawn(move || {
-        pull_and_dispatch_pages(
-            &shared_client,
-            samples_metadata_tx,
-            source_config,
-            rank,
-            world_size,
-            limit,
-        );
+        pull_and_dispatch_pages(&shared_client, samples_metadata_tx, source_config, limit);
     }));
 
     // Spawn a thread which will handle the async workers
@@ -543,8 +537,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     DatagoEngine {
-        samples_metadata_rx,
-        samples_tx,
         samples_rx,
         feeder,
         worker,
@@ -581,9 +573,11 @@ mod tests {
             duplicate_state: 1,
             attributes: "attr=val".to_string(),
             random_sampling: false,
+            rank: 1,
+            world_size: 2,
         };
 
-        let request = build_request(config, 1, 2);
+        let request = build_request(config);
 
         assert!(request.fields.contains("id,source,attributes"));
         assert!(request.fields.contains("image_direct_url"));
@@ -610,7 +604,7 @@ mod tests {
         assert_eq!(request.max_pixel_count, "1000000");
         assert_eq!(request.duplicate_state, "1");
         assert_eq!(request.attributes, "attr=val");
-        assert_eq!(request.random_sampling, false);
+        assert!(!request.random_sampling);
         assert_eq!(request.partition, "1");
         assert_eq!(request.partitions_count, "2");
     }
@@ -641,9 +635,11 @@ mod tests {
             duplicate_state: -1,
             attributes: "".to_string(),
             random_sampling: true,
+            rank: 0,
+            world_size: 1,
         };
 
-        let request = build_request(config, 0, 1);
+        let request = build_request(config);
 
         assert_eq!(request.fields, "id,source,attributes,height,width,tags");
         assert_eq!(request.sources, "source1");
