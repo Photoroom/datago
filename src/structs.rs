@@ -27,8 +27,6 @@ pub struct DatagoClientConfig {
     pub source_config: serde_json::Value,
     pub image_config: Option<ImageTransformConfig>,
     pub limit: usize,
-    pub rank: usize,
-    pub world_size: usize,
     pub samples_buffer_size: usize,
 }
 

@@ -7,30 +7,26 @@ import os
 
 def benchmark(
     limit: int = typer.Option(2000, help="The number of samples to test on"),
-    crop_and_resize: bool = typer.Option(
-        True, help="Crop and resize the images on the fly"
-    ),
+    crop_and_resize: bool = typer.Option(True, help="Crop and resize the images on the fly"),
     compare_wds: bool = typer.Option(True, help="Compare against torch dataloader"),
 ):
     # URL of the test bucket
-    bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
-    dataset = "/imagenet-train-{000000..001281}.tar"
+    # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
+    # dataset = "/imagenet-train-{000000..001281}.tar"
 
-    # bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
-    # dataset = "main/{00155..02480}.tar"
+    bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
+    dataset = "main/{00155..02480}.tar"
 
     url = bucket + dataset
 
-    print(
-        f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples"
-    )
+    print(f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples")
     client_config = {
         "source_type": "webdataset",
         "source_config": {
             "url": url,
             "shuffle": True,
-            "max_concurrency": os.cpu_count() // 4,
-            # "auth_token": os.environ.get("HF_TOKEN"),
+            "max_concurrency": 8,  # Number of concurrent tarball downloads and dispatch
+            "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
         "image_config": {
             "crop_and_resize": crop_and_resize,
@@ -40,8 +36,8 @@ def benchmark(
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
         },
-        "prefetch_buffer_size": 128,
-        "samples_buffer_size": 64,
+        "prefetch_buffer_size": 256,
+        "samples_buffer_size": 256,
         "limit": limit,
         "rank": 0,
         "world_size": 1,
@@ -79,9 +75,7 @@ def benchmark(
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize(
-                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
-                    ),
+                    transforms.Resize((1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS),
                 ]
             )
             if crop_and_resize

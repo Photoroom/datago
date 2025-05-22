@@ -24,6 +24,8 @@ def get_json_config():
             "has_latents": "masked_image",
             "has_attributes": "caption_coca,caption_cogvlm,caption_moondream",
             "return_latents": "masked_image",
+            "rank": 0,
+            "world_size": 1,
         },
         "image_config": {
             "crop_and_resize": False,
@@ -36,8 +38,6 @@ def get_json_config():
         "prefetch_buffer_size": 64,
         "samples_buffer_size": 10,
         "limit": 10,
-        "rank": 0,
-        "world_size": 1,
     }
     return client_config
 

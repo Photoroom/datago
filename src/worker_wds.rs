@@ -47,26 +47,32 @@ async fn pull_sample(
 
                 if IMG_TYPES.contains(&ext) {
                     // Load the image in to a buffer
-                    let raw_image = image::load_from_memory(&item.buffer).unwrap();
-
-                    image = image_processing::image_to_payload(
-                        raw_image,
-                        &img_tfm,
-                        &"".to_string(),
-                        encode_images,
-                        img_to_rgb8,
-                    )
-                    .await
-                    .unwrap_or_else(|_| ImagePayload {
-                        data: vec![],
-                        width: 0,
-                        height: 0,
-                        original_height: 0,
-                        original_width: 0,
-                        bit_depth: 0,
-                        channels: 0,
-                    });
-                    debug!("wds_worker: unpacked {}", item.filename);
+                    match image::load_from_memory(&item.buffer) {
+                        Ok(raw_image) => {
+                            image = image_processing::image_to_payload(
+                                raw_image,
+                                &img_tfm,
+                                &"".to_string(),
+                                encode_images,
+                                img_to_rgb8,
+                            )
+                            .await
+                            .unwrap_or_else(|_| ImagePayload {
+                                data: vec![],
+                                width: 0,
+                                height: 0,
+                                original_height: 0,
+                                original_width: 0,
+                                bit_depth: 0,
+                                channels: 0,
+                            });
+                            debug!("wds_worker: unpacked {}", item.filename);
+                        }
+                        Err(e) => {
+                            debug!("wds_worker: error loading image: {}", e);
+                            continue;
+                        }
+                    }
                 } else if TEXT_TYPES.contains(&ext) {
                     // Load the file in to a string
                     let class_file = String::from_utf8_lossy(&item.buffer).to_string();

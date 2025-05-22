@@ -76,7 +76,7 @@ Please note that the image buffers will be passed around as raw pointers, see be
 </details><details> <summary><strong>Local files</strong></summary>
 
 To test datago while serving local files (jpg, png, ..), code would look like the following.
-**Note that datago serving files with a lot of concurrent threads means that, even if random_order is not set,
+**Note that datago serving files with a lot of concurrent threads means that, even if shuffle is not set,
 there will be some randomness in the sample ordering.**
 
 ```python
@@ -91,11 +91,11 @@ config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
-        "random_order": False, # True if used directly for training
+        "shuffle": False, # True if used directly for training
+        "rank": 0,
+        "world_size": 1,
     },
     "limit": 200,
-    "rank": 0,
-    "world_size": 1,
     "samples_buffer_size": 32,
 }
 
@@ -129,6 +129,8 @@ client_config = {
         "url": url,
         "shuffle": False,
         "max_tasks_in_flight": 16 # The number of tarballs which should be handled concurrently
+        "rank": 0,
+        "world_size": 1,
     },
     # Optional pre-processing of the images, placing them in an aspect ratio bucket to preseve as much as possible of the original content
     "image_config": {
@@ -142,8 +144,6 @@ client_config = {
     "prefetch_buffer_size": 128,
     "samples_buffer_size": 64,
     "limit": limit,
-    "rank": 0,
-    "world_size": 1,
 }
 
 client = DatagoClient(json.dumps(config))
