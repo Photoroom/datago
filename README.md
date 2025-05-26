@@ -14,8 +14,6 @@ Datago handles, outside of the Python GIL
 
 Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types. Speed will be network dependent, but GB/s is typical. Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
 
-how can I add in a markdown readme in github a reference to an existing image in the repository ?
-
 ![Datago organization](assets/447175851-2277afcb-8abf-4d17-b2db-dae27c6056d0.png)
 
 <details> <summary><strong>Use it</strong></summary>
@@ -23,18 +21,6 @@ how can I add in a markdown readme in github a reference to an existing image in
 You can simply install datago with `[uv] pip install datago`
 
 ## Use the package from Python
-Please note that in all the of the following cases, you can directly get an IterableDataset (torch compatible) with the following code snippet
-
-```python
-from dataset import DatagoIterDataset
-client_config = {} # See below for examples
-datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
-```
-
-`return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
-
-<details> <summary><strong>Dataroom</strong></summary>
-
 Please note that in all the of the following cases, you can directly get an IterableDataset (torch compatible) with the following code snippet
 
 ```python

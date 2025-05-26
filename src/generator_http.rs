@@ -270,6 +270,12 @@ fn build_request(source_config: SourceDBConfig) -> DbRequest {
         fields.push_str(",duplicate_state");
     }
 
+    assert!(
+        (source_config.rank == 0 && source_config.world_size == 0)
+            || (source_config.rank < source_config.world_size),
+        "Rank cannot be greater than or equal to world size"
+    );
+
     debug!("Fields: {}", fields);
     debug!(
         "Rank: {}, World size: {}",
@@ -734,5 +740,39 @@ mod tests {
         let url = request.url().to_string();
 
         assert!(url.starts_with("https://api.example.com/images/random/"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Rank cannot be greater than or equal to world size")]
+    fn test_broken_ranks() {
+        let config = SourceDBConfig {
+            sources: "source1".to_string(),
+            page_size: 20,
+            sources_ne: "".to_string(),
+            require_images: false,
+            require_embeddings: false,
+            tags: "".to_string(),
+            tags_all: "".to_string(),
+            tags_ne: "".to_string(),
+            tags_ne_all: "".to_string(),
+            tags_empty: "".to_string(),
+            has_attributes: "".to_string(),
+            lacks_attributes: "".to_string(),
+            has_masks: "".to_string(),
+            lacks_masks: "".to_string(),
+            has_latents: "".to_string(),
+            lacks_latents: "".to_string(),
+            min_short_edge: 0,
+            max_short_edge: 0,
+            min_pixel_count: 0,
+            max_pixel_count: 0,
+            duplicate_state: -1,
+            attributes: "".to_string(),
+            random_sampling: true,
+            rank: 2, // This is the problematic part
+            world_size: 1,
+        };
+
+        let _request = build_request(config);
     }
 }

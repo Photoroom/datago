@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 image = { version = "0.25.5",  features = ["png"]}
+reqwest = { version = "0.12.15", features = ["blocking", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 url = "2.5.4"
@@ -32,13 +33,6 @@ reqwest-retry = "0.7.0"
 rand = "0.9.0"
 log = "0.4.27"
 env_logger = "0.11.8"
-tar = "0.4.44"
-reqwest = { version = "0.12.15", features = ["blocking", "stream"] }
-futures = "0.3.31"
-flate2 = "1.1.1"
-async-tar = "0.5.0"
-tokio-util = { version = "0.7.15", features = ["io", "compat"] } # Add "compat"
-async-compression = {version= "0.4.23", features=["tokio"]}
 
 [profile.release]
 opt-level = 3  # Optimize for speed
