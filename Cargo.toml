@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 image = { version = "0.25.5",  features = ["png"]}
-reqwest = { version = "0.12.12", features = ["blocking"] }
+reqwest = { version = "0.12.15", features = ["blocking", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 url = "2.5.4"

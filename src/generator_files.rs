@@ -2,7 +2,7 @@ use crate::client::DatagoClient;
 use crate::structs::DatagoEngine;
 use crate::worker_files;
 use kanal::bounded;
-use log::debug;
+use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
@@ -11,9 +11,12 @@ use std::thread;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
     pub root_path: String,
-
     #[serde(default)]
-    pub random_order: bool,
+    pub random_sampling: bool,
+    #[serde(default)]
+    pub rank: usize,
+    #[serde(default)]
+    pub world_size: usize,
 }
 
 // Hash function to be able to dispatch the samples to the correct rank
@@ -27,8 +30,6 @@ fn hash<T: Hash>(t: &T) -> u64 {
 fn enumerate_files(
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceFileConfig,
-    rank: usize,
-    world_size: usize,
     limit: usize,
 ) {
     // Get an iterator over the files in the root path
@@ -56,8 +57,8 @@ fn enumerate_files(
         })
         .collect();
 
-    // If random_order is set, shuffle the files
-    let files_iter = if source_config.random_order {
+    // If random_sampling is set, shuffle the files
+    let files_iter = if source_config.random_sampling {
         let mut rng = rand::rng(); // Falls back to OsRng, which will differ over time
         files_list.shuffle(&mut rng);
         files_list.into_iter()
@@ -74,10 +75,10 @@ fn enumerate_files(
         let file_name = entry.path().to_str().unwrap().to_string();
 
         // If world_size is not 0, we need to dispatch the samples to the correct rank
-        if world_size > 1 {
+        if source_config.world_size > 1 {
             let hash = hash(&file_name);
-            let target_rank = (hash % world_size as u64) as usize;
-            if target_rank != rank {
+            let target_rank = (hash % source_config.world_size as u64) as usize;
+            if target_rank != source_config.rank {
                 continue;
             }
         }
@@ -108,7 +109,7 @@ fn enumerate_files(
     match samples_metadata_tx.send(serde_json::Value::Null) {
         Ok(_) => {}
         Err(_) => {
-            debug!("ping_pages: stream already closed, all good");
+            debug!("ping_pages: stream already closed, wrapping up");
         }
     };
 }
@@ -129,16 +130,14 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Convert the source_config to a SourceFileConfig
     let source_config: SourceFileConfig =
         serde_json::from_value(client.source_config.clone()).unwrap();
-    println!("Using file as source {}", source_config.root_path);
+    info!("Using file as source {}", source_config.root_path);
 
     // Create a thread which will generate work as it goes. We'll query the filesystem
     // and send the filepaths to the worker pool as we go
-    let rank = client.rank;
     let limit = client.limit;
-    let world_size = client.world_size;
 
     let feeder = Some(thread::spawn(move || {
-        enumerate_files(samples_metadata_tx, source_config, rank, world_size, limit);
+        enumerate_files(samples_metadata_tx, source_config, limit);
     }));
 
     // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
@@ -146,13 +145,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let encode_images = client.encode_images;
     let img_to_rgb8 = client.image_to_rgb8;
     let limit = client.limit;
-    let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
 
     let worker = Some(thread::spawn(move || {
         worker_files::pull_samples(
             samples_metadata_rx_worker,
-            samples_tx_worker,
+            samples_tx,
             image_transform,
             encode_images,
             img_to_rgb8,
@@ -161,8 +159,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     }));
 
     DatagoEngine {
-        samples_metadata_rx,
-        samples_tx,
         samples_rx,
         feeder,
         worker,

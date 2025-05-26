@@ -4,7 +4,7 @@ use crate::image_processing::ARAwareTransform;
 use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
 use crate::structs::DatagoEngine;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use pyo3::prelude::*;
 
 #[pyclass]
@@ -17,8 +17,6 @@ pub struct DatagoClient {
 
     // Perf settings
     pub max_connections: usize,
-    pub rank: usize,
-    pub world_size: usize,
 
     // Sample processing
     pub image_transform: Option<ARAwareTransform>,
@@ -33,36 +31,35 @@ pub struct DatagoClient {
 impl DatagoClient {
     #[new]
     pub fn new(str_config: String) -> Self {
-        let config: DatagoClientConfig = serde_json::from_str(&str_config).unwrap(); // Ok to panic here, no way we can recover
+        match serde_json::from_str::<DatagoClientConfig>(&str_config) {
+            Ok(config) => {
+                let mut image_transform: Option<ARAwareTransform> = None;
+                let mut encode_images = false;
+                let mut image_to_rgb8 = false;
+                if let Some(image_config) = config.image_config {
+                    if image_config.crop_and_resize {
+                        image_transform = Some(image_config.get_ar_aware_transform());
+                    }
+                    encode_images = image_config.pre_encode_images;
+                    image_to_rgb8 = image_config.image_to_rgb8;
+                }
 
-        if config.rank >= config.world_size {
-            panic!("Rank cannot be greater than or equal to world size");
-        }
-
-        let mut image_transform: Option<ARAwareTransform> = None;
-        let mut encode_images = false;
-        let mut image_to_rgb8 = false;
-        if let Some(image_config) = config.image_config {
-            if image_config.crop_and_resize {
-                image_transform = Some(image_config.get_ar_aware_transform());
+                DatagoClient {
+                    is_started: false,
+                    source_type: config.source_type,
+                    source_config: config.source_config,
+                    samples_buffer: config.samples_buffer_size,
+                    limit: config.limit,
+                    max_connections: 128,
+                    image_transform,
+                    encode_images,
+                    image_to_rgb8,
+                    engine: None,
+                }
             }
-            encode_images = image_config.pre_encode_images;
-            image_to_rgb8 = image_config.image_to_rgb8;
-        }
-
-        DatagoClient {
-            is_started: false,
-            source_type: config.source_type,
-            source_config: config.source_config,
-            samples_buffer: config.samples_buffer_size,
-            limit: config.limit,
-            max_connections: 128,
-            rank: config.rank,
-            world_size: config.world_size,
-            image_transform,
-            encode_images,
-            image_to_rgb8,
-            engine: None,
+            Err(e) => {
+                panic!("Failed to parse config: {}", e);
+            }
         }
     }
 
@@ -132,8 +129,10 @@ impl DatagoClient {
         }
 
         if let Some(engine) = &mut self.engine {
-            let _ = engine.samples_metadata_rx.close();
-            let _ = engine.samples_tx.close();
+            debug!("Stopping the client...");
+
+            let _ = engine.samples_rx.close();
+            debug!("Sample pipe closed...");
 
             if let Some(feeder) = engine.feeder.take() {
                 if feeder.join().is_err() {
@@ -628,35 +627,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Rank cannot be greater than or equal to world size")]
-    fn test_broken_ranks() {
-        let mut config = get_test_config();
-        config["world_size"] = json!(2);
-
-        // Check that we assert if rank >= world_size
-        config["rank"] = json!(2);
-
-        let mut client = DatagoClient::new(config.to_string());
-        client.start();
-        client.stop();
-    }
-
-    #[test]
     fn test_ranks() {
         let mut config = get_test_config();
         let limit = 100;
         config["source_config"]["require_images"] = json!(false);
-        config["world_size"] = json!(2);
+        config["source_config"]["world_size"] = json!(2);
         config["limit"] = json!(limit);
 
         // Fill in two sets with some results, and check that they are completely different
         let mut sample_set_1: HashSet<String> = HashSet::new();
         let mut sample_set_2: HashSet<String> = HashSet::new();
 
-        config["rank"] = json!(0);
+        config["source_config"]["rank"] = json!(0);
         let mut client_1 = DatagoClient::new(config.to_string());
 
-        config["rank"] = json!(1);
+        config["source_config"]["rank"] = json!(1);
         let mut client_2 = DatagoClient::new(config.to_string());
 
         for _ in 0..limit {

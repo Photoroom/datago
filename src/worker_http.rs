@@ -20,12 +20,32 @@ struct SampleMetadata {
     coca_embedding: Option<CocaEmbedding>,
 }
 
-async fn bytes_from_url(shared_client: &SharedClient, url: &str) -> Option<Vec<u8>> {
+pub async fn bytes_from_url(
+    shared_client: &SharedClient,
+    url: &str,
+    auth_token: Option<&str>,
+) -> Option<Vec<u8>> {
     // Retry on the request a few times
-    let timeout = std::time::Duration::from_secs(30);
+    let timeout = std::time::Duration::from_secs(120);
     let _permit = shared_client.semaphore.acquire();
 
-    if let Ok(response) = shared_client.client.get(url).timeout(timeout).send().await {
+    // Get a client reference with optimized settings
+    let client = &shared_client.client;
+
+    // Send request with specific timeout and connection settings
+    let mut request = client
+        .get(url)
+        .timeout(timeout)
+        .header(reqwest::header::CONNECTION, "keep-alive");
+
+    if auth_token.is_some() {
+        request = request.header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", auth_token.unwrap()),
+        );
+    }
+
+    if let Ok(response) = request.send().await {
         if let Ok(bytes) = response.bytes().await {
             return Some(bytes.to_vec());
         }
@@ -41,7 +61,7 @@ async fn image_from_url(
 ) -> Result<image::DynamicImage, image::ImageError> {
     // Retry on the fetch and decode a few times, could happen that we get a broken packet
     for _ in 0..retries {
-        if let Some(bytes) = bytes_from_url(client, url).await {
+        if let Some(bytes) = bytes_from_url(client, url, None).await {
             return image::load_from_memory(&bytes);
         }
     }
@@ -58,7 +78,7 @@ async fn payload_from_url(
 ) -> Result<Vec<u8>, std::io::Error> {
     // Retry on the fetch and decode a few times, could happen that we get a broken packet
     for _ in 0..retries {
-        match bytes_from_url(client, url).await {
+        match bytes_from_url(client, url, None).await {
             Some(bytes) => {
                 return Ok(bytes);
             }
@@ -164,7 +184,7 @@ async fn pull_sample(
                     }
 
                     Err(e) => {
-                        println!(
+                        warn!(
                             "Failed to get additional image from URL: {} {} {:?}",
                             latent.latent_type, latent.file_direct_url, e
                         );
@@ -188,7 +208,7 @@ async fn pull_sample(
                     }
 
                     Err(e) => {
-                        println!(
+                        warn!(
                             "Failed to get mask from URL: {} {} {:?}",
                             latent.latent_type, latent.file_direct_url, e
                         );

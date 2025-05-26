@@ -40,25 +40,29 @@ class DatagoIterDataset:
         return item
 
     def __next__(self):
-        self.count += 1
-        if self.count > self.len:
+        try:
+            self.count += 1
+            if self.count > self.len:
+                raise StopIteration
+
+            sample = self.client.get_sample()
+            if not sample or sample.id == "":
+                raise StopIteration
+
+            if self.return_python_types:
+                # Convert the Rust types to Python types
+                python_sample = {}
+                for attr in filter(lambda x: "__" not in x, dir(sample)):
+                    python_sample[attr.lower()] = self.to_python_types(
+                        getattr(sample, attr), attr
+                    )
+
+                return python_sample
+
+            return sample
+        except KeyboardInterrupt:
+            self.client.stop()
             raise StopIteration
-
-        sample = self.client.get_sample()
-        if not sample or sample.id == "":
-            raise StopIteration
-
-        if self.return_python_types:
-            # Convert the Rust types to Python types
-            python_sample = {}
-            for attr in filter(lambda x: "__" not in x, dir(sample)):
-                python_sample[attr.lower()] = self.to_python_types(
-                    getattr(sample, attr), attr
-                )
-
-            return python_sample
-
-        return sample
 
 
 if __name__ == "__main__":
@@ -71,6 +75,8 @@ if __name__ == "__main__":
             "sources": "COYO",
             "require_images": True,
             "has_attributes": "caption_moondream",
+            "rank": 0,
+            "world_size": 1,
         },
         "image_config": {
             "crop_and_resize": True,
@@ -83,8 +89,6 @@ if __name__ == "__main__":
         "prefetch_buffer_size": 64,
         "samples_buffer_size": 128,
         "limit": 10,
-        "rank": 0,
-        "world_size": 1,
     }
     dataset = DatagoIterDataset(client_config)
     for sample in dataset:
