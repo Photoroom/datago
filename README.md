@@ -64,7 +64,7 @@ Please note that the image buffers will be passed around as raw pointers, see be
 </details><details> <summary><strong>Local files</strong></summary>
 
 To test datago while serving local files (jpg, png, ..), code would look like the following.
-**Note that datago serving files with a lot of concurrent threads means that, even if shuffle is not set,
+**Note that datago serving files with a lot of concurrent threads means that, even if random_sampling is not set,
 there will be some randomness in the sample ordering.**
 
 ```python
@@ -79,7 +79,7 @@ config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
-        "shuffle": False, # True if used directly for training
+        "random_sampling": False, # True if used directly for training
         "rank": 0,
         "world_size": 1,
     },

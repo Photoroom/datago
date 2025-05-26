@@ -75,6 +75,8 @@ if __name__ == "__main__":
             "sources": "COYO",
             "require_images": True,
             "has_attributes": "caption_moondream",
+            "rank": 0,
+            "world_size": 1,
         },
         "image_config": {
             "crop_and_resize": True,
@@ -87,8 +89,6 @@ if __name__ == "__main__":
         "prefetch_buffer_size": 64,
         "samples_buffer_size": 128,
         "limit": 10,
-        "rank": 0,
-        "world_size": 1,
     }
     dataset = DatagoIterDataset(client_config)
     for sample in dataset:

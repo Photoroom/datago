@@ -102,8 +102,6 @@ def test_random_walk():
             "limit": limit,
             "prefetch_buffer_size": 64,
             "samples_buffer_size": 10,
-            "rank": 0,
-            "world_size": 1,
         }
 
         results = []

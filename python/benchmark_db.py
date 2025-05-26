@@ -28,6 +28,8 @@ def benchmark(
             "require_images": require_images,
             "require_embeddings": require_embeddings,
             "has_masks": "segmentation_mask" if test_masks else "",
+            "rank": 0,
+            "world_size": 1,
         },
         "image_config": {
             "crop_and_resize": crop_and_resize,
@@ -40,8 +42,6 @@ def benchmark(
         "prefetch_buffer_size": 128,
         "samples_buffer_size": 64,
         "limit": limit,
-        "rank": 0,
-        "world_size": 1,
     }
 
     client = DatagoClient(json.dumps(client_config))

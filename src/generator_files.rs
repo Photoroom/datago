@@ -57,7 +57,7 @@ fn enumerate_files(
         })
         .collect();
 
-    // If shuffle is set, shuffle the files
+    // If random_sampling is set, shuffle the files
     let files_iter = if source_config.random_sampling {
         let mut rng = rand::rng(); // Falls back to OsRng, which will differ over time
         files_list.shuffle(&mut rng);

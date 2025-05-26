@@ -22,7 +22,11 @@ def benchmark(
 
     client_config = {
         "source_type": "file",
-        "source_config": {"root_path": root_path},
+        "source_config": {
+            "root_path": root_path,
+            "rank": 0,
+            "world_size": 1,
+        },
         "image_config": {
             "crop_and_resize": crop_and_resize,
             "default_image_size": 1024,
@@ -34,8 +38,6 @@ def benchmark(
         "prefetch_buffer_size": 128,
         "samples_buffer_size": 64,
         "limit": limit,
-        "rank": 0,
-        "world_size": 1,
     }
 
     # Make sure in the following that we compare apples to apples, meaning in that case
