@@ -100,7 +100,7 @@ def benchmark(
         # Iterate over the DataLoader
         start = time.time()
         n_images = 0
-        for batch in dataloader:
+        for batch in tqdm(dataloader, dynamic_ncols=True):
             n_images += len(batch)
             if n_images > limit:
                 break
