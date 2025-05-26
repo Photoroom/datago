@@ -6,9 +6,15 @@ import os
 
 
 def benchmark(
-    limit: int = typer.Option(2000, help="The number of samples to test on"),
-    crop_and_resize: bool = typer.Option(True, help="Crop and resize the images on the fly"),
+    limit: int = typer.Option(10, help="The number of samples to test on"),
+    crop_and_resize: bool = typer.Option(
+        True, help="Crop and resize the images on the fly"
+    ),
     compare_wds: bool = typer.Option(True, help="Compare against torch dataloader"),
+    n_processes_wds: int = typer.Option(
+        16,
+        help="Number of processes to use for the torch dataloader - used only if compare_wds is True",
+    ),
 ):
     # URL of the test bucket
     # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
@@ -16,16 +22,17 @@ def benchmark(
 
     bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
     dataset = "main/{00155..02480}.tar"
-
     url = bucket + dataset
 
-    print(f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples")
+    print(
+        f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples"
+    )
     client_config = {
         "source_type": "webdataset",
         "source_config": {
             "url": url,
             "shuffle": True,
-            "max_concurrency": 8,  # Number of concurrent tarball downloads and dispatch
+            "max_concurrency": 2,  # Number of concurrent tarball downloads and dispatch
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
         "image_config": {
@@ -39,15 +46,13 @@ def benchmark(
         "prefetch_buffer_size": 256,
         "samples_buffer_size": 256,
         "limit": limit,
-        "rank": 0,
-        "world_size": 1,
     }
 
     # # Make sure in the following that we compare apples to apples, meaning in that case
     # # that we materialize the payloads in the python scope in the expected format
     # # (PIL.Image for images and masks for instance, numpy arrays for latents)
     datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
-    start = time.time()  # Note that the datago dataset will start walking the filesystem at construction time
+    start = time.time()  # Note that the datago dataset will start preparing samples (up to the requested buffer size) at construction time
 
     img, count = None, 0
     for sample in tqdm(datago_dataset, dynamic_ncols=True):
@@ -75,7 +80,9 @@ def benchmark(
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize((1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS),
+                    transforms.Resize(
+                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
+                    ),
                 ]
             )
             if crop_and_resize
@@ -92,30 +99,27 @@ def benchmark(
         # Create a WebDataset instance
         dataset = (
             wds.WebDataset(url, shardshuffle=False)
-            .shuffle(1000)  # Optional: shuffle with buffer
+            .shuffle(256)  # Optional: shuffle with buffer
             .decode("pil")  # Decode images using PIL
             .map(custom_transform)
             # .to_tuple("png", "cls")  # Map keys to output tuple
         )
 
-        n_processes = 16  # Change to use whatever feels right for your machine
         dataloader = DataLoader(
             dataset,
             batch_size=1,
-            num_workers=n_processes,
+            num_workers=n_processes_wds,
             prefetch_factor=2,
             collate_fn=lambda x: x,
         )
 
         # Iterate over the DataLoader
         start = time.time()
-        n_images = 0
-        for _ in dataloader:
-            n_images += 1
+        for n_images, _ in enumerate(tqdm(dataloader, dynamic_ncols=True)):
             if n_images > limit:
                 break
         fps = n_images / (time.time() - start)
-        print(f"-- Webdataset lib FPS ({n_processes} processes) {fps:.2f}")
+        print(f"-- Webdataset lib FPS ({n_processes_wds} processes) {fps:.2f}")
 
 
 if __name__ == "__main__":

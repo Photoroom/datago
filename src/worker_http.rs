@@ -1,6 +1,5 @@
 use crate::image_processing;
 use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, SharedClient, UrlLatent};
-use crate::worker_files::consume_oldest_task;
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
@@ -280,7 +279,7 @@ async fn async_pull_samples(
     // We'll keep a pool of N async tasks in parallel
     let max_tasks = min(num_cpus::get(), limit);
     debug!("Using {} tasks in the async threadpool", max_tasks);
-    let mut tasks = std::collections::VecDeque::new();
+    let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
     let shareable_img_tfm = Arc::new(image_transform);
@@ -293,17 +292,17 @@ async fn async_pull_samples(
         }
 
         // Append a new task to the queue
-        tasks.push_back(tokio::spawn(pull_sample(
+        tasks.spawn(pull_sample(
             client.clone(),
             received,
             shareable_img_tfm.clone(),
             encode_images,
             img_to_rgb8,
             shareable_channel_tx.clone(),
-        )));
+        ));
 
         // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks && consume_oldest_task(&mut tasks).await.is_ok() {
+        if tasks.len() >= max_tasks && tasks.join_next().await.unwrap().is_ok() {
             count += 1;
         }
         if count >= limit {
@@ -312,11 +311,14 @@ async fn async_pull_samples(
     }
 
     // Make sure to wait for all the remaining tasks
-    while !tasks.is_empty() {
-        if consume_oldest_task(&mut tasks).await.is_ok() {
+    let _ = tasks.join_all().await.iter().map(|result| {
+        if let Ok(()) = result {
             count += 1;
+        } else {
+            // Task failed or was cancelled
+            debug!("file_worker: task failed or was cancelled");
         }
-    }
+    });
     debug!("http_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream

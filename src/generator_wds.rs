@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::thread;
 
+use bracoxide::explode;
 use futures::AsyncReadExt;
 use futures::StreamExt;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -38,33 +39,6 @@ pub struct SourceWebDatasetConfig {
 
     #[serde(default)]
     pub world_size: usize,
-}
-
-fn urls_from_pattern(url: &str) -> Vec<String> {
-    // Extract the pattern within curly braces
-    let pattern = url.split('{').nth(1).unwrap_or("");
-    let pattern = pattern.split('}').next().unwrap_or("");
-
-    // Split the pattern into parts
-    let parts: Vec<&str> = pattern.split("..").collect();
-    let start = parts[0].parse::<i32>().unwrap_or(0);
-    let end = parts[1].parse::<i32>().unwrap_or(0);
-    assert!(end >= start, "End must be greater than start");
-    assert!(
-        parts[0].len() == parts[1].len(),
-        "Couldn't make sense of the URL pattern provided"
-    );
-
-    // Generate all the URLs, note that not all patterns will have the same number of digits
-    let digit_count = parts[0].len();
-    (start..=end)
-        .map(|i| {
-            url.replace(
-                &format!("{{{}}}", pattern),
-                &format!("{:0width$}", i, width = digit_count),
-            )
-        })
-        .collect()
 }
 
 fn hash_fn(key: &str) -> u64 {
@@ -109,9 +83,8 @@ async fn pull_tarball(
         return Err(format!("Failed to download tarball: {}", response.status()));
     }
 
-    let byte_stream = response.bytes_stream();
-
     // Convert the byte stream to an AsyncRead
+    let byte_stream = response.bytes_stream();
     let stream_reader =
         StreamReader::new(byte_stream.map(|res_bytes| {
             res_bytes.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
@@ -251,7 +224,7 @@ async fn get_url_list(
         // for instance https://storage.googleapis.com/webdataset/testdata/publaynet-train-000000.tar
 
         // Extract the pattern within curly braces
-        let urls = urls_from_pattern(&config.url);
+        let urls = explode(&config.url).unwrap_or_default();
 
         Ok(urls
             .iter()
@@ -307,7 +280,7 @@ async fn tasks_from_shards(
                 task_list.shuffle(&mut rand::rng());
             }
 
-            // Now submit all the tasks, making sure that too many of them are not in flight
+            // Now submit all the tasks, making sure that not too many of them are in flight
             let mut tasks = VecDeque::new();
             let response_json = serde_json::Value::Null;
             let mut count = 0;
@@ -443,7 +416,7 @@ mod tests {
     #[test]
     fn test_urls_from_pattern() {
         let url = "https://storage.googleapis.com/webdataset/testdata/publaynet-train-{000000..000009}.tar";
-        let urls = urls_from_pattern(url);
+        let urls = explode(url).unwrap();
         print!("URLs: {:?}", urls.clone());
         assert_eq!(urls.len(), 10);
         assert_eq!(
