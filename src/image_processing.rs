@@ -1,16 +1,20 @@
 use crate::structs::ImagePayload;
+use fast_image_resize as fr;
+use fast_image_resize::images::Image;
+use fast_image_resize::{IntoImageView, ResizeOptions, Resizer};
 use image::ImageEncoder;
 use log::debug;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::Cursor;
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImageTransformConfig {
     pub crop_and_resize: bool,
-    pub default_image_size: i32,
-    pub downsampling_ratio: i32,
+    pub default_image_size: u32,
+    pub downsampling_ratio: u32,
     pub min_aspect_ratio: f64,
     pub max_aspect_ratio: f64,
 
@@ -41,47 +45,81 @@ impl ImageTransformConfig {
             aspect_ratio_to_size.insert(aspect_ratio, *img_size);
         }
 
+        let mut aspect_ratios: Vec<(f64, String)> = aspect_ratio_to_size
+            .keys()
+            .filter_map(|k| k.parse::<f64>().ok().map(|f| (f, k.clone())))
+            .collect();
+        aspect_ratios.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
         ARAwareTransform {
             aspect_ratio_to_size,
+            aspect_ratios,
         }
     }
 }
 
 #[derive(Clone)]
 pub struct ARAwareTransform {
-    aspect_ratio_to_size: std::collections::HashMap<String, (i32, i32)>, // list of [width, height] pairs
+    aspect_ratio_to_size: HashMap<String, (u32, u32)>,
+    // Cache for fast aspect ratio lookups
+    aspect_ratios: Vec<(f64, String)>,
 }
 
-pub fn aspect_ratio_to_str(size: (i32, i32)) -> String {
+pub fn aspect_ratio_to_str(size: (u32, u32)) -> String {
     let ar_str = format!("{:.3}", size.0 as f64 / size.1 as f64);
     ar_str
 }
 
+fn image_to_dyn_image(dst_image: &Image) -> image::DynamicImage {
+    // Convert the fast_image_resize::Image back to image::DynamicImage
+    let width = dst_image.width();
+    let height = dst_image.height();
+    let pixels = dst_image.buffer().to_vec();
+
+    match dst_image.pixel_type() {
+        fr::PixelType::U8x3 => {
+            let img_buffer = image::RgbImage::from_raw(width, height, pixels).unwrap();
+            image::DynamicImage::ImageRgb8(img_buffer)
+        }
+        fr::PixelType::U8x4 => {
+            let img_buffer = image::RgbaImage::from_raw(width, height, pixels).unwrap();
+            image::DynamicImage::ImageRgba8(img_buffer)
+        }
+
+        fr::PixelType::U8 | fr::PixelType::U8x2 => {
+            let img_buffer = image::GrayImage::from_raw(width, height, pixels).unwrap();
+            image::DynamicImage::ImageLuma8(img_buffer)
+        }
+
+        _ => panic!("Unsupported pixel type: {:?}", dst_image.pixel_type()),
+    }
+}
+
 fn build_image_size_list(
-    default_image_size: i32,
-    downsampling_ratio: i32,
+    default_image_size: u32,
+    downsampling_ratio: u32,
     min_aspect_ratio: f64,
     max_aspect_ratio: f64,
-) -> Vec<(i32, i32)> {
+) -> Vec<(u32, u32)> {
     let patch_size = default_image_size / downsampling_ratio;
     let patch_size_sq = (patch_size * patch_size) as f64;
-    let mut img_sizes: Vec<(i32, i32)> = Vec::new();
+    let mut img_sizes: Vec<(u32, u32)> = Vec::new();
 
-    let min_patch_w = (patch_size_sq * min_aspect_ratio).sqrt().ceil() as i32;
-    let max_patch_w = (patch_size_sq * max_aspect_ratio).sqrt().floor() as i32;
+    let min_patch_w = (patch_size_sq * min_aspect_ratio).sqrt().ceil() as u32;
+    let max_patch_w = (patch_size_sq * max_aspect_ratio).sqrt().floor() as u32;
 
     for patch_w in min_patch_w..=max_patch_w {
-        let patch_h = (patch_size_sq / patch_w as f64).floor() as i32;
+        let patch_h = (patch_size_sq / patch_w as f64).floor() as u32;
         let img_w = patch_w * downsampling_ratio;
         let img_h = patch_h * downsampling_ratio;
         img_sizes.push((img_w, img_h));
     }
 
-    let min_patch_h = (patch_size_sq / max_aspect_ratio).sqrt().ceil() as i32;
-    let max_patch_h = (patch_size_sq / min_aspect_ratio).sqrt().floor() as i32;
+    let min_patch_h = (patch_size_sq / max_aspect_ratio).sqrt().ceil() as u32;
+    let max_patch_h = (patch_size_sq / min_aspect_ratio).sqrt().floor() as u32;
 
     for patch_h in min_patch_h..=max_patch_h {
-        let patch_w = (patch_size_sq / patch_h as f64).floor() as i32;
+        let patch_w = (patch_size_sq / patch_h as f64).floor() as u32;
         let img_w = patch_w * downsampling_ratio;
         let img_h = patch_h * downsampling_ratio;
         img_sizes.push((img_w, img_h));
@@ -92,28 +130,34 @@ fn build_image_size_list(
 
 impl ARAwareTransform {
     pub fn get_closest_aspect_ratio(&self, image_width: i32, image_height: i32) -> String {
-        if self.aspect_ratio_to_size.is_empty() {
+        if self.aspect_ratios.is_empty() {
             panic!("Aspect ratio to size map is empty");
         }
 
-        if let Ok(aspect_ratio_float) =
-            aspect_ratio_to_str((image_width, image_height)).parse::<f64>()
+        let target_ar = image_width as f64 / image_height as f64;
+
+        // Binary search for closest aspect ratio
+        match self
+            .aspect_ratios
+            .binary_search_by(|&(ar, _)| ar.partial_cmp(&target_ar).unwrap())
         {
-            let mut min_diff = f64::MAX;
-            let mut closest_aspect_ratio = String::new();
-            for ar_key in self.aspect_ratio_to_size.keys() {
-                if let Ok(ar_key_float) = ar_key.parse::<f64>() {
-                    let diff = (ar_key_float - aspect_ratio_float).abs();
-                    if diff < min_diff {
-                        min_diff = diff;
-                        closest_aspect_ratio = ar_key.clone();
+            Ok(idx) => self.aspect_ratios[idx].1.clone(),
+            Err(idx) => {
+                if idx == 0 {
+                    self.aspect_ratios[0].1.clone()
+                } else if idx == self.aspect_ratios.len() {
+                    self.aspect_ratios[self.aspect_ratios.len() - 1].1.clone()
+                } else {
+                    // Choose the closer of the two adjacent ratios
+                    let left_diff = (target_ar - self.aspect_ratios[idx - 1].0).abs();
+                    let right_diff = (self.aspect_ratios[idx].0 - target_ar).abs();
+                    if left_diff < right_diff {
+                        self.aspect_ratios[idx - 1].1.clone()
+                    } else {
+                        self.aspect_ratios[idx].1.clone()
                     }
                 }
             }
-
-            closest_aspect_ratio.to_string()
-        } else {
-            panic!("Failed to parse aspect ratio");
         }
     }
 
@@ -128,11 +172,75 @@ impl ARAwareTransform {
         };
 
         if let Some(target_size) = self.aspect_ratio_to_size.get(&aspect_ratio) {
-            image.resize_to_fill(
-                target_size.0 as u32,
-                target_size.1 as u32,
-                image::imageops::FilterType::Lanczos3,
-            ) // returns the resized image
+            // Check if resize is actually needed
+            if image.width() == target_size.0 && image.height() == target_size.1 {
+                image.clone()
+            } else {
+                let image_pixel_type = image.pixel_type().unwrap();
+                if image_pixel_type == fr::PixelType::U8
+                    || image_pixel_type == fr::PixelType::U8x2
+                    || image_pixel_type == fr::PixelType::U8x3
+                    || image_pixel_type == fr::PixelType::U8x4
+                {
+                    // Fast path with the fast_image_resize library
+
+                    // Calculate the scale factors for both dimensions
+                    let scale_x = target_size.0 as f64 / image.width() as f64;
+                    let scale_y = target_size.1 as f64 / image.height() as f64;
+
+                    // Use the larger scale factor to ensure one dimension matches target
+                    // and the other is at least the target size
+                    let scale = scale_x.max(scale_y);
+
+                    let new_width = (image.width() as f64 * scale).round() as u32;
+                    let new_height = (image.height() as f64 * scale).round() as u32;
+
+                    let mut dst_image =
+                        Image::new(new_width, new_height, image.pixel_type().unwrap());
+
+                    let mut resizer = Resizer::new();
+
+                    let resize_options = ResizeOptions::new()
+                        .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
+
+                    resizer
+                        .resize(image, &mut dst_image, &resize_options)
+                        .unwrap();
+
+                    // Crop the resized image to the target size
+                    let mut final_image =
+                        Image::new(target_size.0, target_size.1, image.pixel_type().unwrap());
+
+                    let crop_box = fr::CropBox::fit_src_into_dst_size(
+                        new_width,
+                        new_height,
+                        target_size.0,
+                        target_size.1,
+                        None, // Default to center crop
+                    );
+
+                    resizer
+                        .resize(
+                            &dst_image,
+                            &mut final_image,
+                            &ResizeOptions::new().crop(
+                                crop_box.left,
+                                crop_box.top,
+                                crop_box.width,
+                                crop_box.height,
+                            ),
+                        )
+                        .unwrap();
+
+                    image_to_dyn_image(&final_image)
+                } else {
+                    image.resize_to_fill(
+                        target_size.0,
+                        target_size.1,
+                        image::imageops::FilterType::Lanczos3,
+                    )
+                }
+            }
         } else {
             panic!("Aspect ratio not found in aspect ratio to size map");
         }
@@ -177,6 +285,9 @@ pub async fn image_to_payload(
     // Encode the image if needed
     let mut image_bytes: Vec<u8> = Vec::new();
     if encode_images {
+        // Pre-allocate buffer based on image size estimate
+        image_bytes.reserve(width * height * channels as usize);
+
         // Use the encoder directly with the raw bytes
         image::codecs::png::PngEncoder::new_with_quality(
             &mut Cursor::new(&mut image_bytes),

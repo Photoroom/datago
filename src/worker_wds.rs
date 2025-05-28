@@ -66,8 +66,8 @@ async fn process_sample(
                                 if sample_aspect_ratio.is_empty() {
                                     // If we don't have an aspect ratio yet, we set it
                                     sample_aspect_ratio = image_processing::aspect_ratio_to_str((
-                                        image.width as i32,
-                                        image.height as i32,
+                                        image.width as u32,
+                                        image.height as u32,
                                     ));
                                 }
 

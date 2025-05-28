@@ -145,8 +145,8 @@ async fn pull_sample(
         {
             Ok(payload) => {
                 aspect_ratio = image_processing::aspect_ratio_to_str((
-                    payload.width as i32,
-                    payload.height as i32,
+                    payload.width as u32,
+                    payload.height as u32,
                 ));
                 Some(payload)
             }
