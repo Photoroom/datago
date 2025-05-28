@@ -64,7 +64,7 @@ def benchmark(
 
     # Let's compare against a classic pytorch dataloader
     if compare_torch:
-        from torchvision import datasets, transforms
+        from torchvision import datasets, transforms  # type: ignore
         from torch.utils.data import DataLoader
 
         print("Benchmarking torch dataloader")

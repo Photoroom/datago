@@ -1,6 +1,6 @@
 use crate::image_processing;
-use crate::structs::{ImagePayload, Sample, TarballContent};
-use log::{debug, info, warn};
+use crate::structs::{ImagePayload, Sample, TarballSample};
+use log::{debug, error, info, warn};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,14 +17,14 @@ fn is_supported_type(ext: &str) -> bool {
 }
 
 async fn pull_sample(
-    sample: TarballContent,
+    sample: TarballSample,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encode_images: bool,
     img_to_rgb8: bool,
     samples_tx: Arc<kanal::Sender<Option<Sample>>>,
 ) -> Result<(), ()> {
     if !sample.is_empty() {
-        match Path::new(&sample[0].filename).file_stem() {
+        match Path::new(&sample.content[0].filename).file_stem() {
             Some(sample_id) => {
                 let mut attributes = HashMap::new();
                 let mut image = ImagePayload {
@@ -84,7 +84,7 @@ async fn pull_sample(
                 if samples_tx
                     .send(Some(Sample {
                         id: String::from(sample_id.to_str().unwrap_or("unkonwn")),
-                        source: "webdataset".to_string(), // FIXME - pass the archive name
+                        source: sample.name,
                         image,
                         attributes,
                         coca_embedding: vec![],
@@ -112,13 +112,13 @@ async fn pull_sample(
 }
 
 async fn async_deserialize_samples(
-    samples_metadata_rx: kanal::Receiver<TarballContent>,
+    samples_metadata_rx: kanal::Receiver<TarballSample>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
     img_to_rgb8: bool,
     limit: usize,
-) {
+) -> Result<(), ()> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
     let max_tasks = min(num_cpus::get(), limit);
@@ -127,6 +127,7 @@ async fn async_deserialize_samples(
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
     let shareable_img_tfm = Arc::new(image_transform);
+    let mut join_error: Option<String> = None;
 
     while let Ok(sample) = samples_metadata_rx.recv() {
         if sample.is_empty() {
@@ -146,12 +147,14 @@ async fn async_deserialize_samples(
 
         // If we have enough tasks, we'll wait for the older one to finish
         if tasks.len() >= max_tasks {
-            if tasks.join_next().await.unwrap().is_ok() {
-                count += 1;
-            } else {
-                warn!("wds_worker: task failed, stopping there");
-                let _ = samples_metadata_rx.close(); // Stop upstream thread
-                break;
+            if let Some(result) = tasks.join_next().await {
+                match result {
+                    Ok(_) => count += 1,
+                    Err(e) => {
+                        join_error = Some(format!("Task failed: {}", e));
+                        break;
+                    }
+                }
             }
 
             if count >= limit {
@@ -161,23 +164,38 @@ async fn async_deserialize_samples(
     }
 
     // Make sure to wait for all the remaining tasks
-    let _ = tasks.join_all().await.iter().map(|result| {
-        if let Ok(()) = result {
-            count += 1;
-        } else {
-            // Task failed or was cancelled
-            debug!("file_worker: task failed or was cancelled");
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(_) => {
+                debug!("dispatch_shards: task completed successfully");
+                count += 1;
+            }
+            Err(e) => {
+                error!("dispatch_shards: task failed with error: {:?}", e);
+                if join_error.is_none() {
+                    join_error = Some(e.to_string());
+                }
+            }
         }
-    });
+    }
 
     info!("wds_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream
-    if shareable_channel_tx.send(None).is_ok() {} // Channel could have been closed by a .stop() call
+    let _ = shareable_channel_tx.send(None); // Channel could have been closed by a .stop() call
+
+    if let Some(error) = join_error {
+        error!(
+            "wds_worker: encountered an error while processing samples: {}",
+            error
+        );
+        return Err(());
+    }
+    Ok(())
 }
 
 pub fn deserialize_samples(
-    samples_metadata_rx: kanal::Receiver<TarballContent>,
+    samples_metadata_rx: kanal::Receiver<TarballSample>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
     encode_images: bool,
@@ -190,7 +208,7 @@ pub fn deserialize_samples(
         .build()
         .unwrap()
         .block_on(async {
-            async_deserialize_samples(
+            match async_deserialize_samples(
                 samples_metadata_rx,
                 samples_tx,
                 image_transform,
@@ -198,6 +216,10 @@ pub fn deserialize_samples(
                 img_to_rgb8,
                 limit,
             )
-            .await;
+            .await
+            {
+                Ok(_) => debug!("wds_worker: all samples processed successfully"),
+                Err(e) => error!("wds_worker: error processing samples : {:?}", e),
+            }
         });
 }

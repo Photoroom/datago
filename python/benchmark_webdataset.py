@@ -32,7 +32,7 @@ def benchmark(
         "source_config": {
             "url": url,
             "shuffle": True,
-            "max_concurrency": 2,  # Number of concurrent tarball downloads and dispatch
+            "max_concurrency": 2,  # Number of concurrent TarballSample downloads and dispatch
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
         "image_config": {

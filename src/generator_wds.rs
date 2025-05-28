@@ -1,16 +1,16 @@
 use crate::client::DatagoClient;
-use crate::structs::{new_shared_client, DatagoEngine, SharedClient, TarballContent, WDSContent};
+use crate::structs::{new_shared_client, BinaryFile, DatagoEngine, SharedClient, TarballSample};
 use crate::worker_wds;
 
 use async_tar::Archive;
 use kanal::bounded;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use rand::seq::SliceRandom;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::thread;
+use tokio::task::JoinError;
 
 use bracoxide::explode;
 use futures::AsyncReadExt;
@@ -47,15 +47,15 @@ fn hash_fn(key: &str) -> u64 {
     hasher.finish()
 }
 
-async fn pull_tarball(
+async fn pull_tarballs(
     shared_client: Arc<SharedClient>,
     url: serde_json::Value,
-    samples_metadata_tx: kanal::Sender<TarballContent>,
+    samples_metadata_tx: kanal::Sender<TarballSample>,
     config: SourceWebDatasetConfig,
 ) -> Result<(), String> {
     // Given the url to a given tarball, we'll download it and submit the samples on the fly to the worker pool
     debug!(
-        "dispatch_shards: downloading a new tarball {:?}",
+        "dispatch_shards: downloading a new TarballSample {:?}",
         url.as_str()
     );
 
@@ -80,7 +80,10 @@ async fn pull_tarball(
     }
     let response = response.unwrap();
     if !response.status().is_success() {
-        return Err(format!("Failed to download tarball: {}", response.status()));
+        return Err(format!(
+            "Failed to download TarballSample: {}",
+            response.status()
+        ));
     }
 
     // Convert the byte stream to an AsyncRead
@@ -98,17 +101,18 @@ async fn pull_tarball(
 
     let mut entries = archive
         .entries()
-        .map_err(|e| format!("Failed to fetch tarball: {}", e))?; // This returns a stream
+        .map_err(|e| format!("Failed to fetch TarballSample: {}", e))?; // This returns a stream
 
     let mut current_sample_key: Option<String> = None;
-    let mut current_files_for_sample: TarballContent = Vec::new();
+    let mut current_files_for_sample = TarballSample::new(url.to_string());
 
     while let Some(entry_result) = entries.next().await {
-        let mut entry = entry_result.map_err(|e| format!("Failed to read tarball entry: {}", e))?;
+        let mut entry =
+            entry_result.map_err(|e| format!("Failed to read TarballSample entry: {}", e))?;
 
         let header_path = entry
             .path()
-            .map_err(|e| format!("Error considering tarball content {}", e))?
+            .map_err(|e| format!("Error considering TarballSample content {}", e))?
             .into_owned();
         let filename = header_path.to_string_lossy().into_owned();
 
@@ -138,7 +142,7 @@ async fn pull_tarball(
                 debug!("dispatch_shards (streaming): samples_metadata_tx channel closed.");
                 return Err("Channel closed".into());
             }
-            current_files_for_sample = Vec::new();
+            current_files_for_sample = TarballSample::new(url.to_string());
             current_sample_key = Some(entry_key.clone());
         }
 
@@ -146,19 +150,19 @@ async fn pull_tarball(
         entry
             .read_to_end(&mut buffer)
             .await
-            .map_err(|e| format!("Failed to read tarball {}", e))?; // Read the content of the current file
+            .map_err(|e| format!("Failed to read TarballSample {}", e))?; // Read the content of the current file
 
-        current_files_for_sample.push(WDSContent { filename, buffer });
+        current_files_for_sample.add(BinaryFile { filename, buffer });
         debug!(
             "dispatch_shards (streaming): processed entry {:?}, key: {:?}",
-            Path::new(&current_files_for_sample.last().unwrap().filename)
+            Path::new(&current_files_for_sample.content.last().unwrap().filename)
                 .file_name()
                 .unwrap_or_default(),
             entry_key
         );
     }
     // Send the last collected sample if any
-    if !current_files_for_sample.is_empty()
+    if !current_files_for_sample.content.is_empty()
         && samples_metadata_tx.send(current_files_for_sample).is_err()
     {
         debug!("dispatch_shards (streaming): samples_metadata_tx channel closed for last sample.");
@@ -166,16 +170,16 @@ async fn pull_tarball(
     }
 
     debug!(
-        "dispatch_shards (streaming): finished processing tarball {}",
+        "dispatch_shards (streaming): finished processing TarballSample {}",
         url
     );
     Ok(())
 }
 
-async fn pull_tarball_task(
+async fn pull_tarballs_task(
     shared_client: Arc<SharedClient>,
     url: serde_json::Value,
-    samples_metadata_tx: kanal::Sender<TarballContent>,
+    samples_metadata_tx: kanal::Sender<TarballSample>,
     config: SourceWebDatasetConfig,
 ) -> Result<(), String> {
     let retries = 3;
@@ -183,7 +187,7 @@ async fn pull_tarball_task(
     let mut success = false;
 
     while attempt < retries && !success {
-        match pull_tarball(
+        match pull_tarballs(
             shared_client.clone(),
             url.clone(),
             samples_metadata_tx.clone(),
@@ -197,16 +201,19 @@ async fn pull_tarball_task(
             Err(e) => {
                 attempt += 1;
                 debug!(
-                    "Error pulling tarball: {}. Attempt {}/{}",
+                    "Error pulling TarballSample: {}. Attempt {}/{}",
                     e, attempt, retries
                 );
             }
         }
     }
     if !success {
-        return Err(format!("Failed to pull tarball after {} attempts", retries));
+        return Err(format!(
+            "Failed to pull TarballSample after {} attempts",
+            retries
+        ));
     }
-    debug!("dispatch_shards: finished pulling tarball");
+    debug!("dispatch_shards: finished pulling TarballSample");
     Ok(())
 }
 
@@ -270,9 +277,9 @@ async fn get_url_list(
 
 async fn tasks_from_shards(
     shared_client: Arc<SharedClient>,
-    samples_metadata_tx: kanal::Sender<TarballContent>,
+    samples_metadata_tx: kanal::Sender<TarballSample>,
     config: &SourceWebDatasetConfig,
-) -> Result<serde_json::Value, ()> {
+) -> Result<serde_json::Value, String> {
     match get_url_list(&shared_client, config).await {
         Ok(mut task_list) => {
             // Shuffle the items if needed
@@ -281,32 +288,36 @@ async fn tasks_from_shards(
             }
 
             // Now submit all the tasks, making sure that not too many of them are in flight
-            let mut tasks = VecDeque::new();
+            let mut tasks = tokio::task::JoinSet::new();
             let response_json = serde_json::Value::Null;
             let mut count = 0;
+            let mut join_error: Option<JoinError> = None;
 
             for url in task_list {
-                tasks.push_back(tokio::spawn(pull_tarball_task(
+                tasks.spawn(pull_tarballs_task(
                     shared_client.clone(),
                     url,
                     samples_metadata_tx.clone(),
                     config.clone(),
-                )));
+                ));
 
                 // Some bookkeeping, to limit the number of tasks in flight
                 // we'll wait for the first one to finish before adding a new one
                 if tasks.len() >= config.max_concurrency {
-                    // Catch an early stop in this case, can be that the stream is closed
-                    // and we don't want to keep going forever
-                    let res = tasks.pop_front().unwrap().await;
-                    debug!(
-                        "dispatch_shards: waiting for a task to finish. Got {:?}",
-                        res
-                    );
-                    // Note that the double check is needed, as the task can fail the spawn or return an error
-                    if res.is_err() || res.unwrap().is_err() {
-                        debug!("dispatch_shards: task failed, stopping there");
-                        break;
+                    match tasks.join_next().await {
+                        Some(Ok(_)) => {
+                            count += 1;
+                        }
+                        Some(Err(e)) => {
+                            // Task failed, log the error
+                            error!("dispatch_shards: task failed with error: {:?}", e);
+                            join_error = Some(e);
+                            break;
+                        }
+                        None => {
+                            // Task was cancelled or panicked
+                            error!("dispatch_shards: task was cancelled or panicked");
+                        }
                     }
                 }
 
@@ -314,8 +325,26 @@ async fn tasks_from_shards(
             }
 
             // Consume all the remaining tasks
-            while !tasks.is_empty() {
-                let _ = tasks.pop_front().unwrap().await;
+            while let Some(result) = tasks.join_next().await {
+                match result {
+                    Ok(_) => {
+                        debug!("dispatch_shards: task completed successfully");
+                        count += 1;
+                    }
+                    Err(e) => {
+                        error!("dispatch_shards: task failed with error: {:?}", e);
+                        // Note that we only keep the first error, which is probably the most relevant
+                        if join_error.is_none() {
+                            join_error = Some(e);
+                        }
+                    }
+                }
+            }
+
+            if join_error.is_some() {
+                // If we had an error, we log it and return an error
+                warn!("dispatch_shards: one of the tasks failed: {:?}", join_error);
+                return Err(join_error.unwrap().to_string());
             }
 
             // Bookkeeping and report
@@ -325,7 +354,10 @@ async fn tasks_from_shards(
             debug!("Served {} items from the bucket", count);
 
             // Send an empty value to signal the end of the stream
-            if samples_metadata_tx.send(vec![]).is_err() {
+            if samples_metadata_tx
+                .send(TarballSample::new("done".to_string()))
+                .is_err()
+            {
                 debug!("list_shards: stream already closed, wrapping up");
             }
 
@@ -333,36 +365,46 @@ async fn tasks_from_shards(
         }
         Err(e) => {
             warn!("Failed to get URL list: {}", e);
-            Err(())
+            Err(e) // Return a JoinError with the error message
         }
     }
 }
 
 fn query_shards_and_dispatch(
     shared_client: Arc<SharedClient>,
-    samples_metadata_tx: kanal::Sender<TarballContent>,
+    samples_metadata_tx: kanal::Sender<TarballSample>,
     source_config: SourceWebDatasetConfig,
 ) {
     // List all the shards from the bucket
-    // for each of them, start an async task to download the tarball
+    // for each of them, start an async task to download the TarballSample
     // and unpack it in memory
-    // Then, for each sample in the tarball, send it to the channel
+    // Then, for each sample in the TarballSample, send it to the channel
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(source_config.max_concurrency)
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            let _ =
-                tasks_from_shards(shared_client.clone(), samples_metadata_tx, &source_config).await;
-            // FIXME: handle errors
+            match tasks_from_shards(shared_client.clone(), samples_metadata_tx, &source_config)
+                .await
+            {
+                Ok(_) => {
+                    debug!("query_shards_and_dispatch: finished processing all shards");
+                }
+                Err(e) => {
+                    error!(
+                        "query_shards_and_dispatch: error processing shards: {:?}",
+                        e
+                    );
+                }
+            }
         });
 }
 
 // ---- Global orchestration ---------
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Allocate all the message passing pipes
-    let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballContent>(32);
+    let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(32);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
 
     info!("Using webdataset as source");
@@ -447,7 +489,7 @@ mod tests {
 
             // Query the bucket, pull the workload
             let http_client = Arc::new(new_shared_client(2));
-            let (samples_meta_tx, samples_meta_rx) = bounded::<TarballContent>(2);
+            let (samples_meta_tx, samples_meta_rx) = bounded::<TarballSample>(2);
 
             let mut count = 0;
             let limit = 2;

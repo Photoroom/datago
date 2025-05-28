@@ -145,9 +145,33 @@ pub fn new_shared_client(max_connections: usize) -> SharedClient {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WDSContent {
+pub struct BinaryFile {
     pub filename: String,
     pub buffer: Vec<u8>,
 }
 
-pub type TarballContent = Vec<WDSContent>;
+pub struct TarballSample {
+    pub name: String,
+    pub content: Vec<BinaryFile>,
+}
+
+impl TarballSample {
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    pub fn add(&mut self, file: BinaryFile) {
+        self.content.push(file);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &BinaryFile> {
+        self.content.iter()
+    }
+
+    pub fn new(name: String) -> Self {
+        TarballSample {
+            name,
+            content: Vec::new(),
+        }
+    }
+}

@@ -116,7 +116,7 @@ client_config = {
     "source_config": {
         "url": url,
         "random_sampling": False,
-        "max_tasks_in_flight": 16 # The number of tarballs which should be handled concurrently
+        "max_tasks_in_flight": 16 # The number of TarballSamples which should be handled concurrently
         "rank": 0,
         "world_size": 1,
     },
