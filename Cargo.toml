@@ -40,7 +40,7 @@ async-tar = "0.5.0"
 tokio-util = { version = "0.7.15", features = ["io", "compat"] } # Add "compat"
 async-compression = {version= "0.4.23", features=["tokio"]}
 bracoxide = "0.1.6"
-infer = "0.16.0"
+png = {version = "0.17.16", features = ["simd]}
 
 [profile.release]
 opt-level = 3
