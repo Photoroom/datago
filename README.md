@@ -46,10 +46,10 @@ config = {
     "source_config": {
         "sources": os.environ.get("DATAROOM_TEST_SOURCE", ""),
         "page_size": 500,
+        "rank": 0,
+        "world_size": 1,
     },
     "limit": 200,
-    "rank": 0,
-    "world_size": 1,
     "samples_buffer_size": 32,
 }
 
