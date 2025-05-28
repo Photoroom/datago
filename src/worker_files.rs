@@ -6,13 +6,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Load bytes from the file
-    let bytes = std::fs::read(path).map_err(|e| {
+    // Load bytes from the file asynchronously
+    let bytes = tokio::fs::read(path).await.map_err(|e| {
         image::ImageError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
     })?;
 
-    // Decode the image
-    image::load_from_memory(&bytes)
+    // Decode the image in a blocking task to avoid blocking the async runtime
+    tokio::task::spawn_blocking(move || image::load_from_memory(&bytes))
+        .await
+        .map_err(|e| {
+            image::ImageError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?
 }
 
 async fn image_payload_from_path(
