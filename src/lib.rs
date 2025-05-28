@@ -1,11 +1,13 @@
 pub mod client;
 pub mod generator_files;
 pub mod generator_http;
+pub mod generator_wds;
 
 pub mod image_processing;
 pub mod structs;
 pub mod worker_files;
 pub mod worker_http;
+pub mod worker_wds;
 
 pub use client::{initialize_logging, DatagoClient};
 pub use generator_files::SourceFileConfig;

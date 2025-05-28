@@ -6,11 +6,13 @@ use std::collections::HashMap;
 mod client;
 mod generator_files;
 mod generator_http;
+mod generator_wds;
 
 mod image_processing;
 mod structs;
 mod worker_files;
 mod worker_http;
+mod worker_wds;
 
 fn main() {
     client::initialize_logging(Some("info".to_string()));

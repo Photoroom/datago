@@ -1,5 +1,6 @@
 use crate::generator_files;
 use crate::generator_http;
+use crate::generator_wds;
 use crate::image_processing::ARAwareTransform;
 use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
@@ -79,6 +80,10 @@ impl DatagoClient {
             }
             SourceType::File => {
                 self.engine = Some(generator_files::orchestrate(self));
+            }
+            SourceType::WebDataset => {
+                warn!("WebDataset source type is new and experimental, use with caution!\nPlease report any issues you encounter to https://github.com/Photoroom/datago/issues.");
+                self.engine = Some(generator_wds::orchestrate(self));
             }
         }
 
@@ -289,6 +294,9 @@ mod tests {
     }
 
     #[cfg(test)]
+    use log::debug;
+
+    #[cfg(test)]
     fn check_image(img: &ImagePayload) {
         assert!(!img.data.is_empty());
 
@@ -475,7 +483,7 @@ mod tests {
         let sample = sample.unwrap();
         assert!(!sample.id.is_empty());
         // Check that sample.tags does not contain any of the tags in the tags string
-        println!("{:?}", sample.tags);
+        debug!("{:?}", sample.tags);
         for tag in tags.split(',') {
             assert!(!sample.tags.contains(&tag.to_string()));
         }
@@ -576,7 +584,7 @@ mod tests {
 
             let sample = sample.unwrap();
             assert!(!sample.id.is_empty());
-            println!("{}", sample.source);
+            debug!("{}", sample.source);
             assert!(sources.contains(&sample.source.as_str()));
         }
     }
@@ -589,7 +597,7 @@ mod tests {
         config["source_config"]["sources_ne"] = "LAION_ART".into();
         config["limit"] = json!(limit);
 
-        println!("{}", config);
+        debug!("{}", config);
         let mut client = DatagoClient::new(config.to_string());
 
         for _ in 0..limit {

@@ -11,10 +11,13 @@ use std::thread;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
     pub root_path: String,
+
     #[serde(default)]
     pub random_sampling: bool,
+
     #[serde(default)]
     pub rank: usize,
+
     #[serde(default)]
     pub world_size: usize,
 }
@@ -57,7 +60,7 @@ fn enumerate_files(
         })
         .collect();
 
-    // If random_sampling is set, shuffle the files
+    // If shuffle is set, shuffle the files
     let files_iter = if source_config.random_sampling {
         let mut rng = rand::rng(); // Falls back to OsRng, which will differ over time
         files_list.shuffle(&mut rng);

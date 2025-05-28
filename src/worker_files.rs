@@ -1,9 +1,8 @@
 use crate::image_processing;
 use crate::structs::{ImagePayload, Sample};
-use log::{debug, error, warn};
+use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
@@ -79,18 +78,6 @@ async fn pull_sample(
     }
 }
 
-pub async fn consume_oldest_task(
-    tasks: &mut VecDeque<tokio::task::JoinHandle<Result<(), ()>>>,
-) -> Result<(), ()> {
-    match tasks.pop_front().unwrap().await {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            warn!("worker: sample skipped {}", e);
-            Err(())
-        }
-    }
-}
-
 async fn async_pull_samples(
     samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
@@ -102,7 +89,7 @@ async fn async_pull_samples(
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
     let max_tasks = min(num_cpus::get() * 2, limit);
-    let mut tasks = VecDeque::new();
+    let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);
 
@@ -114,16 +101,16 @@ async fn async_pull_samples(
         }
 
         // Append a new task to the queue
-        tasks.push_back(tokio::spawn(pull_sample(
+        tasks.spawn(pull_sample(
             received,
             shareable_img_tfm.clone(),
             encode_images,
             img_to_rgb8,
             samples_tx.clone(),
-        )));
+        ));
 
         // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks && consume_oldest_task(&mut tasks).await.is_ok() {
+        if tasks.len() >= max_tasks && tasks.join_next().await.unwrap().is_ok() {
             count += 1;
         }
         if count >= limit {
@@ -132,11 +119,14 @@ async fn async_pull_samples(
     }
 
     // Make sure to wait for all the remaining tasks
-    while !tasks.is_empty() {
-        if consume_oldest_task(&mut tasks).await.is_ok() {
+    let _ = tasks.join_all().await.iter().map(|result| {
+        if let Ok(()) = result {
             count += 1;
+        } else {
+            // Task failed or was cancelled
+            debug!("file_worker: task failed or was cancelled");
         }
-    }
+    });
     debug!("file_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream
