@@ -16,26 +16,22 @@ fn is_supported_type(ext: &str) -> bool {
     TEXT_TYPES.contains(&ext) || IMG_TYPES.contains(&ext)
 }
 
-async fn pull_sample(
+async fn process_sample(
     sample: TarballSample,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encode_images: bool,
     img_to_rgb8: bool,
     samples_tx: Arc<kanal::Sender<Option<Sample>>>,
+    extension_reference_image: String,
 ) -> Result<(), ()> {
     if !sample.is_empty() {
         match Path::new(&sample.content[0].filename).file_stem() {
             Some(sample_id) => {
                 let mut attributes = HashMap::new();
-                let mut image = ImagePayload {
-                    data: vec![],
-                    width: 0,
-                    height: 0,
-                    original_height: 0,
-                    original_width: 0,
-                    bit_depth: 0,
-                    channels: 0,
-                };
+
+                // We'll build a single Sample for all the items
+                let mut final_sample: Option<Sample> = None;
+                let mut sample_aspect_ratio = "".to_string();
 
                 for item in sample.iter() {
                     let ext = Path::new(&item.filename)
@@ -49,10 +45,10 @@ async fn pull_sample(
                         // Load the image in to a buffer
                         match image::load_from_memory(&item.buffer) {
                             Ok(raw_image) => {
-                                image = image_processing::image_to_payload(
+                                let image = image_processing::image_to_payload(
                                     raw_image,
                                     &img_tfm,
-                                    &"".to_string(),
+                                    &sample_aspect_ratio,
                                     encode_images,
                                     img_to_rgb8,
                                 )
@@ -66,6 +62,43 @@ async fn pull_sample(
                                     bit_depth: 0,
                                     channels: 0,
                                 });
+
+                                if sample_aspect_ratio.is_empty() {
+                                    // If we don't have an aspect ratio yet, we set it
+                                    sample_aspect_ratio = image_processing::aspect_ratio_to_str((
+                                        image.width as i32,
+                                        image.height as i32,
+                                    ));
+                                }
+
+                                if ext == extension_reference_image {
+                                    // If this is the reference image, we store it in the main image field
+                                    final_sample = Some(Sample {
+                                        id: String::from(sample_id.to_str().unwrap_or("unknown")),
+                                        source: sample.name.clone(),
+                                        image: image.clone(),
+                                        attributes: attributes.clone(),
+                                        coca_embedding: vec![],
+                                        tags: vec![],
+                                        masks: HashMap::new(),
+                                        latents: HashMap::new(),
+                                        additional_images: HashMap::new(),
+                                        duplicate_state: 0,
+                                    });
+                                } else {
+                                    // Otherwise, we store it in the additional images
+                                    match final_sample {
+                                        Some(ref mut final_sample_ref) => {
+                                            final_sample_ref
+                                                .additional_images
+                                                .insert(item.filename.clone(), image.clone());
+                                        }
+                                        None => {
+                                            // If final_sample is not initialized, we create it
+                                            panic!( "Final sample should be initialized before adding additional images");
+                                        }
+                                    }
+                                }
                                 debug!("wds_worker: unpacked {}", item.filename);
                             }
                             Err(e) => {
@@ -81,21 +114,7 @@ async fn pull_sample(
                     }
                 }
 
-                if samples_tx
-                    .send(Some(Sample {
-                        id: String::from(sample_id.to_str().unwrap_or("unkonwn")),
-                        source: sample.name,
-                        image,
-                        attributes,
-                        coca_embedding: vec![],
-                        tags: vec![],
-                        masks: HashMap::new(),
-                        latents: HashMap::new(),
-                        additional_images: HashMap::new(),
-                        duplicate_state: 0,
-                    }))
-                    .is_err()
-                {
+                if samples_tx.send(final_sample).is_err() {
                     debug!("wds_worker: stream already closed, wrapping up");
                     return Err(());
                 }
@@ -118,6 +137,7 @@ async fn async_deserialize_samples(
     encode_images: bool,
     img_to_rgb8: bool,
     limit: usize,
+    extension_reference_image: String,
 ) -> Result<(), ()> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
@@ -137,12 +157,13 @@ async fn async_deserialize_samples(
         }
 
         // Append a new task to the queue
-        tasks.spawn(pull_sample(
+        tasks.spawn(process_sample(
             sample,
             shareable_img_tfm.clone(),
             encode_images,
             img_to_rgb8,
             shareable_channel_tx.clone(),
+            extension_reference_image.clone(),
         ));
 
         // If we have enough tasks, we'll wait for the older one to finish
@@ -201,6 +222,7 @@ pub fn deserialize_samples(
     encode_images: bool,
     img_to_rgb8: bool,
     limit: usize,
+    extension_reference_image: String,
 ) {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
@@ -215,6 +237,7 @@ pub fn deserialize_samples(
                 encode_images,
                 img_to_rgb8,
                 limit,
+                extension_reference_image,
             )
             .await
             {

@@ -10,7 +10,6 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::thread;
-use tokio::task::JoinError;
 
 use bracoxide::explode;
 use futures::AsyncReadExt;
@@ -21,9 +20,16 @@ use tokio::io::BufReader;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::StreamReader; // For grouping, if more complex grouping is needed
 
+fn default_reference_image_type() -> String {
+    "jpg".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceWebDatasetConfig {
     pub url: String,
+
+    #[serde(default = "default_reference_image_type")]
+    pub reference_image_type: String,
 
     #[serde(default)]
     pub random_sampling: bool,
@@ -138,10 +144,26 @@ async fn pull_tarballs(
             current_sample_key = Some(entry_key.clone());
         }
         if current_sample_key.as_ref() != Some(&entry_key) && !current_files_for_sample.is_empty() {
+            // Sort the files in the sample so that the reference image is first
+            // This will make sure that it is always processed first, and will serve as a reference
+            // for the final aspect ratio bucket
+            current_files_for_sample.content.sort_by(|a, b| {
+                if a.filename.ends_with(&config.reference_image_type) {
+                    std::cmp::Ordering::Less
+                } else if b.filename.ends_with(&config.reference_image_type) {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            });
+
             if samples_metadata_tx.send(current_files_for_sample).is_err() {
                 debug!("dispatch_shards (streaming): samples_metadata_tx channel closed.");
+                let _ = samples_metadata_tx.close(); // Make sure that we close on both ends
                 return Err("Channel closed".into());
             }
+
+            // Start a new sample
             current_files_for_sample = TarballSample::new(url.to_string());
             current_sample_key = Some(entry_key.clone());
         }
@@ -184,9 +206,8 @@ async fn pull_tarballs_task(
 ) -> Result<(), String> {
     let retries = 3;
     let mut attempt = 0;
-    let mut success = false;
 
-    while attempt < retries && !success {
+    while attempt < retries {
         match pull_tarballs(
             shared_client.clone(),
             url.clone(),
@@ -196,7 +217,7 @@ async fn pull_tarballs_task(
         .await
         {
             Ok(_) => {
-                success = true;
+                return Ok(()); // Successfully pulled the tarball
             }
             Err(e) => {
                 attempt += 1;
@@ -204,17 +225,19 @@ async fn pull_tarballs_task(
                     "Error pulling TarballSample: {}. Attempt {}/{}",
                     e, attempt, retries
                 );
+                if samples_metadata_tx.is_closed() {
+                    debug!(
+                        "dispatch_shards: samples_metadata_tx channel closed, stopping retries."
+                    );
+                    return Err("Channel closed".into());
+                }
             }
         }
     }
-    if !success {
-        return Err(format!(
-            "Failed to pull TarballSample after {} attempts",
-            retries
-        ));
-    }
-    debug!("dispatch_shards: finished pulling TarballSample");
-    Ok(())
+    Err(format!(
+        "Failed to pull TarballSample after {} attempts",
+        retries
+    ))
 }
 
 async fn get_url_list(
@@ -291,7 +314,7 @@ async fn tasks_from_shards(
             let mut tasks = tokio::task::JoinSet::new();
             let response_json = serde_json::Value::Null;
             let mut count = 0;
-            let mut join_error: Option<JoinError> = None;
+            let mut join_error: Option<String> = None;
 
             for url in task_list {
                 tasks.spawn(pull_tarballs_task(
@@ -305,14 +328,20 @@ async fn tasks_from_shards(
                 // we'll wait for the first one to finish before adding a new one
                 if tasks.len() >= config.max_concurrency {
                     match tasks.join_next().await {
-                        Some(Ok(_)) => {
-                            count += 1;
-                        }
-                        Some(Err(e)) => {
-                            // Task failed, log the error
-                            error!("dispatch_shards: task failed with error: {:?}", e);
-                            join_error = Some(e);
-                            break;
+                        Some(res) => {
+                            match res.unwrap() {
+                                Ok(_) => {
+                                    debug!("dispatch_shards: task completed successfully");
+                                    count += 1;
+                                }
+                                Err(e) => {
+                                    // Logging as debug, could be that channels are closed
+                                    debug!("dispatch_shards: task returned error: {:?}", e);
+                                    join_error = Some(e);
+                                    break;
+                                }
+                            }
+                            debug!("dispatch_shards: task completed successfully");
                         }
                         None => {
                             // Task was cancelled or panicked
@@ -326,13 +355,13 @@ async fn tasks_from_shards(
 
             // Consume all the remaining tasks
             while let Some(result) = tasks.join_next().await {
-                match result {
+                match result.unwrap() {
                     Ok(_) => {
                         debug!("dispatch_shards: task completed successfully");
                         count += 1;
                     }
                     Err(e) => {
-                        error!("dispatch_shards: task failed with error: {:?}", e);
+                        debug!("dispatch_shards: task returned error: {:?}", e);
                         // Note that we only keep the first error, which is probably the most relevant
                         if join_error.is_none() {
                             join_error = Some(e);
@@ -392,10 +421,7 @@ fn query_shards_and_dispatch(
                     debug!("query_shards_and_dispatch: finished processing all shards");
                 }
                 Err(e) => {
-                    error!(
-                        "query_shards_and_dispatch: error processing shards: {:?}",
-                        e
-                    );
+                    debug!("query_shards_and_dispatch: ended with : {:?}", e);
                 }
             }
         });
@@ -412,6 +438,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Convert the source_config to a SourceWebDatasetConfig
     let mut source_config: SourceWebDatasetConfig =
         serde_json::from_value(client.source_config.clone()).unwrap();
+    let extension_reference_image_type: String = source_config.reference_image_type.clone();
 
     if source_config.max_concurrency == 0 {
         info!("WDS: Defaulting to 8 max_concurrency");
@@ -439,6 +466,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             encode_images,
             img_to_rgb8,
             limit,
+            extension_reference_image_type,
         );
     }));
 
@@ -481,6 +509,7 @@ mod tests {
                     "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/"
                         .into(),
                 auth_token: "".into(),
+                reference_image_type: "jpg".into(),
                 random_sampling: s,
                 max_concurrency: 2,
                 rank: 0,
