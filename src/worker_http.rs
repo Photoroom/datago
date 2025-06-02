@@ -1,12 +1,11 @@
 use crate::image_processing;
 use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, SharedClient, UrlLatent};
-use crate::worker_files::consume_oldest_task;
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
-
+use tokio::task::JoinError;
 // ------------------------------------------------------------------
 #[derive(Debug, Serialize, Deserialize)]
 struct SampleMetadata {
@@ -273,17 +272,16 @@ async fn async_pull_samples(
     encode_images: bool,
     img_to_rgb8: bool,
     limit: usize,
-) {
-    // TODO: Join with the other workers' implementation, same logic
-
+) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
     let max_tasks = min(num_cpus::get(), limit);
     debug!("Using {} tasks in the async threadpool", max_tasks);
-    let mut tasks = std::collections::VecDeque::new();
+    let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
     let shareable_img_tfm = Arc::new(image_transform);
+    let mut join_error: Option<JoinError> = None;
 
     while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
@@ -293,18 +291,32 @@ async fn async_pull_samples(
         }
 
         // Append a new task to the queue
-        tasks.push_back(tokio::spawn(pull_sample(
+        tasks.spawn(pull_sample(
             client.clone(),
             received,
             shareable_img_tfm.clone(),
             encode_images,
             img_to_rgb8,
             shareable_channel_tx.clone(),
-        )));
+        ));
 
         // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks && consume_oldest_task(&mut tasks).await.is_ok() {
-            count += 1;
+        if tasks.len() >= max_tasks {
+            match tasks.join_next().await {
+                Some(Ok(_)) => {
+                    count += 1;
+                }
+                Some(Err(e)) => {
+                    // Task failed, log the error
+                    error!("file_worker: task failed with error: {:?}", e);
+                    join_error = Some(e);
+                    break;
+                }
+                None => {
+                    // Task was cancelled or panicked
+                    error!("file_worker: task was cancelled or panicked");
+                }
+            }
         }
         if count >= limit {
             break;
@@ -312,15 +324,31 @@ async fn async_pull_samples(
     }
 
     // Make sure to wait for all the remaining tasks
-    while !tasks.is_empty() {
-        if consume_oldest_task(&mut tasks).await.is_ok() {
-            count += 1;
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(_) => {
+                debug!("dispatch_shards: task completed successfully");
+                count += 1;
+            }
+            Err(e) => {
+                error!("dispatch_shards: task failed with error: {:?}", e);
+                if join_error.is_none() {
+                    join_error = Some(e);
+                }
+            }
         }
     }
+
     debug!("http_worker: total samples sent: {}\n", count);
 
     // Signal the end of the stream
-    if shareable_channel_tx.send(None).is_ok() {} // Channel could have been closed by a .stop() call
+    let _ = shareable_channel_tx.send(None); // Channel could have been closed by a .stop() call
+
+    if let Some(e) = join_error {
+        // If we had an error, return it
+        return Err(e.to_string());
+    }
+    Ok(())
 }
 
 pub fn pull_samples(
@@ -338,7 +366,7 @@ pub fn pull_samples(
         .build()
         .unwrap()
         .block_on(async {
-            async_pull_samples(
+            match async_pull_samples(
                 client,
                 samples_meta_rx,
                 samples_tx,
@@ -347,6 +375,14 @@ pub fn pull_samples(
                 img_to_rgb8,
                 limit,
             )
-            .await;
+            .await
+            {
+                Ok(_) => {
+                    debug!("http_worker: all samples pulled successfully");
+                }
+                Err(e) => {
+                    error!("http_worker: error pulling samples: {:?}", e);
+                }
+            }
         });
 }

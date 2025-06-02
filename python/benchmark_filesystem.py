@@ -64,7 +64,7 @@ def benchmark(
 
     # Let's compare against a classic pytorch dataloader
     if compare_torch:
-        from torchvision import datasets, transforms
+        from torchvision import datasets, transforms  # type: ignore
         from torch.utils.data import DataLoader
 
         print("Benchmarking torch dataloader")
@@ -100,7 +100,7 @@ def benchmark(
         # Iterate over the DataLoader
         start = time.time()
         n_images = 0
-        for batch in dataloader:
+        for batch in tqdm(dataloader, dynamic_ncols=True):
             n_images += len(batch)
             if n_images > limit:
                 break
