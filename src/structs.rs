@@ -12,6 +12,7 @@ use std::thread;
 pub enum SourceType {
     Db,
     File,
+    WebDataset,
 }
 
 fn default_source_type() -> SourceType {
@@ -140,5 +141,37 @@ pub fn new_shared_client(max_connections: usize) -> SharedClient {
     SharedClient {
         client,
         semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryFile {
+    pub filename: String,
+    pub buffer: Vec<u8>,
+}
+
+pub struct TarballSample {
+    pub name: String,
+    pub content: Vec<BinaryFile>,
+}
+
+impl TarballSample {
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    pub fn add(&mut self, file: BinaryFile) {
+        self.content.push(file);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &BinaryFile> {
+        self.content.iter()
+    }
+
+    pub fn new(name: String) -> Self {
+        TarballSample {
+            name,
+            content: Vec::new(),
+        }
     }
 }
