@@ -138,7 +138,7 @@ async fn async_deserialize_samples(
     img_to_rgb8: bool,
     limit: usize,
     extension_reference_image: String,
-) -> Result<(), ()> {
+) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
     let max_tasks = min(num_cpus::get(), limit);
@@ -210,7 +210,7 @@ async fn async_deserialize_samples(
             "wds_worker: encountered an error while processing samples: {}",
             error
         );
-        return Err(());
+        return Err(error);
     }
     Ok(())
 }
