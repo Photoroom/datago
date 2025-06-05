@@ -35,8 +35,8 @@ def benchmark(
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
         },
-        "prefetch_buffer_size": 128,
-        "samples_buffer_size": 64,
+        "prefetch_buffer_size": 256,
+        "samples_buffer_size": 256,
         "limit": limit,
     }
 

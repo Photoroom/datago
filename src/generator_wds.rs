@@ -407,7 +407,7 @@ fn query_shards_and_dispatch(
     // List all the shards from the bucket
     // for each of them, start an async task to download the TarballSample
     // and unpack it in memory
-    // Then, for each sample in the TarballSample, send it to the channel
+    // Then, for each sample in the tarball (multiple payloads typically), send it to the processing channel
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(source_config.max_concurrency)
         .enable_all()

@@ -6,12 +6,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Load bytes from the file
     let bytes = std::fs::read(path).map_err(|e| {
         image::ImageError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
     })?;
 
-    // Decode the image
     image::load_from_memory(&bytes)
 }
 
@@ -88,7 +86,7 @@ async fn async_pull_samples(
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
-    let max_tasks = min(num_cpus::get() * 2, limit);
+    let max_tasks = min(num_cpus::get() * 4, limit);
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);
@@ -142,6 +140,7 @@ pub fn pull_samples(
     limit: usize,
 ) {
     tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(num_cpus::get())
         .enable_all()
         .build()
         .unwrap()

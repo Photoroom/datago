@@ -1,7 +1,7 @@
 [package]
 name = "datago"
 edition = "2021"
-version = "2025.6.1"
+version = "2025.6.2"
 
 [lib]
 # exposed by pyo3
@@ -14,7 +14,7 @@ name = "datago"
 path = "src/main.rs"
 
 [dependencies]
-image = { version = "0.25.5",  features = ["png"]}
+image = { version = "0.25.6", features = ["png", "jpeg"], default-features = false }
 reqwest = { version = "0.12.15", features = ["blocking", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -37,11 +37,14 @@ tar = "0.4.44"
 futures = "0.3.31"
 flate2 = "1.1.1"
 async-tar = "0.5.0"
-tokio-util = { version = "0.7.15", features = ["io", "compat"] } # Add "compat"
+tokio-util = { version = "0.7.15", features = ["io", "compat"] }
 async-compression = {version= "0.4.23", features=["tokio"]}
 bracoxide = "0.1.6"
+infer = "0.16.0"
+fast_image_resize = { version ="5.1.3", features=["image"]}
 
 [profile.release]
-opt-level = 3  # Optimize for speed
-lto = "fat"     # Enable link-time optimization
+opt-level = 3
+lto = "fat"
 codegen-units = 1
+panic = "abort"
