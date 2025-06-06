@@ -48,7 +48,7 @@ fn enumerate_files(
     let mut files_list: Vec<walkdir::DirEntry> = files
         .filter_map(|entry| {
             let path = entry.path();
-            let file_name = path.to_str().unwrap().to_string();
+            let file_name = path.to_string_lossy().into_owned();
             if supported_extensions
                 .iter()
                 .any(|&ext| file_name.ends_with(ext))
@@ -62,7 +62,7 @@ fn enumerate_files(
 
     // If shuffle is set, shuffle the files
     let files_iter = if source_config.random_sampling {
-        let mut rng = rand::rng(); // Falls back to OsRng, which will differ over time
+        let mut rng = rand::rng(); // Get a random number generator, thread local. We don´t seed, so typically won't be reproducible
         files_list.shuffle(&mut rng);
         files_list.into_iter()
     } else {
@@ -71,6 +71,9 @@ fn enumerate_files(
 
     // Iterate over the files and send the paths as they come
     let mut count = 0;
+
+    // We oversubmit arbitrarily by 10% to account for the fact that some files might be corrupted or unreadable.
+    // There's another mechanism to limit the number of samples processed as requested by the user, so this is just a buffer.
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
 
     // Build a page from the files iterator
@@ -165,5 +168,300 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         samples_rx,
         feeder,
         worker,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_hash_function() {
+        let str1 = "test_string1";
+        let str2 = "test_string2";
+        let str3 = "test_string1"; // Same as str1
+
+        let hash1 = hash(&str1);
+        let hash2 = hash(&str2);
+        let hash3 = hash(&str3);
+
+        // Same input should produce same hash
+        assert_eq!(hash1, hash3);
+        // Different inputs should likely produce different hashes
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_source_file_config_defaults() {
+        let config_json = r#"{
+            "root_path": "/tmp/test"
+        }"#;
+
+        let config: SourceFileConfig = serde_json::from_str(config_json).unwrap();
+        assert_eq!(config.root_path, "/tmp/test");
+        assert!(!config.random_sampling);
+        assert_eq!(config.rank, 0);
+        assert_eq!(config.world_size, 0);
+    }
+
+    #[test]
+    fn test_source_file_config_full() {
+        let config_json = r#"{
+            "root_path": "/tmp/test",
+            "random_sampling": true,
+            "rank": 2,
+            "world_size": 4
+        }"#;
+
+        let config: SourceFileConfig = serde_json::from_str(config_json).unwrap();
+        assert_eq!(config.root_path, "/tmp/test");
+        assert!(config.random_sampling);
+        assert_eq!(config.rank, 2);
+        assert_eq!(config.world_size, 4);
+    }
+
+    fn create_test_images(dir: &Path) -> Vec<String> {
+        let extensions = ["jpg", "png", "bmp", "gif", "JPEG"];
+        let mut files = Vec::new();
+
+        for (i, ext) in extensions.iter().enumerate() {
+            let filename = format!("test_image_{}.{}", i, ext);
+            let filepath = dir.join(&filename);
+            fs::write(&filepath, "fake_image_data").unwrap();
+            files.push(filepath.to_string_lossy().to_string());
+        }
+
+        // Create a non-image file that should be ignored
+        let non_image = dir.join("not_an_image.txt");
+        fs::write(&non_image, "text_content").unwrap();
+
+        files
+    }
+
+    #[test]
+    fn test_enumerate_files_basic() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        let created_files = create_test_images(temp_path);
+
+        let (tx, rx) = kanal::bounded(100);
+        let config = SourceFileConfig {
+            root_path: temp_path.to_string_lossy().to_string(),
+            random_sampling: false,
+            rank: 0,
+            world_size: 1,
+        };
+
+        std::thread::spawn(move || {
+            enumerate_files(tx, config, 10);
+        });
+
+        let mut received_files = Vec::new();
+        while let Ok(value) = rx.recv() {
+            if value == serde_json::Value::Null {
+                break;
+            }
+            if let Some(path) = value.as_str() {
+                received_files.push(path.to_string());
+            }
+        }
+
+        assert_eq!(received_files.len(), created_files.len());
+        // Check that all created files were found
+        for created_file in &created_files {
+            assert!(received_files.contains(created_file));
+        }
+    }
+
+    #[test]
+    fn test_enumerate_files_with_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        create_test_images(temp_path);
+
+        let (tx, rx) = kanal::bounded(100);
+        let config = SourceFileConfig {
+            root_path: temp_path.to_string_lossy().to_string(),
+            random_sampling: false,
+            rank: 0,
+            world_size: 1,
+        };
+
+        let limit = 2;
+        std::thread::spawn(move || {
+            enumerate_files(tx, config, limit);
+        });
+
+        let mut received_files = Vec::new();
+        while let Ok(value) = rx.recv() {
+            if value == serde_json::Value::Null {
+                break;
+            }
+            if let Some(path) = value.as_str() {
+                received_files.push(path.to_string());
+            }
+        }
+
+        // Should respect the limit (plus 10% buffer)
+        assert!(received_files.len() <= ((limit as f64 * 1.1).ceil() as usize));
+    }
+
+    #[test]
+    fn test_enumerate_files_with_world_size() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        create_test_images(temp_path);
+
+        // Test rank 0 of world_size 2
+        let (tx1, rx1) = kanal::bounded(100);
+        let config1 = SourceFileConfig {
+            root_path: temp_path.to_string_lossy().to_string(),
+            random_sampling: false,
+            rank: 0,
+            world_size: 2,
+        };
+
+        // Test rank 1 of world_size 2
+        let (tx2, rx2) = kanal::bounded(100);
+        let config2 = SourceFileConfig {
+            root_path: temp_path.to_string_lossy().to_string(),
+            random_sampling: false,
+            rank: 1,
+            world_size: 2,
+        };
+
+        std::thread::spawn(move || {
+            enumerate_files(tx1, config1, 10);
+        });
+
+        std::thread::spawn(move || {
+            enumerate_files(tx2, config2, 10);
+        });
+
+        let mut files_rank0 = Vec::new();
+        while let Ok(value) = rx1.recv() {
+            if value == serde_json::Value::Null {
+                break;
+            }
+            if let Some(path) = value.as_str() {
+                files_rank0.push(path.to_string());
+            }
+        }
+
+        let mut files_rank1 = Vec::new();
+        while let Ok(value) = rx2.recv() {
+            if value == serde_json::Value::Null {
+                break;
+            }
+            if let Some(path) = value.as_str() {
+                files_rank1.push(path.to_string());
+            }
+        }
+
+        // Different ranks should get different files (no overlap)
+        for file in &files_rank0 {
+            assert!(!files_rank1.contains(file));
+        }
+
+        // Both ranks should have some files
+        assert!(!files_rank0.is_empty());
+        assert!(!files_rank1.is_empty());
+    }
+
+    #[test]
+    fn test_enumerate_files_random_sampling() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        create_test_images(temp_path);
+
+        // Run twice with random sampling to see if order changes
+        let (tx1, rx1) = kanal::bounded(100);
+        let config1 = SourceFileConfig {
+            root_path: temp_path.to_string_lossy().to_string(),
+            random_sampling: true,
+            rank: 0,
+            world_size: 1,
+        };
+
+        let (tx2, rx2) = kanal::bounded(100);
+        let config2 = SourceFileConfig {
+            root_path: temp_path.to_string_lossy().to_string(),
+            random_sampling: true,
+            rank: 0,
+            world_size: 1,
+        };
+
+        std::thread::spawn(move || {
+            enumerate_files(tx1, config1, 10);
+        });
+
+        std::thread::spawn(move || {
+            enumerate_files(tx2, config2, 10);
+        });
+
+        let mut files1 = Vec::new();
+        while let Ok(value) = rx1.recv() {
+            if value == serde_json::Value::Null {
+                break;
+            }
+            if let Some(path) = value.as_str() {
+                files1.push(path.to_string());
+            }
+        }
+
+        let mut files2 = Vec::new();
+        while let Ok(value) = rx2.recv() {
+            if value == serde_json::Value::Null {
+                break;
+            }
+            if let Some(path) = value.as_str() {
+                files2.push(path.to_string());
+            }
+        }
+
+        // Should find the same files but potentially in different order
+        assert_eq!(files1.len(), files2.len());
+
+        // Check that all files from first run are in second run
+        for file in &files1 {
+            assert!(files2.contains(file));
+        }
+    }
+
+    #[test]
+    fn test_enumerate_files_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        let (tx, rx) = kanal::bounded(100);
+        let config = SourceFileConfig {
+            root_path: temp_path.to_string_lossy().to_string(),
+            random_sampling: false,
+            rank: 0,
+            world_size: 1,
+        };
+
+        std::thread::spawn(move || {
+            enumerate_files(tx, config, 10);
+        });
+
+        let mut received_files = Vec::new();
+        while let Ok(value) = rx.recv() {
+            if value == serde_json::Value::Null {
+                break;
+            }
+            if let Some(path) = value.as_str() {
+                received_files.push(path.to_string());
+            }
+        }
+
+        assert!(received_files.is_empty());
     }
 }
