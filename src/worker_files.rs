@@ -156,3 +156,305 @@ pub fn pull_samples(
             .await;
         });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::image_processing::ImageTransformConfig;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn create_test_image(path: &std::path::Path) {
+        // Create a simple 1x1 PNG image
+        let img = image::DynamicImage::new_rgb8(1, 1);
+        img.save(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_image_from_path_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.png");
+        create_test_image(&image_path);
+
+        let result = image_from_path(image_path.to_str().unwrap()).await;
+        assert!(result.is_ok());
+
+        let img = result.unwrap();
+        assert_eq!(img.width(), 1);
+        assert_eq!(img.height(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_image_from_path_invalid_file() {
+        let result = image_from_path("/nonexistent/path.png").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_image_from_path_invalid_image_data() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("not_an_image.txt");
+        fs::write(&file_path, "This is not image data").unwrap();
+
+        let result = image_from_path(file_path.to_str().unwrap()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_image_payload_from_path_basic() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.png");
+        create_test_image(&image_path);
+
+        let result =
+            image_payload_from_path(image_path.to_str().unwrap(), &None, false, false).await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.width, 1);
+        assert_eq!(payload.height, 1);
+        assert_eq!(payload.original_width, 1);
+        assert_eq!(payload.original_height, 1);
+        assert!(!payload.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_image_payload_from_path_with_transform() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.png");
+
+        // Create a larger test image
+        let img = image::DynamicImage::new_rgb8(100, 100);
+        img.save(&image_path).unwrap();
+
+        let transform_config = ImageTransformConfig {
+            crop_and_resize: true,
+            default_image_size: 64,
+            downsampling_ratio: 16,
+            min_aspect_ratio: 0.5,
+            max_aspect_ratio: 2.0,
+            pre_encode_images: false,
+            image_to_rgb8: false,
+        };
+
+        let transform = Some(transform_config.get_ar_aware_transform());
+
+        let result =
+            image_payload_from_path(image_path.to_str().unwrap(), &transform, false, false).await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.original_width, 100);
+        assert_eq!(payload.original_height, 100);
+        // Transformed size should be different
+        assert_ne!(payload.width, 100);
+        assert_ne!(payload.height, 100);
+    }
+
+    #[tokio::test]
+    async fn test_image_payload_from_path_with_encoding() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.png");
+        create_test_image(&image_path);
+
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            true, // encode_images = true
+            false,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.channels, -1); // Encoded images have channels = -1
+        assert!(!payload.data.is_empty());
+
+        // Should be able to decode the image
+        let decoded = image::load_from_memory(&payload.data);
+        assert!(decoded.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_image_payload_from_path_rgb8_conversion() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.png");
+
+        // Create an RGBA image
+        let img = image::DynamicImage::new_rgba8(1, 1);
+        img.save(&image_path).unwrap();
+
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            false,
+            true, // image_to_rgb8 = true
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.channels, 3); // Should be converted to RGB (3 channels)
+        assert_eq!(payload.bit_depth, 8);
+    }
+
+    #[tokio::test]
+    async fn test_pull_sample_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.png");
+        create_test_image(&image_path);
+
+        let (tx, rx) = kanal::bounded(10);
+        let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
+
+        let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
+
+        assert!(result.is_ok());
+
+        // Check that a sample was sent
+        let received = rx.recv().unwrap();
+        assert!(received.is_some());
+
+        let sample = received.unwrap();
+        assert_eq!(sample.source, "filesystem");
+        assert!(!sample.id.is_empty());
+        assert_eq!(sample.image.width, 1);
+        assert_eq!(sample.image.height, 1);
+        assert!(sample.attributes.is_empty());
+        assert!(sample.coca_embedding.is_empty());
+        assert!(sample.tags.is_empty());
+        assert!(sample.masks.is_empty());
+        assert!(sample.latents.is_empty());
+        assert!(sample.additional_images.is_empty());
+        assert_eq!(sample.duplicate_state, 0);
+    }
+
+    #[tokio::test]
+    async fn test_pull_sample_invalid_path() {
+        let (tx, rx) = kanal::bounded(10);
+        let sample_json = serde_json::Value::String("/nonexistent/path.png".to_string());
+
+        let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
+
+        assert!(result.is_err());
+
+        // No sample should be sent on error
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_async_pull_samples_basic() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create multiple test images
+        let mut image_paths = Vec::new();
+        for i in 0..3 {
+            let image_path = temp_dir.path().join(format!("test_{}.png", i));
+            create_test_image(&image_path);
+            image_paths.push(image_path.to_str().unwrap().to_string());
+        }
+
+        let (metadata_tx, metadata_rx) = kanal::bounded(10);
+        let (samples_tx, samples_rx) = kanal::bounded(10);
+
+        // Send image paths
+        for path in &image_paths {
+            metadata_tx
+                .send(serde_json::Value::String(path.clone()))
+                .unwrap();
+        }
+        metadata_tx.send(serde_json::Value::Null).unwrap(); // End marker
+
+        async_pull_samples(metadata_rx, samples_tx, None, false, false, 10).await;
+
+        // Check received samples
+        let mut received_samples = Vec::new();
+        while let Ok(sample_opt) = samples_rx.recv() {
+            if let Some(sample) = sample_opt {
+                received_samples.push(sample);
+            } else {
+                break; // End marker
+            }
+        }
+
+        assert_eq!(received_samples.len(), image_paths.len());
+        for sample in &received_samples {
+            assert_eq!(sample.source, "filesystem");
+            assert_eq!(sample.image.width, 1);
+            assert_eq!(sample.image.height, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_async_pull_samples_with_limit() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create more images than the limit
+        for i in 0..10 {
+            let image_path = temp_dir.path().join(format!("test_{}.png", i));
+            create_test_image(&image_path);
+        }
+
+        let (metadata_tx, metadata_rx) = kanal::bounded(20);
+        let (samples_tx, samples_rx) = kanal::bounded(20);
+
+        // Send more paths than the limit
+        for i in 0..10 {
+            let path = temp_dir.path().join(format!("test_{}.png", i));
+            metadata_tx
+                .send(serde_json::Value::String(
+                    path.to_str().unwrap().to_string(),
+                ))
+                .unwrap();
+        }
+        metadata_tx.send(serde_json::Value::Null).unwrap();
+
+        let limit = 3;
+        async_pull_samples(metadata_rx, samples_tx, None, false, false, limit).await;
+
+        // Count received samples
+        let mut count = 0;
+        while let Ok(sample_opt) = samples_rx.recv() {
+            if sample_opt.is_some() {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Should respect the limit (might be slightly more due to async processing)
+        assert!(count <= limit + 2); // Allow some buffer for async processing
+    }
+
+    #[test]
+    fn test_pull_samples_sync_wrapper() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.png");
+        create_test_image(&image_path);
+
+        let (metadata_tx, metadata_rx) = kanal::bounded(10);
+        let (samples_tx, samples_rx) = kanal::bounded(10);
+
+        // Send one image path
+        metadata_tx
+            .send(serde_json::Value::String(
+                image_path.to_str().unwrap().to_string(),
+            ))
+            .unwrap();
+        metadata_tx.send(serde_json::Value::Null).unwrap();
+
+        // Test the sync wrapper
+        pull_samples(metadata_rx, samples_tx, None, false, false, 1);
+
+        // Check that a sample was received
+        let sample_opt = samples_rx.recv().unwrap();
+        assert!(sample_opt.is_some());
+
+        let sample = sample_opt.unwrap();
+        assert_eq!(sample.source, "filesystem");
+
+        // Should receive end marker
+        let end_marker = samples_rx.recv().unwrap();
+        assert!(end_marker.is_none());
+    }
+}

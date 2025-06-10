@@ -13,9 +13,17 @@ use std::io::Cursor;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImageTransformConfig {
     pub crop_and_resize: bool,
+
+    #[serde(default)]
     pub default_image_size: u32,
+
+    #[serde(default)]
     pub downsampling_ratio: u32,
+
+    #[serde(default)]
     pub min_aspect_ratio: f64,
+
+    #[serde(default)]
     pub max_aspect_ratio: f64,
 
     #[serde(default)]
@@ -27,6 +35,23 @@ pub struct ImageTransformConfig {
 
 impl ImageTransformConfig {
     pub fn get_ar_aware_transform(&self) -> ARAwareTransform {
+        assert!(
+            self.crop_and_resize,
+            "Crop and resize must be enabled to create ARAwareTransform"
+        );
+        assert!(
+            self.default_image_size > 0,
+            "Default image size must be greater than 0"
+        );
+        assert!(
+            self.downsampling_ratio > 0,
+            "Downsampling ratio must be greater than 0"
+        );
+        assert!(
+            self.min_aspect_ratio > 0.0 && self.max_aspect_ratio >= self.min_aspect_ratio,
+            "Aspect ratio constraints are invalid"
+        );
+
         let target_image_sizes = build_image_size_list(
             self.default_image_size,
             self.downsampling_ratio,
@@ -382,5 +407,334 @@ mod tests {
             assert_eq!(w % 16, 0);
             assert_eq!(h % 16, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_image_to_payload_basic() {
+        let img = DynamicImage::new_rgb8(100, 50);
+        let result = image_to_payload(img.clone(), &None, &"".to_string(), false, false).await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.width, 100);
+        assert_eq!(payload.height, 50);
+        assert_eq!(payload.original_width, 100);
+        assert_eq!(payload.original_height, 50);
+        assert_eq!(payload.channels, 3);
+        assert_eq!(payload.bit_depth, 8);
+        assert!(!payload.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_image_to_payload_encoded() {
+        let img = DynamicImage::new_rgb8(100, 50);
+        let result = image_to_payload(
+            img.clone(),
+            &None,
+            &"".to_string(),
+            true, // encode_images = true
+            false,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.width, 100);
+        assert_eq!(payload.height, 50);
+        assert_eq!(payload.channels, -1); // Encoded images have channels = -1
+        assert!(!payload.data.is_empty());
+
+        // Should be able to decode the image back
+        let decoded = image::load_from_memory(&payload.data);
+        assert!(decoded.is_ok());
+        let decoded_img = decoded.unwrap();
+        assert_eq!(decoded_img.width(), 100);
+        assert_eq!(decoded_img.height(), 50);
+    }
+
+    #[tokio::test]
+    async fn test_image_to_payload_rgb8_conversion() {
+        let img = DynamicImage::new_rgba8(100, 50); // RGBA image
+        let result = image_to_payload(
+            img.clone(),
+            &None,
+            &"".to_string(),
+            false,
+            true, // image_to_rgb8 = true
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.channels, 3); // Should be converted to RGB
+        assert_eq!(payload.bit_depth, 8);
+    }
+
+    #[tokio::test]
+    async fn test_image_to_payload_with_transform() {
+        let img = DynamicImage::new_rgb8(300, 200);
+        let config = ImageTransformConfig {
+            crop_and_resize: true,
+            default_image_size: 224,
+            downsampling_ratio: 16,
+            min_aspect_ratio: 0.5,
+            max_aspect_ratio: 2.0,
+            pre_encode_images: false,
+            image_to_rgb8: false,
+        };
+        let transform = Some(config.get_ar_aware_transform());
+
+        let result = image_to_payload(
+            img.clone(),
+            &transform,
+            &"".to_string(), // Empty string means auto-detect aspect ratio
+            false,
+            false,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.original_width, 300);
+        assert_eq!(payload.original_height, 200);
+        // Transformed size should be different
+        assert_ne!(payload.width, 300);
+        assert_ne!(payload.height, 200);
+    }
+
+    #[test]
+    fn test_aspect_ratio_to_str() {
+        assert_eq!(aspect_ratio_to_str((100, 100)), "1.000");
+        assert_eq!(aspect_ratio_to_str((200, 100)), "2.000");
+        assert_eq!(aspect_ratio_to_str((100, 200)), "0.500");
+        assert_eq!(aspect_ratio_to_str((150, 100)), "1.500");
+    }
+
+    #[test]
+    fn test_image_transform_config_defaults() {
+        let config_json = r#"{
+            "crop_and_resize": true,
+            "default_image_size": 512,
+            "downsampling_ratio": 16,
+            "min_aspect_ratio": 0.75,
+            "max_aspect_ratio": 1.33
+        }"#;
+
+        let config: ImageTransformConfig = serde_json::from_str(config_json).unwrap();
+        assert!(config.crop_and_resize);
+        assert_eq!(config.default_image_size, 512);
+        assert_eq!(config.downsampling_ratio, 16);
+        assert_eq!(config.min_aspect_ratio, 0.75);
+        assert_eq!(config.max_aspect_ratio, 1.33);
+        assert!(!config.pre_encode_images); // default
+        assert!(!config.image_to_rgb8); // default
+    }
+
+    #[test]
+    fn test_image_transform_config_full() {
+        let config_json = r#"{
+            "crop_and_resize": true,
+            "default_image_size": 256,
+            "downsampling_ratio": 8,
+            "min_aspect_ratio": 0.5,
+            "max_aspect_ratio": 2.0,
+            "pre_encode_images": true,
+            "image_to_rgb8": true
+        }"#;
+
+        let config: ImageTransformConfig = serde_json::from_str(config_json).unwrap();
+        assert!(config.crop_and_resize);
+        assert_eq!(config.default_image_size, 256);
+        assert_eq!(config.downsampling_ratio, 8);
+        assert_eq!(config.min_aspect_ratio, 0.5);
+        assert_eq!(config.max_aspect_ratio, 2.0);
+        assert!(config.pre_encode_images);
+        assert!(config.image_to_rgb8);
+    }
+
+    #[test]
+    fn test_ar_aware_transform_creation() {
+        let config = ImageTransformConfig {
+            crop_and_resize: true,
+            default_image_size: 224,
+            downsampling_ratio: 16,
+            min_aspect_ratio: 0.5,
+            max_aspect_ratio: 2.0,
+            pre_encode_images: false,
+            image_to_rgb8: false,
+        };
+
+        let transform = config.get_ar_aware_transform();
+
+        // Should have aspect ratios within the specified range
+        assert!(!transform.aspect_ratios.is_empty());
+        for (ar, _) in &transform.aspect_ratios {
+            assert!(*ar >= 0.5);
+            assert!(*ar <= 2.0);
+        }
+
+        // Aspect ratios should be sorted
+        for i in 1..transform.aspect_ratios.len() {
+            assert!(transform.aspect_ratios[i - 1].0 <= transform.aspect_ratios[i].0);
+        }
+    }
+
+    #[test]
+    fn test_closest_aspect_ratio_exact_match() {
+        let config = ImageTransformConfig {
+            crop_and_resize: true,
+            default_image_size: 224,
+            downsampling_ratio: 16,
+            min_aspect_ratio: 0.5,
+            max_aspect_ratio: 2.0,
+            pre_encode_images: false,
+            image_to_rgb8: false,
+        };
+        let transform = config.get_ar_aware_transform();
+
+        // Test with square image (aspect ratio = 1.0)
+        let closest = transform.get_closest_aspect_ratio(100, 100);
+        assert_eq!(closest, "1.000");
+    }
+
+    #[test]
+    fn test_closest_aspect_ratio_edge_cases() {
+        let config = ImageTransformConfig {
+            crop_and_resize: true,
+            default_image_size: 224,
+            downsampling_ratio: 16,
+            min_aspect_ratio: 0.5,
+            max_aspect_ratio: 2.0,
+            pre_encode_images: false,
+            image_to_rgb8: false,
+        };
+        let transform = config.get_ar_aware_transform();
+
+        // Test with very wide image (should clamp to max aspect ratio)
+        let closest = transform.get_closest_aspect_ratio(1000, 100);
+        let ar: f64 = closest.parse().unwrap();
+        assert!(ar <= 2.0);
+
+        // Test with very tall image (should clamp to min aspect ratio)
+        let closest = transform.get_closest_aspect_ratio(100, 1000);
+        let ar: f64 = closest.parse().unwrap();
+        assert!(ar >= 0.5);
+    }
+
+    #[test]
+    fn test_build_image_size_list_square() {
+        let sizes = build_image_size_list(256, 16, 1.0, 1.0); // Only square aspect ratio
+        assert!(!sizes.is_empty());
+
+        for (w, h) in &sizes {
+            assert_eq!(w, h); // All should be square
+            assert_eq!(w % 16, 0); // Multiple of downsampling ratio
+            assert_eq!(h % 16, 0);
+        }
+    }
+
+    #[test]
+    fn test_build_image_size_list_wide_range() {
+        let sizes = build_image_size_list(512, 32, 0.25, 4.0); // Very wide range
+        assert!(!sizes.is_empty());
+
+        let mut min_ar = f64::INFINITY;
+        let mut max_ar = 0.0f64;
+
+        for (w, h) in &sizes {
+            let ar = *w as f64 / *h as f64;
+            min_ar = min_ar.min(ar);
+            max_ar = max_ar.max(ar);
+
+            assert_eq!(w % 32, 0);
+            assert_eq!(h % 32, 0);
+        }
+
+        // Should cover the requested range
+        assert!(min_ar <= 0.3); // Allow some tolerance
+        assert!(max_ar >= 3.5);
+    }
+
+    #[tokio::test]
+    async fn test_crop_and_resize_no_change_needed() {
+        let config = ImageTransformConfig {
+            crop_and_resize: true,
+            default_image_size: 224,
+            downsampling_ratio: 16,
+            min_aspect_ratio: 0.5,
+            max_aspect_ratio: 2.0,
+            pre_encode_images: false,
+            image_to_rgb8: false,
+        };
+        let transform = config.get_ar_aware_transform();
+
+        // Create an image that already has the target size
+        let img = DynamicImage::new_rgb8(224, 224);
+        let result = transform
+            .crop_and_resize(&img, Some(&"1.000".to_string()))
+            .await;
+
+        // Should return the same image since no resize is needed
+        assert_eq!(result.width(), 224);
+        assert_eq!(result.height(), 224);
+    }
+
+    #[test]
+    fn test_image_to_dyn_image_rgb() {
+        let width = 10;
+        let height = 10;
+        let mut img = Image::new(width, height, fr::PixelType::U8x3);
+
+        // Fill with some test data
+        let buffer = img.buffer_mut();
+        for i in 0..buffer.len() {
+            buffer[i] = (i % 256) as u8;
+        }
+
+        let dyn_img = image_to_dyn_image(&img);
+        assert_eq!(dyn_img.width(), width);
+        assert_eq!(dyn_img.height(), height);
+        assert_eq!(dyn_img.color(), image::ColorType::Rgb8);
+    }
+
+    #[test]
+    fn test_image_to_dyn_image_rgba() {
+        let width = 5;
+        let height = 5;
+        let mut img = Image::new(width, height, fr::PixelType::U8x4);
+
+        let buffer = img.buffer_mut();
+        for i in 0..buffer.len() {
+            buffer[i] = ((i * 63) % 256) as u8;
+        }
+
+        let dyn_img = image_to_dyn_image(&img);
+        assert_eq!(dyn_img.width(), width);
+        assert_eq!(dyn_img.height(), height);
+        assert_eq!(dyn_img.color(), image::ColorType::Rgba8);
+    }
+
+    #[test]
+    fn test_image_to_dyn_image_grayscale() {
+        let width = 8;
+        let height = 8;
+        let mut img = Image::new(width, height, fr::PixelType::U8);
+
+        let buffer = img.buffer_mut();
+        for i in 0..buffer.len() {
+            buffer[i] = (i % 256) as u8;
+        }
+
+        let dyn_img = image_to_dyn_image(&img);
+        assert_eq!(dyn_img.width(), width);
+        assert_eq!(dyn_img.height(), height);
+        assert_eq!(dyn_img.color(), image::ColorType::L8);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported pixel type")]
+    fn test_image_to_dyn_image_unsupported() {
+        let img = Image::new(1, 1, fr::PixelType::U16);
+        image_to_dyn_image(&img);
     }
 }

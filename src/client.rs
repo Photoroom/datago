@@ -45,6 +45,8 @@ impl DatagoClient {
                     image_to_rgb8 = image_config.image_to_rgb8;
                 }
 
+                assert!(config.limit > 0, "Limit must be greater than 0");
+
                 DatagoClient {
                     is_started: false,
                     source_type: config.source_type,
