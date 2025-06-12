@@ -1,7 +1,7 @@
 use crate::client::DatagoClient;
 use crate::structs::DatagoEngine;
 use crate::worker_files;
-use ahash::AHasher;
+use fasthash::Murmur3HasherExt;
 use kanal::bounded;
 use log::{debug, info};
 use rand::seq::SliceRandom;
@@ -25,10 +25,10 @@ pub struct SourceFileConfig {
 
 // Hash function to be able to dispatch the samples to the correct rank
 
-fn hash(filename: &str) -> u64 {
-    let mut hasher = AHasher::default();
-    filename.hash(&mut hasher);
-    hasher.finish()
+fn hash<T: Hash>(t: &T) -> u64 {
+    let mut s: Murmur3HasherExt = Default::default();
+    t.hash(&mut s);
+    s.finish()
 }
 
 fn enumerate_files(
@@ -84,12 +84,6 @@ fn enumerate_files(
         // If world_size is not 0, we need to dispatch the samples to the correct rank
         if source_config.world_size > 1 {
             let hash = hash(&file_name);
-            println!(
-                "hash {} mod rank: {} - rank {}",
-                hash,
-                hash % source_config.world_size as u64,
-                source_config.rank,
-            );
             let target_rank = (hash % source_config.world_size as u64) as usize;
             if target_rank != source_config.rank {
                 continue;
