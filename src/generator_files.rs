@@ -1,11 +1,12 @@
 use crate::client::DatagoClient;
 use crate::structs::DatagoEngine;
 use crate::worker_files;
+use ahash::AHasher;
 use kanal::bounded;
 use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::thread;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,11 +24,11 @@ pub struct SourceFileConfig {
 }
 
 // Hash function to be able to dispatch the samples to the correct rank
-fn hash<T: Hash>(t: &T) -> u64 {
-    use std::hash::Hasher;
-    let mut s = std::collections::hash_map::DefaultHasher::new();
-    t.hash(&mut s);
-    s.finish()
+
+fn hash(filename: &str) -> u64 {
+    let mut hasher = AHasher::default();
+    filename.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn enumerate_files(
@@ -83,6 +84,12 @@ fn enumerate_files(
         // If world_size is not 0, we need to dispatch the samples to the correct rank
         if source_config.world_size > 1 {
             let hash = hash(&file_name);
+            println!(
+                "hash {} mod rank: {} - rank {}",
+                hash,
+                hash % source_config.world_size as u64,
+                source_config.rank,
+            );
             let target_rank = (hash % source_config.world_size as u64) as usize;
             if target_rank != source_config.rank {
                 continue;
@@ -226,7 +233,6 @@ mod tests {
     fn create_test_images(dir: &Path) -> Vec<String> {
         let extensions = ["jpg", "png", "bmp", "gif", "JPEG"];
         let mut files = Vec::new();
-
         for (i, ext) in extensions.iter().enumerate() {
             let filename = format!("test_image_{}.{}", i, ext);
             let filepath = dir.join(&filename);
