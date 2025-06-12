@@ -61,7 +61,13 @@ async fn image_from_url(
     // Retry on the fetch and decode a few times, could happen that we get a broken packet
     for _ in 0..retries {
         if let Some(bytes) = bytes_from_url(client, url, None).await {
-            return image::load_from_memory(&bytes);
+            match image::load_from_memory(&bytes) {
+                Ok(image) => return Ok(image),
+                Err(e) => {
+                    warn!("Failed to decode image from URL: {}. Retrying", url);
+                    warn!("Error: {:?}", e);
+                }
+            }
         }
     }
     Err(image::ImageError::IoError(std::io::Error::new(
