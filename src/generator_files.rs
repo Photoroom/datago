@@ -1,11 +1,11 @@
 use crate::client::DatagoClient;
 use crate::structs::DatagoEngine;
 use crate::worker_files;
-use fasthash::Murmur3HasherExt;
 use kanal::bounded;
 use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::thread;
 
@@ -25,10 +25,15 @@ pub struct SourceFileConfig {
 
 // Hash function to be able to dispatch the samples to the correct rank
 
+// The seed ensures consistent hashing across different runs,
+// essentially acting as a deterministic salt
+const HASH_SEED: u64 = 0x51_73_b3_c3_7f_d9_2e_a1;
+
 fn hash<T: Hash>(t: &T) -> u64 {
-    let mut s: Murmur3HasherExt = Default::default();
-    t.hash(&mut s);
-    s.finish()
+    let mut hasher = DefaultHasher::new();
+    HASH_SEED.hash(&mut hasher); // Add seed first
+    t.hash(&mut hasher); // Then hash the actual data
+    hasher.finish()
 }
 
 fn enumerate_files(
