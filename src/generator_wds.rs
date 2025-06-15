@@ -71,10 +71,15 @@ async fn pull_tarballs(
         Some(config.auth_token.as_str())
     };
     let url = url.as_str().unwrap();
+    let timeout = std::time::Duration::from_secs(120);
 
     // We use a shared client to make it possible to limit the number of outstanding connections
     let _permit = shared_client.semaphore.acquire();
-    let mut request_builder = shared_client.client.get(url);
+    let mut request_builder = shared_client
+        .client
+        .get(url)
+        .timeout(timeout)
+        .header(reqwest::header::CONNECTION, "keep-alive");
     if let Some(token) = auth_token {
         request_builder = request_builder.bearer_auth(token);
     }
@@ -245,6 +250,8 @@ async fn get_url_list(
     config: &SourceWebDatasetConfig,
 ) -> Result<Vec<serde_json::Value>, String> {
     let _permit = shared_client.semaphore.acquire();
+    let client = &shared_client.client;
+    let timeout = std::time::Duration::from_secs(120);
 
     // Either ping the url to get the pages, or use the {...} syntax
     if config.url.contains("{") {
@@ -258,20 +265,19 @@ async fn get_url_list(
 
         Ok(urls
             .iter()
-            .map(|url| serde_json::Value::String(url.clone()))
+            .map(|url| serde_json::Value::String(url.to_string()))
             .collect())
     } else {
         assert!(config.url.contains("https://storage.googleapis.com/"));
 
         // Given the url, list all the available webdataset files
-        let request = reqwest::Request::new(
-            reqwest::Method::GET,
-            Url::parse(&config.url).map_err(|e| format!("Failed parsing url: {}", e))?,
-        );
+        let request = client
+            .get(Url::parse(&config.url).map_err(|e| format!("Failed parsing url: {}", e))?)
+            .timeout(timeout)
+            .header(reqwest::header::CONNECTION, "keep-alive");
 
-        let response = shared_client
-            .client
-            .execute(request)
+        let response = request
+            .send()
             .await
             .map_err(|e| format!("Failed parsing reply: {}", e))?;
 
@@ -279,6 +285,7 @@ async fn get_url_list(
             .text()
             .await
             .map_err(|e| format!("Failed parsing reply: {}", e))?;
+
         let response_json: serde_json::Value =
             serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
 
@@ -372,8 +379,7 @@ async fn tasks_from_shards(
 
             if join_error.is_some() {
                 // If we had an error, we log it and return an error
-                warn!("dispatch_shards: one of the tasks failed: {:?}", join_error);
-                return Err(join_error.unwrap().to_string());
+                return Err(format!("{:?}", join_error));
             }
 
             // Bookkeeping and report

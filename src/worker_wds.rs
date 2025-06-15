@@ -169,10 +169,19 @@ async fn async_deserialize_samples(
         // If we have enough tasks, we'll wait for the older one to finish
         if tasks.len() >= max_tasks {
             if let Some(result) = tasks.join_next().await {
+                // There are two cascading error cases: we could fail to join, or the task could have failed on its own
+                // We need to catch and return both
                 match result {
-                    Ok(_) => count += 1,
+                    Ok(r) => {
+                        if let Err(e) = r {
+                            let message =
+                                format!("dispatch_shards: task failed with error: {:?}", e);
+                            join_error = Some(message);
+                            break; // Stop submitting new tasks if one failed already
+                        }
+                    }
                     Err(e) => {
-                        join_error = Some(format!("Task failed: {}", e));
+                        join_error = Some(format!("Task failed to join: {}", e));
                         break;
                     }
                 }
