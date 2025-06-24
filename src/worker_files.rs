@@ -426,6 +426,69 @@ mod tests {
         assert!(count <= limit + 2); // Allow some buffer for async processing
     }
 
+    fn create_test_webp_image(path: &std::path::Path) {
+        // Create a simple 2x2 WebP image
+        let img = image::DynamicImage::new_rgb8(2, 2);
+        img.save_with_format(path, image::ImageFormat::WebP)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_image_from_path_webp() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.webp");
+        create_test_webp_image(&image_path);
+
+        let result = image_from_path(image_path.to_str().unwrap()).await;
+        assert!(result.is_ok());
+
+        let img = result.unwrap();
+        assert_eq!(img.width(), 2);
+        assert_eq!(img.height(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_image_payload_from_path_webp() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.webp");
+        create_test_webp_image(&image_path);
+
+        let result =
+            image_payload_from_path(image_path.to_str().unwrap(), &None, false, false).await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.width, 2);
+        assert_eq!(payload.height, 2);
+        assert_eq!(payload.original_width, 2);
+        assert_eq!(payload.original_height, 2);
+        assert!(!payload.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pull_sample_webp() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.webp");
+        create_test_webp_image(&image_path);
+
+        let (tx, rx) = kanal::bounded(10);
+        let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
+
+        let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
+
+        assert!(result.is_ok());
+
+        // Check that a sample was sent
+        let received = rx.recv().unwrap();
+        assert!(received.is_some());
+
+        let sample = received.unwrap();
+        assert_eq!(sample.source, "filesystem");
+        assert!(!sample.id.is_empty());
+        assert_eq!(sample.image.width, 2);
+        assert_eq!(sample.image.height, 2);
+    }
+
     #[test]
     fn test_pull_samples_sync_wrapper() {
         let temp_dir = TempDir::new().unwrap();

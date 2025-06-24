@@ -42,9 +42,7 @@ fn enumerate_files(
     limit: usize,
 ) {
     // Get an iterator over the files in the root path
-    let supported_extensions = [
-        "jpg", "jpeg", "png", "bmp", "gif", "JPG", "JPEG", "PNG", "BMP", "GIF",
-    ];
+    let supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
 
     let files = walkdir::WalkDir::new(&source_config.root_path)
         .follow_links(false)
@@ -57,7 +55,7 @@ fn enumerate_files(
             let file_name = path.to_string_lossy().into_owned();
             if supported_extensions
                 .iter()
-                .any(|&ext| file_name.ends_with(ext))
+                .any(|&ext| file_name.to_lowercase().ends_with(ext))
             {
                 Some(entry)
             } else {
