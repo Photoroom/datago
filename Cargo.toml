@@ -1,7 +1,7 @@
 [package]
 name = "datago"
 edition = "2021"
-version = "2025.6.4"
+version = "2025.6.5"
 
 [lib]
 # exposed by pyo3
@@ -14,7 +14,7 @@ name = "datago"
 path = "src/main.rs"
 
 [dependencies]
-image = { version = "0.25.6", features = ["png", "jpeg"], default-features = false }
+image = { version = "0.25.6", features = ["png", "jpeg", "webp", "default-formats"] }
 reqwest = { version = "0.12.15", features = ["blocking", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
