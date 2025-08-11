@@ -130,9 +130,9 @@ struct DbRequest {
 impl DbRequest {
     async fn get_http_request(&self, api_url: &str, api_key: &str) -> reqwest::Request {
         let mut url = if self.random_sampling {
-            Url::parse(&format!("{}images/random/", api_url))
+            Url::parse(&format!("{api_url}images/random/"))
         } else {
-            Url::parse(&format!("{}images/", api_url))
+            Url::parse(&format!("{api_url}images/"))
         }
         .unwrap(); // Cannot survive without the URL, that's a panic
 
@@ -183,7 +183,7 @@ impl DbRequest {
         let mut req = reqwest::Request::new(reqwest::Method::GET, url);
         req.headers_mut().append(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Token {}", api_key))
+            HeaderValue::from_str(&format!("Token {api_key}"))
                 .expect("Couldn't parse the provided API key"),
         );
 
@@ -276,7 +276,7 @@ fn build_request(source_config: SourceDBConfig) -> DbRequest {
         "Rank cannot be greater than or equal to world size"
     );
 
-    debug!("Fields: {}", fields);
+    debug!("Fields: {fields}");
     debug!(
         "Rank: {}, World size: {}",
         source_config.rank, source_config.world_size
@@ -363,7 +363,7 @@ async fn async_pull_and_dispatch_pages(
     let mut headers = HeaderMap::new();
     headers.insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&format!("Token  {}", api_key)).unwrap(),
+        HeaderValue::from_str(&format!("Token  {api_key}")).unwrap(),
     );
 
     let db_request = build_request(source_config.clone());
@@ -380,7 +380,7 @@ async fn async_pull_and_dispatch_pages(
             if let Some(next) = response_json.get("next") {
                 next_url = next;
             } else {
-                debug!("No next URL in the response {:?}", response_json);
+                debug!("No next URL in the response {response_json:?}");
             }
         }
         Err(e) => {
@@ -420,7 +420,7 @@ async fn async_pull_and_dispatch_pages(
                 }
             }
             None => {
-                debug!("No results in the response: {:?}", response_json);
+                debug!("No results in the response: {response_json:?}");
             }
         }
 
@@ -455,8 +455,7 @@ async fn async_pull_and_dispatch_pages(
 
     // Either we don't have any more samples or we have reached the limit
     debug!(
-        "pull_and_dispatch_pages: total samples requested: {}. page samples served {}",
-        limit, count
+        "pull_and_dispatch_pages: total samples requested: {limit}. page samples served {count}"
     );
 
     // Send an empty value to signal the end of the stream

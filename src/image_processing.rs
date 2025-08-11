@@ -59,10 +59,7 @@ impl ImageTransformConfig {
             self.max_aspect_ratio,
         );
 
-        debug!(
-            "Cropping and resizing images. Target image sizes:\n{:?}\n",
-            target_image_sizes
-        );
+        debug!("Cropping and resizing images. Target image sizes:\n{target_image_sizes:?}\n");
 
         let mut aspect_ratio_to_size = std::collections::HashMap::new();
         for img_size in &target_image_sizes {
@@ -325,12 +322,7 @@ pub async fn image_to_payload(
             image.height(),
             image.color().into(),
         )
-        .map_err(|e| {
-            image::ImageError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })?;
+        .map_err(std::io::Error::other)?;
 
         channels = -1; // Signal the fact that the image is encoded
     } else {
@@ -687,8 +679,8 @@ mod tests {
 
         // Fill with some test data
         let buffer = img.buffer_mut();
-        for i in 0..buffer.len() {
-            buffer[i] = (i % 256) as u8;
+        for (i, item) in buffer.iter_mut().enumerate() {
+            *item = (i % 256) as u8;
         }
 
         let dyn_img = image_to_dyn_image(&img);
@@ -704,8 +696,8 @@ mod tests {
         let mut img = Image::new(width, height, fr::PixelType::U8x4);
 
         let buffer = img.buffer_mut();
-        for i in 0..buffer.len() {
-            buffer[i] = ((i * 63) % 256) as u8;
+        for (i, item) in buffer.iter_mut().enumerate() {
+            *item = ((i * 63) % 256) as u8;
         }
 
         let dyn_img = image_to_dyn_image(&img);
@@ -721,8 +713,8 @@ mod tests {
         let mut img = Image::new(width, height, fr::PixelType::U8);
 
         let buffer = img.buffer_mut();
-        for i in 0..buffer.len() {
-            buffer[i] = (i % 256) as u8;
+        for (i, item) in buffer.iter_mut().enumerate() {
+            *item = (i % 256) as u8;
         }
 
         let dyn_img = image_to_dyn_image(&img);

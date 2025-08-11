@@ -119,7 +119,7 @@ fn main() {
         "samples_buffer_size": samples_buffer_size
     });
 
-    info!("{}", config);
+    info!("{config}");
 
     let mut client = client::DatagoClient::new(config.to_string());
 
@@ -141,7 +141,7 @@ fn main() {
             }
             if save_samples {
                 let img = image::load_from_memory(&sample.image.data).unwrap();
-                let filename = format!("sample_{:?}.jpg", num_samples_received);
+                let filename = format!("sample_{num_samples_received:?}.jpg");
                 img.save(filename).unwrap();
             }
             num_samples_received += 1;
@@ -160,18 +160,15 @@ fn main() {
         }
     }
     client.stop();
-    info!(
-        "All samples processed. Got {:?} samples\n",
-        num_samples_received
-    );
+    info!("All samples processed. Got {num_samples_received:?} samples\n");
 
     // Report the per-bucket occupancy, good sanity check
     if crop_and_resize {
         let mut size_buckets_str = String::from("Size buckets:\n");
         for (size, count) in size_buckets.iter() {
-            size_buckets_str.push_str(&format!("{}: {}\n", size, count));
+            size_buckets_str.push_str(&format!("{size}: {count}\n"));
         }
-        info!("{}", size_buckets_str);
+        info!("{size_buckets_str}");
     }
 
     let elapsed_secs = start_time.elapsed().as_secs_f64();

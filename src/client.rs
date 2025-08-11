@@ -61,7 +61,7 @@ impl DatagoClient {
                 }
             }
             Err(e) => {
-                panic!("Failed to parse config: {}", e);
+                panic!("Failed to parse config: {e}");
             }
         }
     }
@@ -120,7 +120,7 @@ impl DatagoClient {
                     }
                 },
                 Err(e) => {
-                    warn!("Timeout waiting for sample, stopping the client. {}", e);
+                    warn!("Timeout waiting for sample, stopping the client. {e}");
                     self.stop();
                     None
                 }
@@ -514,7 +514,7 @@ mod tests {
         let mut config = get_test_config();
         let tag1 = "photo";
         let tag2 = "graphic";
-        config["source_config"]["tags_ne_all"] = format!("{},{}", tag1, tag2).into();
+        config["source_config"]["tags_ne_all"] = format!("{tag1},{tag2}").into();
         let mut client = DatagoClient::new(config.to_string());
 
         let sample = client.get_sample();
@@ -599,7 +599,7 @@ mod tests {
         config["source_config"]["sources_ne"] = "LAION_ART".into();
         config["limit"] = json!(limit);
 
-        debug!("{}", config);
+        debug!("{config}");
         let mut client = DatagoClient::new(config.to_string());
 
         for _ in 0..limit {

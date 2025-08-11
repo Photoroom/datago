@@ -5,8 +5,6 @@ use kanal::bounded;
 use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::thread;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,19 +21,6 @@ pub struct SourceFileConfig {
     pub world_size: usize,
 }
 
-// Hash function to be able to dispatch the samples to the correct rank
-
-// The seed ensures consistent hashing across different runs,
-// essentially acting as a deterministic salt
-const HASH_SEED: u64 = 0x51_73_b3_c3_7f_d9_2e_a1;
-
-fn hash<T: Hash>(t: &T) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    HASH_SEED.hash(&mut hasher); // Add seed first
-    t.hash(&mut hasher); // Then hash the actual data
-    hasher.finish()
-}
-
 fn enumerate_files(
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceFileConfig,
@@ -49,6 +34,7 @@ fn enumerate_files(
         .into_iter()
         .filter_map(|e| e.ok());
 
+    // We need to materialize the file list to be able to shuffle it
     let mut files_list: Vec<walkdir::DirEntry> = files
         .filter_map(|entry| {
             let path = entry.path();
@@ -65,13 +51,19 @@ fn enumerate_files(
         .collect();
 
     // If shuffle is set, shuffle the files
-    let files_iter = if source_config.random_sampling {
+    if source_config.random_sampling {
         let mut rng = rand::rng(); // Get a random number generator, thread local. We don´t seed, so typically won't be reproducible
-        files_list.shuffle(&mut rng);
-        files_list.into_iter()
-    } else {
-        files_list.into_iter()
-    };
+        files_list.shuffle(&mut rng); // This happens in place
+    }
+
+    // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
+    if source_config.world_size > 1 {
+        let chunk_size =
+            (files_list.len() as f64 / source_config.world_size as f64).ceil() as usize;
+        let start = source_config.rank * chunk_size;
+        let end = std::cmp::min(start + chunk_size, files_list.len());
+        files_list = files_list[start..end].to_vec();
+    }
 
     // Iterate over the files and send the paths as they come
     let mut count = 0;
@@ -81,17 +73,8 @@ fn enumerate_files(
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
 
     // Build a page from the files iterator
-    for entry in files_iter {
-        let file_name = entry.path().to_str().unwrap().to_string();
-
-        // If world_size is not 0, we need to dispatch the samples to the correct rank
-        if source_config.world_size > 1 {
-            let hash = hash(&file_name);
-            let target_rank = (hash % source_config.world_size as u64) as usize;
-            if target_rank != source_config.rank {
-                continue;
-            }
-        }
+    for entry in files_list.iter() {
+        let file_name: String = entry.path().to_str().unwrap().to_string();
 
         if samples_metadata_tx
             .send(serde_json::Value::String(file_name))
@@ -110,10 +93,7 @@ fn enumerate_files(
     }
 
     // Either we don't have any more samples or we have reached the limit
-    debug!(
-        "ping_pages: total samples requested: {}. page samples served {}",
-        limit, count
-    );
+    debug!("ping_pages: total samples requested: {limit}. page samples served {count}");
 
     // Send an empty value to signal the end of the stream
     match samples_metadata_tx.send(serde_json::Value::Null) {
@@ -183,22 +163,6 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_hash_function() {
-        let str1 = "test_string1";
-        let str2 = "test_string2";
-        let str3 = "test_string1"; // Same as str1
-
-        let hash1 = hash(&str1);
-        let hash2 = hash(&str2);
-        let hash3 = hash(&str3);
-
-        // Same input should produce same hash
-        assert_eq!(hash1, hash3);
-        // Different inputs should likely produce different hashes
-        assert_ne!(hash1, hash2);
-    }
-
-    #[test]
     fn test_source_file_config_defaults() {
         let config_json = r#"{
             "root_path": "/tmp/test"
@@ -231,7 +195,7 @@ mod tests {
         let extensions = ["jpg", "png", "bmp", "gif", "JPEG"];
         let mut files = Vec::new();
         for (i, ext) in extensions.iter().enumerate() {
-            let filename = format!("test_image_{}.{}", i, ext);
+            let filename = format!("test_image_{i}.{ext}");
             let filepath = dir.join(&filename);
             fs::write(&filepath, "fake_image_data").unwrap();
             files.push(filepath.to_string_lossy().to_string());

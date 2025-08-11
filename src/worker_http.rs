@@ -64,14 +64,13 @@ async fn image_from_url(
             match image::load_from_memory(&bytes) {
                 Ok(image) => return Ok(image),
                 Err(e) => {
-                    warn!("Failed to decode image from URL: {}. Retrying", url);
-                    warn!("Error: {:?}", e);
+                    warn!("Failed to decode image from URL: {url}. Retrying");
+                    warn!("Error: {e:?}");
                 }
             }
         }
     }
-    Err(image::ImageError::IoError(std::io::Error::new(
-        std::io::ErrorKind::Other,
+    Err(image::ImageError::IoError(std::io::Error::other(
         "Failed to fetch image bytes",
     )))
 }
@@ -88,14 +87,11 @@ async fn payload_from_url(
                 return Ok(bytes);
             }
             None => {
-                warn!("Failed to get bytes from URL: {}. Retrying", url);
+                warn!("Failed to get bytes from URL: {url}. Retrying");
             }
         }
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        "Failed to fetch bytes buffer",
-    ))
+    Err(std::io::Error::other("Failed to fetch bytes buffer"))
 }
 
 async fn image_payload_from_url(
@@ -157,8 +153,8 @@ async fn pull_sample(
                 Some(payload)
             }
             Err(e) => {
-                error!("Failed to get image from URL: {}\n {:?}", image_url, e);
-                error!("Error: {:?}", e);
+                error!("Failed to get image from URL: {image_url}\n {e:?}");
+                error!("Error: {e:?}");
                 return Err(());
             }
         };
@@ -282,7 +278,7 @@ async fn async_pull_samples(
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
     let max_tasks = min(num_cpus::get(), limit);
-    debug!("Using {} tasks in the async threadpool", max_tasks);
+    debug!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
@@ -314,7 +310,7 @@ async fn async_pull_samples(
                 }
                 Some(Err(e)) => {
                     // Task failed, log the error
-                    error!("file_worker: task failed with error: {:?}", e);
+                    error!("file_worker: task failed with error: {e}");
                     join_error = Some(e);
                     break;
                 }
@@ -337,7 +333,7 @@ async fn async_pull_samples(
                 count += 1;
             }
             Err(e) => {
-                error!("dispatch_shards: task failed with error: {:?}", e);
+                error!("dispatch_shards: task failed with error: {e}");
                 if join_error.is_none() {
                     join_error = Some(e);
                 }
@@ -345,7 +341,7 @@ async fn async_pull_samples(
         }
     }
 
-    debug!("http_worker: total samples sent: {}\n", count);
+    debug!("http_worker: total samples sent: {count}\n");
 
     // Signal the end of the stream
     let _ = shareable_channel_tx.send(None); // Channel could have been closed by a .stop() call
@@ -387,7 +383,7 @@ pub fn pull_samples(
                     debug!("http_worker: all samples pulled successfully");
                 }
                 Err(e) => {
-                    error!("http_worker: error pulling samples: {:?}", e);
+                    error!("http_worker: error pulling samples: {e}");
                 }
             }
         });

@@ -95,9 +95,7 @@ async fn pull_tarballs(
     // Convert the byte stream to an AsyncRead
     let byte_stream = response.bytes_stream();
     let stream_reader =
-        StreamReader::new(byte_stream.map(|res_bytes| {
-            res_bytes.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        }));
+        StreamReader::new(byte_stream.map(|res_bytes| res_bytes.map_err(std::io::Error::other)));
 
     // Wrap in BufReader for the async Tar reader
     let buf_reader = BufReader::new(stream_reader);
@@ -107,18 +105,18 @@ async fn pull_tarballs(
 
     let mut entries = archive
         .entries()
-        .map_err(|e| format!("Failed to fetch TarballSample: {}", e))?; // This returns a stream
+        .map_err(|e| format!("Failed to fetch TarballSample: {e}"))?; // This returns a stream
 
     let mut current_sample_key: Option<String> = None;
     let mut current_files_for_sample = TarballSample::new(url.to_string());
 
     while let Some(entry_result) = entries.next().await {
         let mut entry =
-            entry_result.map_err(|e| format!("Failed to read TarballSample entry: {}", e))?;
+            entry_result.map_err(|e| format!("Failed to read TarballSample entry: {e}"))?;
 
         let header_path = entry
             .path()
-            .map_err(|e| format!("Error considering TarballSample content {}", e))?
+            .map_err(|e| format!("Error considering TarballSample content {e}"))?
             .into_owned();
         let filename = header_path.to_string_lossy().into_owned();
 
@@ -172,7 +170,7 @@ async fn pull_tarballs(
         entry
             .read_to_end(&mut buffer)
             .await
-            .map_err(|e| format!("Failed to read TarballSample {}", e))?; // Read the content of the current file
+            .map_err(|e| format!("Failed to read TarballSample {e}"))?; // Read the content of the current file
 
         current_files_for_sample.add(BinaryFile { filename, buffer });
         debug!(
@@ -191,10 +189,7 @@ async fn pull_tarballs(
         return Err("Channel closed".into());
     }
 
-    debug!(
-        "dispatch_shards (streaming): finished processing TarballSample {}",
-        url
-    );
+    debug!("dispatch_shards (streaming): finished processing TarballSample {url}");
     Ok(())
 }
 
@@ -221,10 +216,7 @@ async fn pull_tarballs_task(
             }
             Err(e) => {
                 attempt += 1;
-                debug!(
-                    "Error pulling TarballSample: {}. Attempt {}/{}",
-                    e, attempt, retries
-                );
+                debug!("Error pulling TarballSample: {e}. Attempt {attempt}/{retries}");
                 if samples_metadata_tx.is_closed() {
                     debug!(
                         "dispatch_shards: samples_metadata_tx channel closed, stopping retries."
@@ -235,8 +227,7 @@ async fn pull_tarballs_task(
         }
     }
     Err(format!(
-        "Failed to pull TarballSample after {} attempts",
-        retries
+        "Failed to pull TarballSample after {retries} attempts"
     ))
 }
 
@@ -266,19 +257,19 @@ async fn get_url_list(
         // Given the url, list all the available webdataset files
         let request = reqwest::Request::new(
             reqwest::Method::GET,
-            Url::parse(&config.url).map_err(|e| format!("Failed parsing url: {}", e))?,
+            Url::parse(&config.url).map_err(|e| format!("Failed parsing url: {e}"))?,
         );
 
         let response = shared_client
             .client
             .execute(request)
             .await
-            .map_err(|e| format!("Failed parsing reply: {}", e))?;
+            .map_err(|e| format!("Failed parsing reply: {e}"))?;
 
         let response_text = response
             .text()
             .await
-            .map_err(|e| format!("Failed parsing reply: {}", e))?;
+            .map_err(|e| format!("Failed parsing reply: {e}"))?;
         let response_json: serde_json::Value =
             serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
 
@@ -336,7 +327,7 @@ async fn tasks_from_shards(
                                 }
                                 Err(e) => {
                                     // Logging as debug, could be that channels are closed
-                                    debug!("dispatch_shards: task returned error: {:?}", e);
+                                    debug!("dispatch_shards: task returned error: {e:?}");
                                     join_error = Some(e);
                                     break;
                                 }
@@ -361,7 +352,7 @@ async fn tasks_from_shards(
                         count += 1;
                     }
                     Err(e) => {
-                        debug!("dispatch_shards: task returned error: {:?}", e);
+                        debug!("dispatch_shards: task returned error: {e}");
                         // Note that we only keep the first error, which is probably the most relevant
                         if join_error.is_none() {
                             join_error = Some(e);
@@ -372,7 +363,7 @@ async fn tasks_from_shards(
 
             if join_error.is_some() {
                 // If we had an error, we log it and return an error
-                warn!("dispatch_shards: one of the tasks failed: {:?}", join_error);
+                warn!("dispatch_shards: one of the tasks failed: {join_error:?}");
                 return Err(join_error.unwrap().to_string());
             }
 
@@ -380,7 +371,7 @@ async fn tasks_from_shards(
             if count == 0 {
                 warn!("No items found in the response");
             }
-            debug!("Served {} items from the bucket", count);
+            debug!("Served {count} items from the bucket");
 
             // Send an empty value to signal the end of the stream
             if samples_metadata_tx
@@ -393,7 +384,7 @@ async fn tasks_from_shards(
             Ok(response_json)
         }
         Err(e) => {
-            warn!("Failed to get URL list: {}", e);
+            warn!("Failed to get URL list: {e}");
             Err(e) // Return a JoinError with the error message
         }
     }
@@ -421,7 +412,7 @@ fn query_shards_and_dispatch(
                     debug!("query_shards_and_dispatch: finished processing all shards");
                 }
                 Err(e) => {
-                    debug!("query_shards_and_dispatch: ended with : {:?}", e);
+                    debug!("query_shards_and_dispatch: ended with : {e:?}");
                 }
             }
         });
@@ -542,7 +533,7 @@ mod tests {
                 }
             }
 
-            debug!("Received {} items", count);
+            debug!("Received {count} items");
             let _ = samples_meta_rx.close();
             feeder.join().expect("Feeder thread panicked");
 
@@ -593,7 +584,7 @@ mod tests {
                     break;
                 }
             }
-            info!("Received {} items", count);
+            info!("Received {count} items");
             assert!(count >= limit, "Not enough items found in the bucket");
             client.stop();
 
@@ -650,7 +641,7 @@ mod tests {
                     break;
                 }
             }
-            info!("Received {} items", count);
+            info!("Received {count} items");
             client.stop();
 
             samples
