@@ -59,9 +59,13 @@ fn enumerate_files(
     // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
     if source_config.world_size > 1 {
         let chunk_size =
-            (files_list.len() as f64 / source_config.world_size as f64).ceil() as usize;
+            (files_list.len() as f64 / source_config.world_size as f64).floor() as usize;
         let start = source_config.rank * chunk_size;
-        let end = std::cmp::min(start + chunk_size, files_list.len());
+        let mut end = start + chunk_size;
+        if source_config.rank == (source_config.world_size - 1) {
+            // Add the remainder of the chunks
+            end += files_list.len() % source_config.world_size;
+        }
         files_list = files_list[start..end].to_vec();
     }
 
@@ -191,14 +195,19 @@ mod tests {
         assert_eq!(config.world_size, 4);
     }
 
-    fn create_test_images(dir: &Path) -> Vec<String> {
+    fn create_test_images(dir: &Path, min_num_files: usize) -> Vec<String> {
         let extensions = ["jpg", "png", "bmp", "gif", "JPEG"];
         let mut files = Vec::new();
-        for (i, ext) in extensions.iter().enumerate() {
-            let filename = format!("test_image_{i}.{ext}");
-            let filepath = dir.join(&filename);
-            fs::write(&filepath, "fake_image_data").unwrap();
-            files.push(filepath.to_string_lossy().to_string());
+        let mut n_files = 0;
+
+        while n_files < min_num_files {
+            for (i, ext) in extensions.iter().enumerate() {
+                let filename = format!("test_image_{n_files}_{i}.{ext}");
+                let filepath = dir.join(&filename);
+                fs::write(&filepath, "fake_image_data").unwrap();
+                files.push(filepath.to_string_lossy().to_string());
+                n_files += 1;
+            }
         }
 
         // Create a non-image file that should be ignored
@@ -212,8 +221,8 @@ mod tests {
     fn test_enumerate_files_basic() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
-
-        let created_files = create_test_images(temp_path);
+        let limit = 10;
+        let created_files = create_test_images(temp_path, limit);
 
         let (tx, rx) = kanal::bounded(100);
         let config = SourceFileConfig {
@@ -248,8 +257,8 @@ mod tests {
     fn test_enumerate_files_with_limit() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
-
-        create_test_images(temp_path);
+        let limit = 10;
+        create_test_images(temp_path, limit);
 
         let (tx, rx) = kanal::bounded(100);
         let config = SourceFileConfig {
@@ -259,7 +268,6 @@ mod tests {
             world_size: 1,
         };
 
-        let limit = 2;
         std::thread::spawn(move || {
             enumerate_files(tx, config, limit);
         });
@@ -282,8 +290,9 @@ mod tests {
     fn test_enumerate_files_with_world_size() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
+        let limit = 10;
 
-        create_test_images(temp_path);
+        create_test_images(temp_path, limit * 2); // 2 ranks
 
         // Test rank 0 of world_size 2
         let (tx1, rx1) = kanal::bounded(100);
@@ -304,11 +313,11 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx1, config1, 10);
+            enumerate_files(tx1, config1, limit);
         });
 
         std::thread::spawn(move || {
-            enumerate_files(tx2, config2, 10);
+            enumerate_files(tx2, config2, limit);
         });
 
         let mut files_rank0 = Vec::new();
@@ -337,16 +346,17 @@ mod tests {
         }
 
         // Both ranks should have some files
-        assert!(!files_rank0.is_empty());
-        assert!(!files_rank1.is_empty());
+        assert!(files_rank0.len() >= limit);
+        assert!(files_rank1.len() >= limit);
     }
 
     #[test]
     fn test_enumerate_files_random_sampling() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
+        let limit = 10;
 
-        create_test_images(temp_path);
+        create_test_images(temp_path, limit * 2); // 2 ranks
 
         // Run twice with random sampling to see if order changes
         let (tx1, rx1) = kanal::bounded(100);
@@ -366,11 +376,11 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx1, config1, 10);
+            enumerate_files(tx1, config1, limit);
         });
 
         std::thread::spawn(move || {
-            enumerate_files(tx2, config2, 10);
+            enumerate_files(tx2, config2, limit);
         });
 
         let mut files1 = Vec::new();
