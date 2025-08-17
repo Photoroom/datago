@@ -359,7 +359,7 @@ mod tests {
         let temp_path = temp_dir.path();
         let limit = 10;
 
-        create_test_images(temp_path, limit * 2); // 2 ranks
+        create_test_images(temp_path, limit);
 
         // Test rank 0 of world_size 2
         let (tx1, rx1) = kanal::bounded(100);
@@ -423,7 +423,7 @@ mod tests {
         let temp_path = temp_dir.path();
         let limit = 10;
 
-        create_test_images(temp_path, limit * 2); // 2 ranks
+        create_test_images(temp_path, limit);
 
         // Run twice with random sampling to see if order changes
         let (tx1, rx1) = kanal::bounded(100);
