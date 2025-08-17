@@ -21,6 +21,26 @@ pub struct SourceFileConfig {
     pub world_size: usize,
 }
 
+fn get_data_slice_multirank(quorum: usize, rank: usize, world_size: usize) -> (usize, usize) {
+    assert!(rank < world_size, "Rank must be less than world size");
+
+    let chunk_size = quorum / world_size; // This floors by default
+    let remainder = quorum % world_size;
+
+    let start = if rank < remainder {
+        rank * (chunk_size + 1)
+    } else {
+        remainder * (chunk_size + 1) + (rank - remainder) * chunk_size
+    };
+
+    let end = if (rank + 1) <= remainder {
+        (rank + 1) * (chunk_size + 1)
+    } else {
+        remainder * (chunk_size + 1) + (rank + 1 - remainder) * chunk_size
+    };
+    (start, end)
+}
+
 fn enumerate_files(
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceFileConfig,
@@ -58,14 +78,9 @@ fn enumerate_files(
 
     // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
     if source_config.world_size > 1 {
-        let chunk_size =
-            (files_list.len() as f64 / source_config.world_size as f64).floor() as usize;
-        let start = source_config.rank * chunk_size;
-        let mut end = start + chunk_size;
-        if source_config.rank == (source_config.world_size - 1) {
-            // Add the remainder of the chunks
-            end += files_list.len() % source_config.world_size;
-        }
+        let quorum = files_list.len();
+        let (start, end) =
+            get_data_slice_multirank(quorum, source_config.rank, source_config.world_size);
         files_list = files_list[start..end].to_vec();
     }
 
@@ -165,6 +180,58 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_get_data_slice_multirank() {
+        // Test case 1: Equal distribution with no remainder
+        let (start, end) = get_data_slice_multirank(10, 0, 2);
+        assert_eq!(start, 0);
+        assert_eq!(end, 5);
+
+        let (start, end) = get_data_slice_multirank(10, 1, 2);
+        assert_eq!(start, 5);
+        assert_eq!(end, 10);
+
+        // Test case 2: Unequal distribution with remainder
+        let (start, end) = get_data_slice_multirank(11, 0, 2);
+        assert_eq!(start, 0);
+        assert_eq!(end, 6);
+
+        let (start, end) = get_data_slice_multirank(11, 1, 2);
+        assert_eq!(start, 6);
+        assert_eq!(end, 11);
+
+        // Test case 3: Multiple ranks with remainder
+        let (start, end) = get_data_slice_multirank(13, 0, 3);
+        assert_eq!(start, 0);
+        assert_eq!(end, 5);
+
+        let (start, end) = get_data_slice_multirank(13, 1, 3);
+        assert_eq!(start, 5);
+        assert_eq!(end, 9);
+
+        let (start, end) = get_data_slice_multirank(13, 2, 3);
+        assert_eq!(start, 9);
+        assert_eq!(end, 13);
+
+        // Test case 4: Single rank
+        let (start, end) = get_data_slice_multirank(10, 0, 1);
+        assert_eq!(start, 0);
+        assert_eq!(end, 10);
+
+        // Test case 5: Edge case with zero quorum
+        let (start, end) = get_data_slice_multirank(0, 0, 1);
+        assert_eq!(start, 0);
+        assert_eq!(end, 0);
+
+        // Test case 6: Edge case with zero world size (should panic or handle gracefully)
+        // Note: This test assumes the function should panic or handle the zero division gracefully
+        // You may need to adjust the test based on your actual error handling
+        let result = std::panic::catch_unwind(|| {
+            get_data_slice_multirank(10, 0, 0);
+        });
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_source_file_config_defaults() {
