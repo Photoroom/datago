@@ -2,12 +2,10 @@ use crate::image_processing;
 use crate::structs::{ImagePayload, Sample};
 use io_uring::{opcode, types, IoUring};
 use log::{debug, error};
-use std::cmp::min;
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
-use tokio::task::JoinError;
 
 // Maintain the objects which are tied to an ongoing io_uring request
 // makes it possible to make sure that their lifetime is correctly handled,
@@ -197,7 +195,7 @@ async fn task_pull_samples(
     limit: usize,
 ) {
     let mut count = 0;
-    let io_batch_size = 16;
+    let io_batch_size = 8;
     let mut ring = IoUring::new(io_batch_size).unwrap();
     let mut io_in_flight = Vec::<IoUringRequest>::with_capacity(io_batch_size as usize);
 
@@ -269,15 +267,17 @@ async fn async_pull_samples(
     img_to_rgb8: bool,
     limit: usize,
 ) {
-    let max_tasks = min(num_cpus::get(), limit);
+    // FIXME: Not a great design, better using more async to get some concurrency here
+    // should be possible to have less rings, would be more likely that IO saturates & free CPUs for
+    // image processing
+
+    let max_tasks = 8;
     debug!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
 
-    let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);
-    let mut join_error: Option<JoinError> = None;
 
-    while tasks.len() < max_tasks && join_error.is_none() {
+    while tasks.len() < max_tasks {
         // Append a new task to the queue
         let rx_channel = samples_metadata_rx.clone();
         let tx_channel = samples_tx.clone();
@@ -290,47 +290,10 @@ async fn async_pull_samples(
             img_to_rgb8,
             limit,
         ));
-
-        // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks {
-            match tasks.join_next().await {
-                Some(Ok(_)) => {
-                    count += 1;
-                }
-                Some(Err(e)) => {
-                    // Task failed, log the error
-                    error!("file_worker: task failed with error: {e}");
-                    join_error = Some(e);
-                    break;
-                }
-                None => {
-                    // Task was cancelled or panicked
-                    error!("file_worker: task was cancelled or panicked");
-                }
-            }
-        }
-        if count >= limit {
-            break;
-        }
     }
 
-    // Make sure to wait for all the remaining tasks
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(_) => {
-                debug!("dispatch_shards: task completed successfully");
-                count += 1;
-            }
-            Err(e) => {
-                error!("dispatch_shards: task failed with error: {e}");
-                if join_error.is_none() {
-                    join_error = Some(e);
-                }
-            }
-        }
-    }
-
-    debug!("http_worker: total samples sent: {count}\n");
+    // If we have enough tasks, we'll wait for the older one to finish
+    let _ = tasks.join_all().await;
 
     // Signal the end of the stream
     if samples_tx.send(None).is_ok() {};
