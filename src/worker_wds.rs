@@ -102,7 +102,7 @@ async fn process_sample(
                                 debug!("wds_worker: unpacked {}", item.filename);
                             }
                             Err(e) => {
-                                debug!("wds_worker: error loading image: {}", e);
+                                debug!("wds_worker: error loading image: {e}");
                                 continue;
                             }
                         }
@@ -142,7 +142,7 @@ async fn async_deserialize_samples(
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
     let max_tasks = min(num_cpus::get(), limit);
-    info!("Using {} tasks in the async threadpool", max_tasks);
+    info!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
@@ -172,7 +172,7 @@ async fn async_deserialize_samples(
                 match result {
                     Ok(_) => count += 1,
                     Err(e) => {
-                        join_error = Some(format!("Task failed: {}", e));
+                        join_error = Some(format!("Task failed: {e}"));
                         break;
                     }
                 }
@@ -192,7 +192,7 @@ async fn async_deserialize_samples(
                 count += 1;
             }
             Err(e) => {
-                error!("dispatch_shards: task failed with error: {:?}", e);
+                error!("dispatch_shards: task failed with error: {e}");
                 if join_error.is_none() {
                     join_error = Some(e.to_string());
                 }
@@ -200,16 +200,13 @@ async fn async_deserialize_samples(
         }
     }
 
-    info!("wds_worker: total samples sent: {}\n", count);
+    info!("wds_worker: total samples sent: {count}\n");
 
     // Signal the end of the stream
     let _ = shareable_channel_tx.send(None); // Channel could have been closed by a .stop() call
 
     if let Some(error) = join_error {
-        error!(
-            "wds_worker: encountered an error while processing samples: {}",
-            error
-        );
+        error!("wds_worker: encountered an error while processing samples: {error}");
         return Err(error);
     }
     Ok(())
@@ -242,7 +239,7 @@ pub fn deserialize_samples(
             .await
             {
                 Ok(_) => debug!("wds_worker: all samples processed successfully"),
-                Err(e) => error!("wds_worker: error processing samples : {:?}", e),
+                Err(e) => error!("wds_worker: error processing samples : {e}"),
             }
         });
 }

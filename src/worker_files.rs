@@ -6,9 +6,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        image::ImageError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
-    })?;
+    let bytes =
+        std::fs::read(path).map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
 
     image::load_from_memory(&bytes)
 }
@@ -70,7 +69,7 @@ async fn pull_sample(
             Ok(())
         }
         Err(e) => {
-            error!("Failed to load image from path {} {}", sample_json, e);
+            error!("Failed to load image from path {sample_json} {e}");
             Err(())
         }
     }
@@ -125,7 +124,7 @@ async fn async_pull_samples(
             debug!("file_worker: task failed or was cancelled");
         }
     });
-    debug!("file_worker: total samples sent: {}\n", count);
+    debug!("file_worker: total samples sent: {count}\n");
 
     // Signal the end of the stream
     if samples_tx.send(None).is_ok() {};
@@ -349,7 +348,7 @@ mod tests {
         // Create multiple test images
         let mut image_paths = Vec::new();
         for i in 0..3 {
-            let image_path = temp_dir.path().join(format!("test_{}.png", i));
+            let image_path = temp_dir.path().join(format!("test_{i}.png"));
             create_test_image(&image_path);
             image_paths.push(image_path.to_str().unwrap().to_string());
         }
@@ -391,7 +390,7 @@ mod tests {
 
         // Create more images than the limit
         for i in 0..10 {
-            let image_path = temp_dir.path().join(format!("test_{}.png", i));
+            let image_path = temp_dir.path().join(format!("test_{i}.png"));
             create_test_image(&image_path);
         }
 
@@ -400,7 +399,7 @@ mod tests {
 
         // Send more paths than the limit
         for i in 0..10 {
-            let path = temp_dir.path().join(format!("test_{}.png", i));
+            let path = temp_dir.path().join(format!("test_{i}.png"));
             metadata_tx
                 .send(serde_json::Value::String(
                     path.to_str().unwrap().to_string(),

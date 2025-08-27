@@ -5,8 +5,6 @@ use kanal::bounded;
 use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::thread;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,17 +21,24 @@ pub struct SourceFileConfig {
     pub world_size: usize,
 }
 
-// Hash function to be able to dispatch the samples to the correct rank
+fn get_data_slice_multirank(quorum: usize, rank: usize, world_size: usize) -> (usize, usize) {
+    assert!(rank < world_size, "Rank must be less than world size");
 
-// The seed ensures consistent hashing across different runs,
-// essentially acting as a deterministic salt
-const HASH_SEED: u64 = 0x51_73_b3_c3_7f_d9_2e_a1;
+    let chunk_size = quorum / world_size; // This floors by default
+    let remainder = quorum % world_size;
 
-fn hash<T: Hash>(t: &T) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    HASH_SEED.hash(&mut hasher); // Add seed first
-    t.hash(&mut hasher); // Then hash the actual data
-    hasher.finish()
+    let start = if rank < remainder {
+        rank * (chunk_size + 1)
+    } else {
+        remainder * (chunk_size + 1) + (rank - remainder) * chunk_size
+    };
+
+    let end = if (rank + 1) <= remainder {
+        (rank + 1) * (chunk_size + 1)
+    } else {
+        remainder * (chunk_size + 1) + (rank + 1 - remainder) * chunk_size
+    };
+    (start, end)
 }
 
 fn enumerate_files(
@@ -49,6 +54,7 @@ fn enumerate_files(
         .into_iter()
         .filter_map(|e| e.ok());
 
+    // We need to materialize the file list to be able to shuffle it
     let mut files_list: Vec<walkdir::DirEntry> = files
         .filter_map(|entry| {
             let path = entry.path();
@@ -65,13 +71,18 @@ fn enumerate_files(
         .collect();
 
     // If shuffle is set, shuffle the files
-    let files_iter = if source_config.random_sampling {
+    if source_config.random_sampling {
         let mut rng = rand::rng(); // Get a random number generator, thread local. We don´t seed, so typically won't be reproducible
-        files_list.shuffle(&mut rng);
-        files_list.into_iter()
-    } else {
-        files_list.into_iter()
-    };
+        files_list.shuffle(&mut rng); // This happens in place
+    }
+
+    // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
+    if source_config.world_size > 1 {
+        let quorum = files_list.len();
+        let (start, end) =
+            get_data_slice_multirank(quorum, source_config.rank, source_config.world_size);
+        files_list = files_list[start..end].to_vec();
+    }
 
     // Iterate over the files and send the paths as they come
     let mut count = 0;
@@ -81,17 +92,8 @@ fn enumerate_files(
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
 
     // Build a page from the files iterator
-    for entry in files_iter {
-        let file_name = entry.path().to_str().unwrap().to_string();
-
-        // If world_size is not 0, we need to dispatch the samples to the correct rank
-        if source_config.world_size > 1 {
-            let hash = hash(&file_name);
-            let target_rank = (hash % source_config.world_size as u64) as usize;
-            if target_rank != source_config.rank {
-                continue;
-            }
-        }
+    for entry in files_list.iter() {
+        let file_name: String = entry.path().to_str().unwrap().to_string();
 
         if samples_metadata_tx
             .send(serde_json::Value::String(file_name))
@@ -110,10 +112,7 @@ fn enumerate_files(
     }
 
     // Either we don't have any more samples or we have reached the limit
-    debug!(
-        "ping_pages: total samples requested: {}. page samples served {}",
-        limit, count
-    );
+    debug!("ping_pages: total samples requested: {limit}. page samples served {count}");
 
     // Send an empty value to signal the end of the stream
     match samples_metadata_tx.send(serde_json::Value::Null) {
@@ -183,19 +182,55 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_hash_function() {
-        let str1 = "test_string1";
-        let str2 = "test_string2";
-        let str3 = "test_string1"; // Same as str1
+    fn test_get_data_slice_multirank() {
+        // Test case 1: Equal distribution with no remainder
+        let (start, end) = get_data_slice_multirank(10, 0, 2);
+        assert_eq!(start, 0);
+        assert_eq!(end, 5);
 
-        let hash1 = hash(&str1);
-        let hash2 = hash(&str2);
-        let hash3 = hash(&str3);
+        let (start, end) = get_data_slice_multirank(10, 1, 2);
+        assert_eq!(start, 5);
+        assert_eq!(end, 10);
 
-        // Same input should produce same hash
-        assert_eq!(hash1, hash3);
-        // Different inputs should likely produce different hashes
-        assert_ne!(hash1, hash2);
+        // Test case 2: Unequal distribution with remainder
+        let (start, end) = get_data_slice_multirank(11, 0, 2);
+        assert_eq!(start, 0);
+        assert_eq!(end, 6);
+
+        let (start, end) = get_data_slice_multirank(11, 1, 2);
+        assert_eq!(start, 6);
+        assert_eq!(end, 11);
+
+        // Test case 3: Multiple ranks with remainder
+        let (start, end) = get_data_slice_multirank(13, 0, 3);
+        assert_eq!(start, 0);
+        assert_eq!(end, 5);
+
+        let (start, end) = get_data_slice_multirank(13, 1, 3);
+        assert_eq!(start, 5);
+        assert_eq!(end, 9);
+
+        let (start, end) = get_data_slice_multirank(13, 2, 3);
+        assert_eq!(start, 9);
+        assert_eq!(end, 13);
+
+        // Test case 4: Single rank
+        let (start, end) = get_data_slice_multirank(10, 0, 1);
+        assert_eq!(start, 0);
+        assert_eq!(end, 10);
+
+        // Test case 5: Edge case with zero quorum
+        let (start, end) = get_data_slice_multirank(0, 0, 1);
+        assert_eq!(start, 0);
+        assert_eq!(end, 0);
+
+        // Test case 6: Edge case with zero world size (should panic or handle gracefully)
+        // Note: This test assumes the function should panic or handle the zero division gracefully
+        // You may need to adjust the test based on your actual error handling
+        let result = std::panic::catch_unwind(|| {
+            get_data_slice_multirank(10, 0, 0);
+        });
+        assert!(result.is_err());
     }
 
     #[test]
@@ -227,14 +262,19 @@ mod tests {
         assert_eq!(config.world_size, 4);
     }
 
-    fn create_test_images(dir: &Path) -> Vec<String> {
+    fn create_test_images(dir: &Path, min_num_files: usize) -> Vec<String> {
         let extensions = ["jpg", "png", "bmp", "gif", "JPEG"];
         let mut files = Vec::new();
-        for (i, ext) in extensions.iter().enumerate() {
-            let filename = format!("test_image_{}.{}", i, ext);
-            let filepath = dir.join(&filename);
-            fs::write(&filepath, "fake_image_data").unwrap();
-            files.push(filepath.to_string_lossy().to_string());
+        let mut n_files = 0;
+
+        while n_files < min_num_files {
+            for (i, ext) in extensions.iter().enumerate() {
+                let filename = format!("test_image_{n_files}_{i}.{ext}");
+                let filepath = dir.join(&filename);
+                fs::write(&filepath, "fake_image_data").unwrap();
+                files.push(filepath.to_string_lossy().to_string());
+                n_files += 1;
+            }
         }
 
         // Create a non-image file that should be ignored
@@ -248,8 +288,8 @@ mod tests {
     fn test_enumerate_files_basic() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
-
-        let created_files = create_test_images(temp_path);
+        let limit = 10;
+        let created_files = create_test_images(temp_path, limit);
 
         let (tx, rx) = kanal::bounded(100);
         let config = SourceFileConfig {
@@ -284,8 +324,8 @@ mod tests {
     fn test_enumerate_files_with_limit() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
-
-        create_test_images(temp_path);
+        let limit = 10;
+        create_test_images(temp_path, limit);
 
         let (tx, rx) = kanal::bounded(100);
         let config = SourceFileConfig {
@@ -295,7 +335,6 @@ mod tests {
             world_size: 1,
         };
 
-        let limit = 2;
         std::thread::spawn(move || {
             enumerate_files(tx, config, limit);
         });
@@ -318,8 +357,9 @@ mod tests {
     fn test_enumerate_files_with_world_size() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
+        let limit = 10;
 
-        create_test_images(temp_path);
+        create_test_images(temp_path, limit);
 
         // Test rank 0 of world_size 2
         let (tx1, rx1) = kanal::bounded(100);
@@ -340,11 +380,11 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx1, config1, 10);
+            enumerate_files(tx1, config1, limit);
         });
 
         std::thread::spawn(move || {
-            enumerate_files(tx2, config2, 10);
+            enumerate_files(tx2, config2, limit);
         });
 
         let mut files_rank0 = Vec::new();
@@ -373,16 +413,17 @@ mod tests {
         }
 
         // Both ranks should have some files
-        assert!(!files_rank0.is_empty());
-        assert!(!files_rank1.is_empty());
+        assert!(files_rank0.len() >= limit);
+        assert!(files_rank1.len() >= limit);
     }
 
     #[test]
     fn test_enumerate_files_random_sampling() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
+        let limit = 10;
 
-        create_test_images(temp_path);
+        create_test_images(temp_path, limit);
 
         // Run twice with random sampling to see if order changes
         let (tx1, rx1) = kanal::bounded(100);
@@ -402,11 +443,11 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx1, config1, 10);
+            enumerate_files(tx1, config1, limit);
         });
 
         std::thread::spawn(move || {
-            enumerate_files(tx2, config2, 10);
+            enumerate_files(tx2, config2, limit);
         });
 
         let mut files1 = Vec::new();
