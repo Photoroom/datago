@@ -238,11 +238,10 @@ class TestDatagoEdgeCases:
                 "samples_buffer_size": 10,
             }
 
+            # Should flag that the config is not correct
             client = DatagoClient(json.dumps(config))
-            _sample = client.get_sample()
-
-            # Should handle gracefully (might return None or work with adjusted parameters)
-            # The exact behavior depends on implementation
+            sample = client.get_sample()
+            assert sample is None
 
     def test_very_large_buffer_sizes(self):
         """Test with very large buffer sizes."""

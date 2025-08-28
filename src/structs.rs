@@ -13,6 +13,7 @@ pub enum SourceType {
     Db,
     File,
     WebDataset,
+    Invalid,
 }
 
 fn default_source_type() -> SourceType {
