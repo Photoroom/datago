@@ -7,7 +7,8 @@ from dataset import DatagoIterDataset
 
 def benchmark(
     root_path: str = typer.Option(
-        os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"
+        os.getenv("DATAGO_TEST_FILESYSTEM", ""),
+        help="The source to test out. Please define DATAGO_TEST_FILESYSTEM env variable if you don't want to pass it as an argument",
     ),
     limit: int = typer.Option(2000, help="The number of samples to test on"),
     crop_and_resize: bool = typer.Option(

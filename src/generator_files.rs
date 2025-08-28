@@ -149,7 +149,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         enumerate_files(samples_metadata_tx, source_config, limit);
     }));
 
-    // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
+    // Spawn a thread which will handle the async workers through a multithread tokio runtime
     let image_transform = client.image_transform.clone();
     let encode_images = client.encode_images;
     let img_to_rgb8 = client.image_to_rgb8;
