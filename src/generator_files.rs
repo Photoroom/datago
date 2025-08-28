@@ -359,7 +359,7 @@ mod tests {
         let temp_path = temp_dir.path();
         let limit = 10;
 
-        create_test_images(temp_path, limit);
+        create_test_images(temp_path, limit * 2); // We'll check that each rank has "limit" files l416
 
         // Test rank 0 of world_size 2
         let (tx1, rx1) = kanal::bounded(100);

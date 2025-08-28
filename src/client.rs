@@ -26,14 +26,58 @@ pub struct DatagoClient {
 
     // Holds all the variables related to a running engine
     engine: Option<DatagoEngine>,
+
+    is_valid: bool,
+}
+
+fn check_config(str_config: &str) -> Option<DatagoClientConfig> {
+    match serde_json::from_str::<DatagoClientConfig>(str_config) {
+        Ok(config) => {
+            if config.samples_buffer_size == 0 {
+                error!("Samples buffer size must be greater than 0");
+                return None;
+            }
+
+            if config.limit == 0 {
+                error!("Limit must be greater than 0");
+                return None;
+            }
+
+            // Check that a distributed config is valid, and error out early if not
+            let world_size = config
+                .source_config
+                .get("world_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1) as usize;
+            let rank = config
+                .source_config
+                .get("rank")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            if world_size == 0 {
+                error!("World size must be greater than 0");
+                return None;
+            }
+
+            if rank >= world_size {
+                error!("Rank must be less than world size");
+                return None;
+            }
+            Some(config)
+        }
+        Err(e) => {
+            error!("Failed to parse config: {e}");
+            None
+        }
+    }
 }
 
 #[pymethods]
 impl DatagoClient {
     #[new]
     pub fn new(str_config: String) -> Self {
-        match serde_json::from_str::<DatagoClientConfig>(&str_config) {
-            Ok(config) => {
+        match check_config(&str_config) {
+            Some(config) => {
                 let mut image_transform: Option<ARAwareTransform> = None;
                 let mut encode_images = false;
                 let mut image_to_rgb8 = false;
@@ -44,8 +88,6 @@ impl DatagoClient {
                     encode_images = image_config.pre_encode_images;
                     image_to_rgb8 = image_config.image_to_rgb8;
                 }
-
-                assert!(config.limit > 0, "Limit must be greater than 0");
 
                 DatagoClient {
                     is_started: false,
@@ -58,10 +100,24 @@ impl DatagoClient {
                     encode_images,
                     image_to_rgb8,
                     engine: None,
+                    is_valid: true,
                 }
             }
-            Err(e) => {
-                panic!("Failed to parse config: {e}");
+            None => {
+                error!("Failed to parse config");
+                DatagoClient {
+                    is_started: false,
+                    source_type: SourceType::Invalid,
+                    source_config: serde_json::Value::Null,
+                    samples_buffer: 0,
+                    limit: 0,
+                    max_connections: 0,
+                    image_transform: None,
+                    encode_images: false,
+                    image_to_rgb8: false,
+                    engine: None,
+                    is_valid: false,
+                }
             }
         }
     }
@@ -87,12 +143,20 @@ impl DatagoClient {
                 warn!("WebDataset source type is new and experimental, use with caution!\nPlease report any issues you encounter to https://github.com/Photoroom/datago/issues.");
                 self.engine = Some(generator_wds::orchestrate(self));
             }
+            SourceType::Invalid => {
+                error!("Client ill-defined, probably a config error. Cannot start");
+                return;
+            }
         }
 
         self.is_started = true;
     }
 
     pub fn get_sample(&mut self) -> Option<Sample> {
+        if !self.is_valid {
+            return None;
+        }
+
         if !self.is_started {
             self.start();
         }
