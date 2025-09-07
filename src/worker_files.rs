@@ -84,15 +84,129 @@ async fn io_uring_submit_read(
     })
 }
 
+async fn io_uring_drain_into_tasks(
+    ring: &mut IoUring,
+    io_tracker: &mut IoTracker,
+    samples_tx: &kanal::Sender<Option<Sample>>,
+    task_queue: &mut tokio::task::JoinSet<Result<(), std::io::Error>>,
+    image_transform: &Option<image_processing::ARAwareTransform>,
+    encode_images: bool,
+    img_to_rgb8: bool,
+) {
+    // We get a handle to the ring + the files which were kept open
+
+    // Not required while polling is used, could be an env variable
+    ring.completion().sync();
+
+    while let Some(cqe) = ring.completion().next() {
+        // Grab the raw results from the completion queue
+        if cqe.result() < 0 {
+            error!("io_uring: Read failed: {}", cqe.result());
+            let error_closure = async move || Err(std::io::Error::last_os_error());
+            task_queue.spawn(error_closure());
+        }
+
+        let request = &io_tracker.in_flight[&cqe.user_data()];
+
+        let io_uring_result = IoUringResult {
+            buffer: request.buffer[..cqe.result() as usize].to_vec(),
+            path: request.path.clone(), // FIXME: ideally we would `move` here instead
+        };
+
+        // Remove this request from the tracker
+        io_tracker.remove(cqe.user_data());
+
+        // Spawn a task to create a full sample from the results
+        task_queue.spawn(sample_from_io_uring_read(
+            io_uring_result,
+            samples_tx.clone(), // FIXME: these clones are a bit ugly, probably possible to do better
+            image_transform.clone(),
+            encode_images,
+            img_to_rgb8,
+        ));
+    }
+}
+
+#[allow(dead_code)] // we use this for unit tests
+async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
+    // Submit / read cycle with a single file, really not a good idea for perf but good for unit testing
+    let mut ring = IoUring::new(1).unwrap();
+    let mut io_tracker = IoTracker::new();
+
+    // Submit a single read request
+    match io_uring_submit_read(path, &mut ring, io_tracker.next_id).await {
+        Ok(request) => {
+            io_tracker.insert(request);
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    }
+
+    // Get the result from the queue
+    match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
+        Ok(mut results) if results.len() == 1 => Ok(results.remove(0).buffer), // Takes ownership
+        Ok(_) => Err(std::io::Error::other("Failed to read file")),
+        Err(e) => Err(e),
+    }
+}
+
+async fn sample_from_io_uring_read(
+    result: IoUringResult,
+    samples_tx: kanal::Sender<Option<Sample>>,
+    image_transform: Option<image_processing::ARAwareTransform>,
+    encode_images: bool,
+    img_to_rgb8: bool,
+) -> Result<(), std::io::Error> {
+    match image::load_from_memory(&result.buffer) {
+        Ok(raw_image) => {
+            let image = image_processing::image_to_payload(
+                raw_image,
+                &image_transform,
+                &"".to_string(),
+                encode_images,
+                img_to_rgb8,
+            )
+            .await
+            .unwrap();
+
+            let sample = Sample {
+                id: result.path,
+                source: "filesystem".to_string(),
+                image,
+                attributes: HashMap::new(),
+                coca_embedding: vec![],
+                tags: vec![],
+                masks: HashMap::new(),
+                latents: HashMap::new(),
+                additional_images: HashMap::new(),
+                duplicate_state: 0,
+            };
+
+            // Channel is closed, wrapping up
+            if samples_tx.send(Some(sample)).is_err() {
+                return Err(std::io::Error::other(
+                    "file_worker: failed to send sample to channel",
+                ));
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            error!("file_worker: failed opening file {e}");
+            Err(std::io::Error::other("Failed to read file"))
+        }
+    }
+}
+
 async fn io_uring_retire_available_reads(
     ring: &mut IoUring,
     io_tracker: &mut IoTracker,
 ) -> Result<Vec<IoUringResult>, std::io::Error> {
-    // We get a handle to the ring + the files which were kept open
-    // Handle a batch of completions, if possible
+    // We get a handle to the ring + the files which were kept open. Handle a batch of completions, if possible
+    // NOTE: This is not very efficient, because we retire a bunch of payloads prior to
+    // processing them. This should be correct and a good baseline though, used for some tests.
 
-    // TODO: @lefaudeux - make this an async iterator instead, nicer design (removes the need for a vector) and will be faster
-    // (better compute / IO overlap)
     let mut results = Vec::<IoUringResult>::with_capacity(io_tracker.len());
 
     ring.completion().sync(); // Ensure kernel -> userspace sync
@@ -116,104 +230,24 @@ async fn io_uring_retire_available_reads(
     Ok(results)
 }
 
-#[allow(dead_code)] // we use this for unit tests
-async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
-    // Submit / read cycle with a single file, really not a good idea for perf but good for unit testing
-    let mut ring = IoUring::new(1).unwrap();
-    let mut io_tracker = IoTracker::new();
-
-    // Submit a single read request
-    match io_uring_submit_read(path, &mut ring, io_tracker.next_id).await {
-        Ok(request) => {
-            io_tracker.insert(request);
-        }
-        Err(e) => {
-            return Err(e);
-        }
-    }
-
-    // Get the result from the queue
-    match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
-        Ok(results) => {
-            if results.len() != 1 {
-                return Err(std::io::Error::other("Failed to read file"));
-            }
-            Ok(results[0].buffer.clone())
-        }
-        Err(e) => Err(e),
-    }
-}
-
-async fn retire_available_reads(
-    ring: &mut IoUring,
-    io_tracker: &mut IoTracker,
-    samples_tx: &kanal::Sender<Option<Sample>>,
-    image_transform: &Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
-    limit: usize,
-) -> std::result::Result<usize, std::io::Error> {
+async fn retire_done_tasks_from_set(
+    tasks: &mut tokio::task::JoinSet<Result<(), std::io::Error>>,
+) -> usize {
     let mut count = 0;
-
-    // Retire the raw payloads from io_uring completion queue, and convert them to samples
-    match io_uring_retire_available_reads(ring, io_tracker).await {
-        Ok(results) => {
-            debug!("file_worker: retired read requests");
-
-            // NOTE: We sequentialize all the CPU work here, not great for perf
-            for result in results {
-                match image::load_from_memory(&result.buffer) {
-                    Ok(raw_image) => {
-                        let image = image_processing::image_to_payload(
-                            raw_image,
-                            image_transform,
-                            &"".to_string(),
-                            encode_images,
-                            img_to_rgb8,
-                        )
-                        .await
-                        .unwrap();
-
-                        let sample = Sample {
-                            id: result.path,
-                            source: "filesystem".to_string(),
-                            image,
-                            attributes: HashMap::new(),
-                            coca_embedding: vec![],
-                            tags: vec![],
-                            masks: HashMap::new(),
-                            latents: HashMap::new(),
-                            additional_images: HashMap::new(),
-                            duplicate_state: 0,
-                        };
-
-                        // Channel is closed, wrapping up
-                        if samples_tx.send(Some(sample)).is_err() {
-                            return Err(std::io::Error::other(
-                                "file_worker: failed to send sample to channel",
-                            ));
-                        }
-                        count += 1;
-
-                        if count > limit {
-                            return Ok(count);
-                        }
-                    }
-                    Err(e) => {
-                        error!("file_worker: failed opening file {e}");
-                    }
-                }
+    while let Some(task_result) = tasks.try_join_next() {
+        match task_result {
+            Ok(_) => {
+                count += 1;
+            }
+            Err(e) => {
+                error!("file_worker: failed to process sample: {e}");
             }
         }
-        Err(e) => {
-            error!("file_worker: failed to retire read requests: {e}");
-        }
     }
-
-    Ok(count)
+    count
 }
 
-async fn io_uring_puller(
+async fn io_uring_pipeline(
     samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Arc<Option<image_processing::ARAwareTransform>>,
@@ -221,20 +255,25 @@ async fn io_uring_puller(
     img_to_rgb8: bool,
     limit: usize,
 ) {
-    // Each task will host a io_uring queue.
+    let mut count: usize = 0;
 
-    let mut count = 0;
-    let io_batch_size = 16;
-    let io_wait_lane: usize = io_batch_size * 2;
+    // Limit concurrent IO, but make it possible to batch IO, and to overlap it with compute
+    // Each pipeline will host a io_uring queue.
+    let io_batch_size: usize = 4; // submit request in batch
+    let io_depth: usize = 64; // how many requests to keep in flight in the ring
 
     let mut ring = IoUring::builder()
-        .setup_sqpoll(1000) // Enable kernel-polling mode
+        // .setup_sqpoll(100) // Enable kernel-polling mode // needs to be used with register_files(), opengl vertex buffer style
         // .setup_iopoll() // Optional: Combine with IOPOLL for buffered I/O
-        .build(io_wait_lane as u32)
+        .build(io_depth as u32)
         .expect("Failed to create io_uring"); // Queue depth
 
     let mut io_tracker = IoTracker::new();
-    let mut stale_requests = 0;
+
+    // Limit concurrent processing tasks, but make it possible to overlap IO and compute
+    // This is only about the tasks in flight in this io_uring submission queue
+    let mut main_tasks_queue = tokio::task::JoinSet::new();
+    let max_number_tasks = num_cpus::get();
 
     while let Ok(received) = samples_metadata_rx.recv() {
         if received == serde_json::Value::Null {
@@ -249,7 +288,6 @@ async fn io_uring_puller(
         match io_uring_submit_read(path, &mut ring, io_tracker.next_id).await {
             Ok(request) => {
                 io_tracker.insert(request);
-                stale_requests += 1;
                 debug!("file_worker: submitted read request for {path}");
             }
             Err(e) => {
@@ -259,31 +297,31 @@ async fn io_uring_puller(
         }
 
         // If enough submissions in the queue, submit a batch
-        if stale_requests >= io_batch_size {
+        if ring.submission().len() >= io_batch_size {
             ring.submit().expect("Failed to submit batch");
-            stale_requests = 0;
         }
+
+        // Retire the done tasks from the main queue
+        count += retire_done_tasks_from_set(&mut main_tasks_queue).await;
 
         // If enough submissions in the queue, opportunistically retire what is already available
         while io_tracker.len() >= io_batch_size {
-            match retire_available_reads(
+            io_uring_drain_into_tasks(
                 &mut ring,
                 &mut io_tracker,
                 &samples_tx,
+                &mut main_tasks_queue,
                 &image_transform,
                 encode_images,
                 img_to_rgb8,
-                limit,
             )
-            .await
-            {
-                Ok(retired_images) => {
-                    count += retired_images;
-                }
-                Err(_) => {
-                    break;
-                }
-            }
+            .await;
+        }
+
+        // If too many in flight tasks, busy loop until some are done
+        while main_tasks_queue.len() > max_number_tasks {
+            count += retire_done_tasks_from_set(&mut main_tasks_queue).await;
+            tokio::task::yield_now().await; // Give some time back to the scheduler
         }
 
         if count > limit {
@@ -314,21 +352,20 @@ async fn async_pull_samples(
     img_to_rgb8: bool,
     limit: usize,
 ) {
-    // Each task will host a io_uring queue.
-    // Good rule of thumb is one per CPU core for pure IO, but we have some CPU load here
-    let max_tasks = num_cpus::get() / 2;
-
-    debug!("Using {max_tasks} tasks in the async threadpool");
-    let mut tasks = tokio::task::JoinSet::new();
+    // Each pipeline will host a io_uring queue.
+    // Max number of concurrent pipelines would depend on the underlying hardware
+    // TODO: @lefaudeux - env variable, VAST or SSD may benefit from different settings
+    let mut pipelines = tokio::task::JoinSet::new();
+    let max_pipelines = num_cpus::get() / 2; // CPUs outside of typical hyperthreading
+    debug!("Using {max_pipelines} io_uring pipelines in parallel");
 
     let shareable_img_tfm = Arc::new(image_transform);
 
-    while tasks.len() < max_tasks {
-        // Append a new task to the queue
+    while pipelines.len() < max_pipelines {
         let rx_channel = samples_metadata_rx.clone();
         let tx_channel = samples_tx.clone();
         let img_tfm = shareable_img_tfm.clone();
-        tasks.spawn(io_uring_puller(
+        pipelines.spawn(io_uring_pipeline(
             rx_channel,
             tx_channel,
             img_tfm,
@@ -339,7 +376,7 @@ async fn async_pull_samples(
     }
 
     // If we have enough tasks, we'll wait for the older one to finish
-    let _ = tasks.join_all().await;
+    let _ = pipelines.join_all().await;
 
     // Signal the end of the stream
     if samples_tx.send(None).is_ok() {};
@@ -353,7 +390,8 @@ pub fn pull_samples(
     img_to_rgb8: bool,
     limit: usize,
 ) {
-    tokio::runtime::Builder::new_multi_thread()
+    tokio::runtime::Builder::new_multi_thread() // one thread per core by default
+        .thread_name("datago")
         .enable_all()
         .build()
         .unwrap()
