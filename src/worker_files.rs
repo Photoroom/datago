@@ -104,26 +104,26 @@ async fn io_uring_drain_into_tasks(
             error!("io_uring: Read failed: {}", cqe.result());
             let error_closure = async move || Err(std::io::Error::last_os_error());
             task_queue.spawn(error_closure());
+        } else {
+            let request = &io_tracker.in_flight[&cqe.user_data()];
+
+            let io_uring_result = IoUringResult {
+                buffer: request.buffer[..cqe.result() as usize].to_vec(),
+                path: request.path.clone(), // FIXME: ideally we would `move` here instead
+            };
+
+            // Remove this request from the tracker
+            io_tracker.remove(cqe.user_data());
+
+            // Spawn a task to create a full sample from the results
+            task_queue.spawn(sample_from_io_uring_read(
+                io_uring_result,
+                samples_tx.clone(), // FIXME: these clones are a bit ugly, probably possible to do better
+                image_transform.clone(),
+                encode_images,
+                img_to_rgb8,
+            ));
         }
-
-        let request = &io_tracker.in_flight[&cqe.user_data()];
-
-        let io_uring_result = IoUringResult {
-            buffer: request.buffer[..cqe.result() as usize].to_vec(),
-            path: request.path.clone(), // FIXME: ideally we would `move` here instead
-        };
-
-        // Remove this request from the tracker
-        io_tracker.remove(cqe.user_data());
-
-        // Spawn a task to create a full sample from the results
-        task_queue.spawn(sample_from_io_uring_read(
-            io_uring_result,
-            samples_tx.clone(), // FIXME: these clones are a bit ugly, probably possible to do better
-            image_transform.clone(),
-            encode_images,
-            img_to_rgb8,
-        ));
     }
 }
 
@@ -257,23 +257,40 @@ async fn io_uring_pipeline(
 ) {
     let mut count: usize = 0;
 
-    // Limit concurrent IO, but make it possible to batch IO, and to overlap it with compute
+    // Limit concurrent IO, but make it possible to batch IO, and to overlap it with compute.
     // Each pipeline will host a io_uring queue.
-    let io_batch_size: usize = 4; // submit request in batch
-    let io_depth: usize = 64; // how many requests to keep in flight in the ring
 
+    // submit request in batch
+    let io_batch_size: usize = std::env::var("DATAGO_IO_URING_BATCH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(8);
+
+    // how many requests to keep in flight in the ring
+    let io_depth: usize = std::env::var("DATAGO_IO_URING_DEPTH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(256);
+
+    debug!("Using io_uring with batch size {io_batch_size} and depth {io_depth}");
     let mut ring = IoUring::builder()
-        // .setup_sqpoll(100) // Enable kernel-polling mode // needs to be used with register_files(), opengl vertex buffer style
+        // .setup_sqpoll(100) // Enable kernel-polling mode for the submission queue
+        .setup_coop_taskrun() // Don't interrupt user space on completion
         // .setup_iopoll() // Optional: Combine with IOPOLL for buffered I/O
         .build(io_depth as u32)
         .expect("Failed to create io_uring"); // Queue depth
 
-    let mut io_tracker = IoTracker::new();
-
     // Limit concurrent processing tasks, but make it possible to overlap IO and compute
     // This is only about the tasks in flight in this io_uring submission queue
     let mut main_tasks_queue = tokio::task::JoinSet::new();
-    let max_number_tasks = num_cpus::get();
+    let max_number_tasks = std::env::var("DATAGO_MAX_TASKS_PER_RING")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(num_cpus::get());
+
+    debug!("Enabling {max_number_tasks} concurrent compute tasks per io_uring pipeline");
+
+    let mut io_tracker = IoTracker::new();
 
     while let Ok(received) = samples_metadata_rx.recv() {
         if received == serde_json::Value::Null {
@@ -305,7 +322,7 @@ async fn io_uring_pipeline(
         count += retire_done_tasks_from_set(&mut main_tasks_queue).await;
 
         // If enough submissions in the queue, opportunistically retire what is already available
-        while io_tracker.len() >= io_batch_size {
+        while io_tracker.len() >= (io_depth / 2) {
             io_uring_drain_into_tasks(
                 &mut ring,
                 &mut io_tracker,
@@ -329,8 +346,14 @@ async fn io_uring_pipeline(
         }
     }
 
+    // Consume all the remaining tasks
+    debug!("Wrapping up the ongoing compute tasks");
+    main_tasks_queue.abort_all();
+
     // Consume all the remaining IO, close the files properly
-    while io_tracker.len() > 0 {
+    let remaining_tasks = io_tracker.len();
+    debug!("Wrapping up the io_uring pipeline, {remaining_tasks} requests in flight");
+    while ring.completion().count() > 0 {
         match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
             Ok(_) => {}
             Err(_) => {
@@ -356,7 +379,11 @@ async fn async_pull_samples(
     // Max number of concurrent pipelines would depend on the underlying hardware
     // TODO: @lefaudeux - env variable, VAST or SSD may benefit from different settings
     let mut pipelines = tokio::task::JoinSet::new();
-    let max_pipelines = num_cpus::get() / 2; // CPUs outside of typical hyperthreading
+    let max_pipelines = std::env::var("DATAGO_IO_URING_PIPELINES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(num_cpus::get() / 2); // CPUs outside of typical hyperthreading
+
     debug!("Using {max_pipelines} io_uring pipelines in parallel");
 
     let shareable_img_tfm = Arc::new(image_transform);

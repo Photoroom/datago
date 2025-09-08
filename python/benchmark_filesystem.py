@@ -3,6 +3,7 @@ from tqdm import tqdm
 import os
 import typer
 from dataset import DatagoIterDataset
+import gc
 
 
 def benchmark(
@@ -53,6 +54,10 @@ def benchmark(
         assert sample["id"] != ""
         img = sample["image"]
         count += 1
+
+        # Force garbage collection to avoid stop-the-world
+        if count % 1000 == 0:
+            gc.collect()
 
     assert count == limit, f"Expected {limit} samples, got {count}"
     fps = limit / (time.time() - start)
