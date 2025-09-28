@@ -85,7 +85,12 @@ async fn async_pull_samples(
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
-    let max_tasks = min(num_cpus::get() * 4, limit);
+    let default_max_tasks = std::env::var("DATAGO_MAX_CONCURRENCY")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse::<usize>()
+        .unwrap_or(num_cpus::get() * 4);
+
+    let max_tasks = min(default_max_tasks, limit);
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);

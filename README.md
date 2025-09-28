@@ -80,7 +80,7 @@ config = {
     "source_config": {
         "root_path": "myPath",
         "random_sampling": False, # True if used directly for training
-        "rank": 0,
+        "rank": 0, # Optional, distributed workloads are possible
         "world_size": 1,
     },
     "limit": 200,
@@ -120,15 +120,6 @@ client_config = {
         "rank": 0,
         "world_size": 1,
     },
-    # Optional pre-processing of the images, placing them in an aspect ratio bucket to preseve as much as possible of the original content
-    "image_config": {
-        "crop_and_resize": True, # False to turn it off, or just omit this part of the config
-        "default_image_size": 1024,
-        "downsampling_ratio": 32,
-        "min_aspect_ratio": 0.5,
-        "max_aspect_ratio": 2.0,
-        "pre_encode_images": False,
-    },
     "prefetch_buffer_size": 128,
     "samples_buffer_size": 64,
     "limit": 1_000_000, # Dummy example, max number of samples you would like to serve
@@ -142,6 +133,38 @@ for _ in range(10):
 
 </details>
 
+## Process the images on the fly
+
+Datago can also process the images on the fly, for instance to align different image payloads. This is done by adding a `image_config` to the configuration. The following example shows how to align different image payloads.
+
+Processing can be very CPU heavy, but it will be distributed over all CPU cores wihout requiring multiple python processes (ie: you can keep a single python process using .get_sample()` on the client and still saturate all CPU cores).
+
+There are three main processing topics that you can choose from:
+
+- crop the images to within an aspect ratio bucket (which is very handy for all Transformer / patch based architectures)
+- resize the images (setting here will be related to the square aspect ratio bucket, other buckets will differ of course)
+- pre-encode the images to a specific format (jpg, png, ..)
+
+```python
+   config = {
+    "source_type": "file",
+    "source_config": {
+        "root_path": "myPath",
+        "random_sampling": False, # True if used directly for training
+    },
+    # Optional pre-processing of the images, placing them in an aspect ratio bucket to preserve as much as possible of the original content
+    "image_config": {
+        "crop_and_resize": True, # False to turn it off, or just omit this part of the config
+        "default_image_size": 1024,
+        "downsampling_ratio": 32,
+        "min_aspect_ratio": 0.5,
+        "max_aspect_ratio": 2.0,
+        "pre_encode_images": False,
+    },
+    "limit": 200,
+    "samples_buffer_size": 32,
+}
+```
 
 ## Match the raw exported buffers with typical python types
 
@@ -153,6 +176,14 @@ We are using the [log](https://docs.rs/log/latest/log/) crate with [env_logger](
 You can set the log level using the RUST_LOG environment variable. E.g. `RUST_LOG=INFO`.
 
 When using the library from Python, `env_logger` will be initialized automatically when creating a `DatagoClient`. There is also a `initialize_logging` function in the `datago` module, which if called before using a client, allows to customize the log level. This only works if RUST_LOG is not set.
+
+## Env variables
+
+There are a couple of env variables which will change the behavior of the library, for settings which felt too low level to be exposed in the config.
+
+- `DATAGO_MAX_CONCURRENCY`: refers to the number of threads which will be used to load the samples. Defaults to a multiple of the CPU cores.
+- `RUST_LOG`: see above, will change the level of logging for the whole library, could be useful for debugging or to report an issue here.
+- `DATAGO_MAX_RETRIES`: number of retries for a failed sample load, defaults to 3.
 
 </details><details> <summary><strong>Build it</strong></summary>
 
