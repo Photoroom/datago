@@ -280,7 +280,7 @@ async fn async_pull_samples(
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
-    let default_max_tasks = std::env::var("DATAGO_MAX_CONCURRENCY")
+    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
         .unwrap_or_else(|_| "0".to_string())
         .parse::<usize>()
         .unwrap_or(num_cpus::get() * 4);

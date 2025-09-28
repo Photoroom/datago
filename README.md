@@ -181,7 +181,7 @@ When using the library from Python, `env_logger` will be initialized automatical
 
 There are a couple of env variables which will change the behavior of the library, for settings which felt too low level to be exposed in the config.
 
-- `DATAGO_MAX_CONCURRENCY`: refers to the number of threads which will be used to load the samples. Defaults to a multiple of the CPU cores.
+- `DATAGO_MAX_TASKS`: refers to the number of threads which will be used to load the samples. Defaults to a multiple of the CPU cores.
 - `RUST_LOG`: see above, will change the level of logging for the whole library, could be useful for debugging or to report an issue here.
 - `DATAGO_MAX_RETRIES`: number of retries for a failed sample load, defaults to 3.
 
@@ -246,6 +246,18 @@ then you can `pip install` from `target/wheels`
 Create a new tag and a new release in this repo, a new package will be pushed automatically.
 
 </details>
+
+<details> <summary><strong>Benchmarks</strong></summary>
+As per usual, benchmarks are a tricky game, and you shouldn't read too much in the following plots but do your own tests. Some python benchmark examples are provided in the /python folder.
+
+In general, Datago will be impactful if you want to load a lot of images very fast, but if you consume them as you go at a more leisury pace then it's not really needed. The more CPU work there is with the images and the higher quality they are, the more Datago will shine. The following benchmarks are using ImageNet 1k, which is very low resolution and thus kind of a worst case scenario.
+
+![circa 2021 8c 16t laptop](assets/__emitted_0.png)
+
+//  TODO: @lefaudeux, with an example from a cluster
+
+</details>
+
 
 ## License
 

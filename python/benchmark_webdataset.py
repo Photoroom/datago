@@ -3,6 +3,7 @@ from tqdm import tqdm
 import typer
 from dataset import DatagoIterDataset
 import os
+from defaults import IMAGE_CONFIG
 
 
 def benchmark(
@@ -35,18 +36,14 @@ def benchmark(
             "max_concurrency": 8,  # Number of concurrent TarballSample downloads and dispatch
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
-        "image_config": {
-            "crop_and_resize": crop_and_resize,
-            "default_image_size": 1024,
-            "downsampling_ratio": 32,
-            "min_aspect_ratio": 0.5,
-            "max_aspect_ratio": 2.0,
-            "pre_encode_images": False,
-        },
         "prefetch_buffer_size": 256,
         "samples_buffer_size": 256,
         "limit": limit,
     }
+
+    if crop_and_resize:
+        # Optionally add a custom image config to crop and resize the images on the fly
+        client_config["image_config"] = IMAGE_CONFIG
 
     # # Make sure in the following that we compare apples to apples, meaning in that case
     # # that we materialize the payloads in the python scope in the expected format
