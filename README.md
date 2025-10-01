@@ -248,7 +248,7 @@ Create a new tag and a new release in this repo, a new package will be pushed au
 </details>
 
 <details> <summary><strong>Benchmarks</strong></summary>
-As per usual, benchmarks are a tricky game, and you shouldn't read too much in the following plots but do your own tests. Some python benchmark examples are provided in the /python folder.
+As usual, benchmarks are a tricky game, and you shouldn't read too much into the following plots but do your own tests. Some python benchmark examples are provided in the [python](./python/) folder.
 
 In general, Datago will be impactful if you want to load a lot of images very fast, but if you consume them as you go at a more leisury pace then it's not really needed. The more CPU work there is with the images and the higher quality they are, the more Datago will shine. The following benchmarks are using ImageNet 1k, which is very low resolution and thus kind of a worst case scenario.
 
