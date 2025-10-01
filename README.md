@@ -137,7 +137,7 @@ for _ in range(10):
 
 Datago can also process the images on the fly, for instance to align different image payloads. This is done by adding a `image_config` to the configuration. The following example shows how to align different image payloads.
 
-Processing can be very CPU heavy, but it will be distributed over all CPU cores wihout requiring multiple python processes (ie: you can keep a single python process using .get_sample()` on the client and still saturate all CPU cores).
+Processing can be very CPU heavy, but it will be distributed over all CPU cores wihout requiring multiple python processes. I.e., you can keep a single python process using `get_sample()` on the client and still saturate all CPU cores.
 
 There are three main processing topics that you can choose from:
 
