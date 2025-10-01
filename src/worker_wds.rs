@@ -141,7 +141,12 @@ async fn async_deserialize_samples(
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
-    let max_tasks = min(num_cpus::get(), limit);
+    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse::<usize>()
+        .unwrap_or(num_cpus::get() * 4);
+    let max_tasks = min(default_max_tasks, limit);
+
     info!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;

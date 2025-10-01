@@ -196,10 +196,10 @@ async fn pull_tarballs(
 async fn pull_tarballs_task(
     shared_client: Arc<SharedClient>,
     url: serde_json::Value,
+    retries: u8,
     samples_metadata_tx: kanal::Sender<TarballSample>,
     config: SourceWebDatasetConfig,
 ) -> Result<(), String> {
-    let retries = 3;
     let mut attempt = 0;
 
     while attempt < retries {
@@ -293,6 +293,7 @@ async fn tasks_from_shards(
     shared_client: Arc<SharedClient>,
     samples_metadata_tx: kanal::Sender<TarballSample>,
     config: &SourceWebDatasetConfig,
+    retries: u8,
 ) -> Result<serde_json::Value, String> {
     match get_url_list(&shared_client, config).await {
         Ok(mut task_list) => {
@@ -311,6 +312,7 @@ async fn tasks_from_shards(
                 tasks.spawn(pull_tarballs_task(
                     shared_client.clone(),
                     url,
+                    retries,
                     samples_metadata_tx.clone(),
                     config.clone(),
                 ));
@@ -396,17 +398,28 @@ fn query_shards_and_dispatch(
     source_config: SourceWebDatasetConfig,
 ) {
     // List all the shards from the bucket
-    // for each of them, start an async task to download the TarballSample
-    // and unpack it in memory
+    // for each of them, start an async task to download the TarballSample and unpack it in memory
     // Then, for each sample in the tarball (multiple payloads typically), send it to the processing channel
+
+    // Collect DATAGO_MAX_RETRIES from the environment, default to 3
+    let max_retries = std::env::var("DATAGO_MAX_RETRIES")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(3);
+
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(source_config.max_concurrency)
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            match tasks_from_shards(shared_client.clone(), samples_metadata_tx, &source_config)
-                .await
+            match tasks_from_shards(
+                shared_client.clone(),
+                samples_metadata_tx,
+                &source_config,
+                max_retries,
+            )
+            .await
             {
                 Ok(_) => {
                     debug!("query_shards_and_dispatch: finished processing all shards");

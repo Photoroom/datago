@@ -56,7 +56,7 @@ pub async fn bytes_from_url(
 async fn image_from_url(
     client: &SharedClient,
     url: &str,
-    retries: i32,
+    retries: u8,
 ) -> Result<image::DynamicImage, image::ImageError> {
     // Retry on the fetch and decode a few times, could happen that we get a broken packet
     for _ in 0..retries {
@@ -101,9 +101,8 @@ async fn image_payload_from_url(
     aspect_ratio: &String,
     encode_images: bool,
     img_to_rgb8: bool,
+    retries: u8,
 ) -> Result<ImagePayload, image::ImageError> {
-    let retries = 5;
-
     match image_from_url(client, url, retries).await {
         Ok(new_image) => {
             image_processing::image_to_payload(
@@ -125,6 +124,7 @@ async fn pull_sample(
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encode_images: bool,
     img_to_rgb8: bool,
+    retries: u8,
     samples_tx: Arc<kanal::Sender<Option<Sample>>>,
 ) -> Result<(), ()> {
     // Deserialize the sample metadata
@@ -142,6 +142,7 @@ async fn pull_sample(
             &String::new(),
             encode_images,
             img_to_rgb8,
+            retries,
         )
         .await
         {
@@ -176,6 +177,7 @@ async fn pull_sample(
                     &aspect_ratio,
                     encode_images,
                     img_to_rgb8,
+                    retries,
                 )
                 .await
                 {
@@ -201,6 +203,7 @@ async fn pull_sample(
                     &aspect_ratio,
                     encode_images,
                     false, // Masks are not converted to RGB8
+                    retries,
                 )
                 .await
                 {
@@ -277,7 +280,17 @@ async fn async_pull_samples(
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
-    let max_tasks = min(num_cpus::get(), limit);
+    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse::<usize>()
+        .unwrap_or(num_cpus::get() * 4);
+
+    let max_retries = std::env::var("DATAGO_MAX_RETRIES")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(3);
+
+    let max_tasks = min(default_max_tasks, limit);
     debug!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
@@ -299,6 +312,7 @@ async fn async_pull_samples(
             shareable_img_tfm.clone(),
             encode_images,
             img_to_rgb8,
+            max_retries,
             shareable_channel_tx.clone(),
         ));
 

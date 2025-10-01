@@ -1,11 +1,13 @@
-from datago import DatagoClient  # type: ignore
-import time
-from tqdm import tqdm
-import numpy as np
-from raw_types import raw_array_to_pil_image, raw_array_to_numpy
-import typer
 import json
+import time
+
+import numpy as np
+import typer
+from benchmark_defaults import IMAGE_CONFIG
+from datago import DatagoClient  # type: ignore
 from PIL import Image
+from raw_types import raw_array_to_numpy, raw_array_to_pil_image
+from tqdm import tqdm
 
 
 def benchmark(
@@ -31,18 +33,19 @@ def benchmark(
             "rank": 0,
             "world_size": 1,
         },
-        "image_config": {
-            "crop_and_resize": crop_and_resize,
-            "default_image_size": 1024,
-            "downsampling_ratio": 32,
-            "min_aspect_ratio": 0.5,
-            "max_aspect_ratio": 2.0,
-            "pre_encode_images": encode_images,
-        },
         "prefetch_buffer_size": 128,
         "samples_buffer_size": 64,
         "limit": limit,
     }
+
+    if crop_and_resize or encode_images:
+        client_config["image_config"] = IMAGE_CONFIG
+
+    if encode_images:
+        client_config["image_config"]["crop_and_resize"] = (  # type: ignore
+            crop_and_resize  # You may want to encode images without resizing them
+        )
+        client_config["image_config"]["pre_encode_images"] = True  # type: ignore
 
     client = DatagoClient(json.dumps(client_config))
     client.start()  # Optional, but good practice to start the client to reduce latency to first sample (while you're instantiating models for instance)
