@@ -133,7 +133,7 @@ for _ in range(10):
 
 </details>
 
-## Process the images on the fly
+## Process images on the fly
 
 Datago can also process the images on the fly, for instance to align different image payloads. This is done by adding a `image_config` to the configuration. The following example shows how to align different image payloads.
 
