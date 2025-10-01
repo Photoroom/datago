@@ -143,7 +143,7 @@ There are three main processing topics that you can choose from:
 
 - crop the images to within an aspect ratio bucket (which is very handy for all Transformer / patch based architectures)
 - resize the images (setting here will be related to the square aspect ratio bucket, other buckets will differ of course)
-- pre-encode the images to a specific format (jpg, png, ..)
+- pre-encode the images to a specific format (jpg, png, ...)
 
 ```python
    config = {
