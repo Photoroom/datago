@@ -286,8 +286,8 @@ async fn async_pull_samples(
         .unwrap_or(num_cpus::get() * 4);
 
     let max_retries = std::env::var("DATAGO_MAX_RETRIES")
-        .unwrap_or_else(|_| "3".to_string())
-        .parse::<u8>()
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(3);
 
     let max_tasks = min(default_max_tasks, limit);

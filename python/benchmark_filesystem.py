@@ -1,41 +1,34 @@
-import time
-from tqdm import tqdm
+import json
 import os
+import time
+
 import typer
-from dataset import DatagoIterDataset
 from benchmark_defaults import IMAGE_CONFIG
+from dataset import DatagoIterDataset
+from tqdm import tqdm
 
 
 def benchmark(
-    root_path: str = typer.Option(
-        os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"
-    ),
+    root_path: str = typer.Option(os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"),
     limit: int = typer.Option(2000, help="The number of samples to test on"),
-    crop_and_resize: bool = typer.Option(
-        False, help="Crop and resize the images on the fly"
-    ),
+    crop_and_resize: bool = typer.Option(False, help="Crop and resize the images on the fly"),
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
     num_workers: int = typer.Option(os.cpu_count(), help="Number of workers to use"),
     sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
 ):
     if sweep:
         results = {}
-        for num_workers in range(1, os.cpu_count() * 2):
-            results[num_workers] = benchmark(
-                root_path, limit, crop_and_resize, compare_torch, num_workers, False
-            )
+        for num_workers in range(2, (os.cpu_count() or 2), 4):
+            results[num_workers] = benchmark(root_path, limit, crop_and_resize, compare_torch, num_workers, False)
 
         # Save results to a json file
-        import json
 
-        with open("benchmark_results.json", "w") as f:
+        with open("benchmark_results_filesystem.json", "w") as f:
             json.dump(results, f, indent=2)
 
         return results
 
-    print(
-        f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers"
-    )
+    print(f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers")
 
     # This setting is not exposed in the config, but an env variable can be used instead
     os.environ["DATAGO_MAX_TASKS"] = str(num_workers)
@@ -71,7 +64,7 @@ def benchmark(
     assert count == limit, f"Expected {limit} samples, got {count}"
     fps = limit / (time.time() - start)
     results = {"datago": {"fps": fps, "count": count}}
-    print(f"Datago - {num_workers} workers - FPS {fps:.2f}")
+    print(f"Datago - FPS {fps:.2f} - workers {num_workers}")
     del datago_dataset
 
     # Save the last image as a test
@@ -80,16 +73,14 @@ def benchmark(
 
     # Let's compare against a classic pytorch dataloader
     if compare_torch:
-        from torchvision import datasets, transforms  # type: ignore
         from torch.utils.data import DataLoader
+        from torchvision import datasets, transforms  # type: ignore
 
         # Define the transformations to apply to each image
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize(
-                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
-                    ),
+                    transforms.Resize((1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS),
                 ]
             )
             if crop_and_resize
@@ -97,9 +88,7 @@ def benchmark(
         )
 
         # Create the ImageFolder dataset
-        dataset = datasets.ImageFolder(
-            root=root_path, transform=transform, allow_empty=True
-        )
+        dataset = datasets.ImageFolder(root=root_path, transform=transform, allow_empty=True)
 
         # Create a DataLoader to allow for multiple workers
         # Use available CPU count for num_workers
@@ -120,7 +109,7 @@ def benchmark(
                 break
         fps = n_images / (time.time() - start)
         results["torch"] = {"fps": fps, "count": n_images}
-        print(f"Torch {num_workers} workers - FPS {fps:.2f}")
+        print(f"Torch - FPS {fps:.2f} - workers {num_workers}")
 
     return results
 

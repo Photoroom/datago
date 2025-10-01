@@ -403,8 +403,8 @@ fn query_shards_and_dispatch(
 
     // Collect DATAGO_MAX_RETRIES from the environment, default to 3
     let max_retries = std::env::var("DATAGO_MAX_RETRIES")
-        .unwrap_or_else(|_| "3".to_string())
-        .parse::<u8>()
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(3);
 
     tokio::runtime::Builder::new_multi_thread()

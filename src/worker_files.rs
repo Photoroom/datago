@@ -86,8 +86,8 @@ async fn async_pull_samples(
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
     let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .unwrap_or_else(|_| "0".to_string())
-        .parse::<usize>()
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(num_cpus::get()); // Number of CPUs is actually a good heuristic for a small machine
 
     let max_tasks = min(default_max_tasks, limit);

@@ -1,12 +1,13 @@
-from datago import DatagoClient  # type: ignore
-import time
-from tqdm import tqdm
-import numpy as np
-from raw_types import raw_array_to_pil_image, raw_array_to_numpy
-import typer
 import json
+import time
+
+import numpy as np
+import typer
+from benchmark_defaults import IMAGE_CONFIG
+from datago import DatagoClient  # type: ignore
 from PIL import Image
-from python.benchmark_defaults import IMAGE_CONFIG
+from raw_types import raw_array_to_numpy, raw_array_to_pil_image
+from tqdm import tqdm
 
 
 def benchmark(
