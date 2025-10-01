@@ -18,7 +18,7 @@ def benchmark(
 ):
     if sweep:
         results = {}
-        for num_workers in range(2, (os.cpu_count() or 2), 4):
+        for num_workers in range(2, (os.cpu_count() or 2), 16):
             results[num_workers] = benchmark(root_path, limit, crop_and_resize, compare_torch, num_workers, False)
 
         # Save results to a json file

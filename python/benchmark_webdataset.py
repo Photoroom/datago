@@ -22,7 +22,7 @@ def benchmark(
 ):
     if sweep:
         results = {}
-        for num_workers in range(2, (os.cpu_count() or 1) * 2, 4):
+        for num_workers in range(2, max(64, (os.cpu_count() or 1)), 8):
             results[num_workers] = benchmark(limit, crop_and_resize, compare_wds, num_workers, False)
 
         # Save results to a json file
@@ -47,7 +47,7 @@ def benchmark(
         "source_config": {
             "url": url,
             "shuffle": True,
-            "max_concurrency": 8,  # Number of concurrent TarballSample downloads and dispatch
+            "max_concurrency": num_workers,  # Number of concurrent TarballSample downloads and dispatch
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
         "prefetch_buffer_size": 256,
@@ -66,7 +66,7 @@ def benchmark(
     start = time.time()  # Note that the datago dataset will start preparing samples (up to the requested buffer size) at construction time
 
     img, count = None, 0
-    for sample in tqdm(datago_dataset, dynamic_ncols=True):
+    for sample in tqdm(datago_dataset, desc="Datago", dynamic_ncols=True):
         assert sample["id"] != ""
         img = sample["image"]
         count += 1
@@ -74,6 +74,7 @@ def benchmark(
     assert count == limit, f"Expected {limit} samples, got {count}"
     fps = limit / (time.time() - start)
     print(f"-- Datago WDS FPS {fps:.2f} - workers {num_workers}")
+    results = {"datago": {"fps": fps, "count": count}}
     del datago_dataset
 
     # Save the last image as a test
@@ -126,12 +127,14 @@ def benchmark(
 
         # Iterate over the DataLoader
         start = time.time()
-        for n_images, _ in enumerate(tqdm(dataloader, dynamic_ncols=True)):
+        for n_images, _ in enumerate(tqdm(dataloader, desc="WDS", dynamic_ncols=True)):
             if n_images > limit:
                 break
         fps = n_images / (time.time() - start)
         print(f"-- Webdataset lib FPS ({num_workers} processes) {fps:.2f}")
 
+        results["webdataset"] = {"fps": fps, "count": n_images}
+        return results
 
 if __name__ == "__main__":
     typer.run(benchmark)

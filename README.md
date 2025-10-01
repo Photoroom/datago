@@ -250,17 +250,18 @@ Create a new tag and a new release in this repo, a new package will be pushed au
 <details> <summary><strong>Benchmarks</strong></summary>
 As usual, benchmarks are a tricky game, and you shouldn't read too much into the following plots but do your own tests. Some python benchmark examples are provided in the [python](./python/) folder.
 
-In general, Datago will be impactful if you want to load a lot of images very fast, but if you consume them as you go at a more leisury pace then it's not really needed. The more CPU work there is with the images and the higher quality they are, the more Datago will shine. The following benchmarks are using ImageNet 1k, which is very low resolution and thus kind of a worst case scenario. Data is served from cache (i.e. the OS cache) and the images are not pre-processed.
+In general, Datago will be impactful if you want to load a lot of images very fast, but if you consume them as you go at a more leisury pace then it's not really needed. The more CPU work there is with the images and the higher quality they are, the more Datago will shine. The following benchmarks are using ImageNet 1k, which is very low resolution and thus kind of a worst case scenario. Data is served from cache (i.e. the OS cache) and the images are not pre-processed. In this case the receiving python process is typically the bottleneck, and caps at around 2000 images per second.
 
 ### AMD Zen3 laptop - IN1k - disk
 ![AMD Zen3 laptop & M2 SSD](assets/zen3_ssd.png)
 
 ### AMD EPYC 9454 - IN1k - disk
-//  TODO: @lefaudeux, with an example from a cluster
+![AMD EPYC 9454](assets/epyc_vast.png)
 
-### AMD EPYC 9454 - IN1k - webdataset
-//  TODO: @lefaudeux, with an example from a cluster
+This benchmark is using the PD12M dataset, which is a 12M images dataset, with a lot of high resolution images. It's accessed through the webdataset front end, datago is compared with the popular python webdataset library. Note that datago will start streaming the images faster here (almost instantly !), so given enough time the two results would look closer.
 
+### AMD EPYC 9454 - pd12m - webdataset
+![AMD EPYC 9454](assets/epyc_wds.png)
 
 </details>
 
