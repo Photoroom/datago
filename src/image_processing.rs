@@ -10,6 +10,35 @@ use std::collections::HashMap;
 use std::io::Cursor;
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+const DEFAULT_JPEG_QUALITY: u8 = 92;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EncodeFormat {
+    #[default]
+    Png,
+    Jpeg,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ImageEncoding {
+    pub encode_images: bool,
+    pub img_to_rgb8: bool,
+    pub encode_format: EncodeFormat,
+    pub jpeg_quality: u8,
+}
+
+impl Default for ImageEncoding {
+    fn default() -> Self {
+        ImageEncoding {
+            encode_images: false,
+            img_to_rgb8: false,
+            encode_format: EncodeFormat::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImageTransformConfig {
     pub crop_and_resize: bool,
@@ -31,6 +60,16 @@ pub struct ImageTransformConfig {
 
     #[serde(default)]
     pub image_to_rgb8: bool, // Convert all images to RGB 8 bits format
+
+    #[serde(default)]
+    pub encode_format: EncodeFormat,
+
+    #[serde(default = "default_jpeg_quality")]
+    pub jpeg_quality: u8, // 0-100, default 92
+}
+
+fn default_jpeg_quality() -> u8 {
+    DEFAULT_JPEG_QUALITY
 }
 
 impl ImageTransformConfig {
@@ -274,8 +313,7 @@ pub async fn image_to_payload(
     mut image: image::DynamicImage,
     img_tfm: &Option<ARAwareTransform>,
     aspect_ratio: &String,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
     let original_height = image.height() as usize;
     let original_width = image.width() as usize;
@@ -297,7 +335,7 @@ pub async fn image_to_payload(
     let width = image.width() as usize;
 
     // Image to RGB8 if requested
-    if img_to_rgb8 && image.color() != image::ColorType::Rgb8 {
+    if encoding.img_to_rgb8 && image.color() != image::ColorType::Rgb8 {
         image = image::DynamicImage::ImageRgb8(image.to_rgb8());
         bit_depth = 8;
         channels = 3;
@@ -306,23 +344,48 @@ pub async fn image_to_payload(
 
     // Encode the image if needed
     let mut image_bytes: Vec<u8> = Vec::new();
-    if encode_images {
-        // Pre-allocate buffer based on image size estimate
-        image_bytes.reserve(width * height * channels as usize);
+    if encoding.encode_images {
+        match encoding.encode_format {
+            EncodeFormat::Jpeg => {
+                // Use JPEG encoder with specified quality
+                let mut cursor = Cursor::new(&mut image_bytes);
+                let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
+                    &mut cursor,
+                    encoding.jpeg_quality,
+                );
+                encoder
+                    .encode(
+                        image.as_bytes(),
+                        image.width(),
+                        image.height(),
+                        image.color().into(),
+                    )
+                    .map_err(|e| {
+                        image::ImageError::IoError(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e.to_string(),
+                        ))
+                    })?;
+            }
+            EncodeFormat::Png => {
+                // Pre-allocate buffer based on image size estimate
+                image_bytes.reserve(width * height * channels as usize);
 
-        // Use the encoder directly with the raw bytes
-        image::codecs::png::PngEncoder::new_with_quality(
-            &mut Cursor::new(&mut image_bytes),
-            image::codecs::png::CompressionType::Fast,
-            image::codecs::png::FilterType::Adaptive,
-        )
-        .write_image(
-            image.as_bytes(),
-            image.width(),
-            image.height(),
-            image.color().into(),
-        )
-        .map_err(std::io::Error::other)?;
+                // PNG encoding with optimized settings
+                image::codecs::png::PngEncoder::new_with_quality(
+                    &mut Cursor::new(&mut image_bytes),
+                    image::codecs::png::CompressionType::Fast,
+                    image::codecs::png::FilterType::Adaptive,
+                )
+                .write_image(
+                    image.as_bytes(),
+                    image.width(),
+                    image.height(),
+                    image.color().into(),
+                )
+                .map_err(std::io::Error::other)?;
+            }
+        }
 
         channels = -1; // Signal the fact that the image is encoded
     } else {
@@ -358,6 +421,8 @@ mod tests {
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
             image_to_rgb8: false,
+            encode_format: EncodeFormat::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         };
 
         let transform = config.get_ar_aware_transform();
@@ -404,7 +469,13 @@ mod tests {
     #[tokio::test]
     async fn test_image_to_payload_basic() {
         let img = DynamicImage::new_rgb8(100, 50);
-        let result = image_to_payload(img.clone(), &None, &"".to_string(), false, false).await;
+        let result = image_to_payload(
+            img.clone(),
+            &None,
+            &"".to_string(),
+            ImageEncoding::default(),
+        )
+        .await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -424,8 +495,10 @@ mod tests {
             img.clone(),
             &None,
             &"".to_string(),
-            true, // encode_images = true
-            false,
+            ImageEncoding {
+                encode_images: true,
+                ..Default::default()
+            },
         )
         .await;
 
@@ -451,8 +524,10 @@ mod tests {
             img.clone(),
             &None,
             &"".to_string(),
-            false,
-            true, // image_to_rgb8 = true
+            ImageEncoding {
+                img_to_rgb8: true,
+                ..Default::default()
+            },
         )
         .await;
 
@@ -473,6 +548,8 @@ mod tests {
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
             image_to_rgb8: false,
+            encode_format: EncodeFormat::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         };
         let transform = Some(config.get_ar_aware_transform());
 
@@ -480,8 +557,7 @@ mod tests {
             img.clone(),
             &transform,
             &"".to_string(), // Empty string means auto-detect aspect ratio
-            false,
-            false,
+            ImageEncoding::default(),
         )
         .await;
 
@@ -554,6 +630,8 @@ mod tests {
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
             image_to_rgb8: false,
+            encode_format: EncodeFormat::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         };
 
         let transform = config.get_ar_aware_transform();
@@ -581,6 +659,8 @@ mod tests {
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
             image_to_rgb8: false,
+            encode_format: EncodeFormat::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         };
         let transform = config.get_ar_aware_transform();
 
@@ -599,6 +679,8 @@ mod tests {
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
             image_to_rgb8: false,
+            encode_format: EncodeFormat::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         };
         let transform = config.get_ar_aware_transform();
 
@@ -657,6 +739,8 @@ mod tests {
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
             image_to_rgb8: false,
+            encode_format: EncodeFormat::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         };
         let transform = config.get_ar_aware_transform();
 

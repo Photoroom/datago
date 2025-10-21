@@ -15,19 +15,11 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
 async fn image_payload_from_path(
     path: &str,
     img_tfm: &Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
     match image_from_path(path).await {
         Ok(new_image) => {
-            image_processing::image_to_payload(
-                new_image,
-                img_tfm,
-                &"".to_string(),
-                encode_images,
-                img_to_rgb8,
-            )
-            .await
+            image_processing::image_to_payload(new_image, img_tfm, &"".to_string(), encoding).await
         }
         Err(e) => Err(e),
     }
@@ -36,18 +28,10 @@ async fn image_payload_from_path(
 async fn pull_sample(
     sample_json: serde_json::Value,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     samples_tx: kanal::Sender<Option<Sample>>,
 ) -> Result<(), ()> {
-    match image_payload_from_path(
-        sample_json.as_str().unwrap(),
-        &img_tfm,
-        encode_images,
-        img_to_rgb8,
-    )
-    .await
-    {
+    match image_payload_from_path(sample_json.as_str().unwrap(), &img_tfm, encoding).await {
         Ok(image) => {
             let sample = Sample {
                 id: sample_json.to_string(),
@@ -79,8 +63,7 @@ async fn async_pull_samples(
     samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
     // We use async-await here, to better use IO stalls
@@ -106,8 +89,7 @@ async fn async_pull_samples(
         tasks.spawn(pull_sample(
             received,
             shareable_img_tfm.clone(),
-            encode_images,
-            img_to_rgb8,
+            encoding,
             samples_tx.clone(),
         ));
 
@@ -139,8 +121,7 @@ pub fn pull_samples(
     samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
     tokio::runtime::Builder::new_multi_thread()
@@ -153,8 +134,7 @@ pub fn pull_samples(
                 samples_metadata_rx,
                 samples_tx,
                 image_transform,
-                encode_images,
-                img_to_rgb8,
+                encoding,
                 limit,
             )
             .await;
@@ -210,8 +190,12 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
-        let result =
-            image_payload_from_path(image_path.to_str().unwrap(), &None, false, false).await;
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            image_processing::ImageEncoding::default(),
+        )
+        .await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -239,12 +223,18 @@ mod tests {
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
             image_to_rgb8: false,
+            encode_format: image_processing::EncodeFormat::default(),
+            jpeg_quality: 92,
         };
 
         let transform = Some(transform_config.get_ar_aware_transform());
 
-        let result =
-            image_payload_from_path(image_path.to_str().unwrap(), &transform, false, false).await;
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &transform,
+            image_processing::ImageEncoding::default(),
+        )
+        .await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -264,8 +254,10 @@ mod tests {
         let result = image_payload_from_path(
             image_path.to_str().unwrap(),
             &None,
-            true, // encode_images = true
-            false,
+            image_processing::ImageEncoding {
+                encode_images: true,
+                ..Default::default()
+            },
         )
         .await;
 
@@ -291,8 +283,10 @@ mod tests {
         let result = image_payload_from_path(
             image_path.to_str().unwrap(),
             &None,
-            false,
-            true, // image_to_rgb8 = true
+            image_processing::ImageEncoding {
+                img_to_rgb8: true,
+                ..Default::default()
+            },
         )
         .await;
 
@@ -311,7 +305,13 @@ mod tests {
         let (tx, rx) = kanal::bounded(10);
         let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
 
-        let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
+        let result = pull_sample(
+            sample_json,
+            Arc::new(None),
+            image_processing::ImageEncoding::default(),
+            tx,
+        )
+        .await;
 
         assert!(result.is_ok());
 
@@ -338,7 +338,13 @@ mod tests {
         let (tx, rx) = kanal::bounded(10);
         let sample_json = serde_json::Value::String("/nonexistent/path.png".to_string());
 
-        let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
+        let result = pull_sample(
+            sample_json,
+            Arc::new(None),
+            image_processing::ImageEncoding::default(),
+            tx,
+        )
+        .await;
 
         assert!(result.is_err());
 
@@ -369,7 +375,14 @@ mod tests {
         }
         metadata_tx.send(serde_json::Value::Null).unwrap(); // End marker
 
-        async_pull_samples(metadata_rx, samples_tx, None, false, false, 10).await;
+        async_pull_samples(
+            metadata_rx,
+            samples_tx,
+            None,
+            image_processing::ImageEncoding::default(),
+            10,
+        )
+        .await;
 
         // Check received samples
         let mut received_samples = Vec::new();
@@ -414,7 +427,14 @@ mod tests {
         metadata_tx.send(serde_json::Value::Null).unwrap();
 
         let limit = 3;
-        async_pull_samples(metadata_rx, samples_tx, None, false, false, limit).await;
+        async_pull_samples(
+            metadata_rx,
+            samples_tx,
+            None,
+            image_processing::ImageEncoding::default(),
+            limit,
+        )
+        .await;
 
         // Count received samples
         let mut count = 0;
@@ -457,8 +477,12 @@ mod tests {
         let image_path = temp_dir.path().join("test.webp");
         create_test_webp_image(&image_path);
 
-        let result =
-            image_payload_from_path(image_path.to_str().unwrap(), &None, false, false).await;
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            image_processing::ImageEncoding::default(),
+        )
+        .await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -478,7 +502,13 @@ mod tests {
         let (tx, rx) = kanal::bounded(10);
         let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
 
-        let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
+        let result = pull_sample(
+            sample_json,
+            Arc::new(None),
+            image_processing::ImageEncoding::default(),
+            tx,
+        )
+        .await;
 
         assert!(result.is_ok());
 
@@ -511,7 +541,13 @@ mod tests {
         metadata_tx.send(serde_json::Value::Null).unwrap();
 
         // Test the sync wrapper
-        pull_samples(metadata_rx, samples_tx, None, false, false, 1);
+        pull_samples(
+            metadata_rx,
+            samples_tx,
+            None,
+            image_processing::ImageEncoding::default(),
+            1,
+        );
 
         // Check that a sample was received
         let sample_opt = samples_rx.recv().unwrap();

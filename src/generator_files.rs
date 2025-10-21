@@ -151,8 +151,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
     let image_transform = client.image_transform.clone();
-    let encode_images = client.encode_images;
-    let img_to_rgb8 = client.image_to_rgb8;
+    let encoding = crate::image_processing::ImageEncoding {
+        encode_images: client.encode_images,
+        img_to_rgb8: client.img_to_rgb8,
+        encode_format: client.encode_format,
+        jpeg_quality: client.jpeg_quality,
+    };
     let limit = client.limit;
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
 
@@ -161,8 +165,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             samples_metadata_rx_worker,
             samples_tx,
             image_transform,
-            encode_images,
-            img_to_rgb8,
+            encoding,
             limit,
         );
     }));

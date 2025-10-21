@@ -1,9 +1,9 @@
 from PIL import Image
-from typing import Optional
+from typing import Optional, Union
 import numpy as np
 
 
-def uint8_array_to_numpy(raw_array):
+def uint8_array_to_numpy(raw_array: 'ImagePayload') -> Optional[np.ndarray]:
     if len(raw_array.data) == 0:
         return None
 
@@ -29,7 +29,7 @@ def uint8_array_to_numpy(raw_array):
     return np.frombuffer(raw_array.data, dtype=np.uint8).reshape(shape)
 
 
-def raw_array_to_numpy(raw_array) -> Optional[np.ndarray]:
+def raw_array_to_numpy(raw_array: 'ImagePayload') -> Optional[np.ndarray]:
     if len(raw_array.data) == 0:
         return None
 
@@ -42,7 +42,7 @@ def raw_array_to_numpy(raw_array) -> Optional[np.ndarray]:
         return None
 
 
-def raw_array_to_pil_image(raw_array) -> Optional[Image.Image]:
+def raw_array_to_pil_image(raw_array: 'ImagePayload') -> Union[Optional[Image.Image], 'ImagePayload']:
     if len(raw_array.data) == 0:
         return None
 
@@ -63,3 +63,25 @@ def raw_array_to_pil_image(raw_array) -> Optional[Image.Image]:
 
     assert c == 3, f"Expected 3 channels, got {c}"
     return Image.fromarray(np_array)
+
+
+def decode_image_payload(payload: 'ImagePayload') -> Image.Image:
+    """
+    Decode an ImagePayload (encoded image) into a PIL Image.
+    This is the proper way to decode encoded images for API users.
+    """
+    import io
+    return Image.open(io.BytesIO(payload.data))
+
+
+def get_image_mode(image_or_payload) -> str:
+    """
+    Helper function to get the mode of an image, whether it's a PIL Image or ImagePayload.
+    For ImagePayload objects (encoded images), we need to decode them first.
+    """
+    if hasattr(image_or_payload, 'mode'):
+        # It's a PIL Image
+        return image_or_payload.mode
+    else:
+        # It's an ImagePayload (encoded image), decode it first
+        return decode_image_payload(image_or_payload).mode

@@ -99,20 +99,12 @@ async fn image_payload_from_url(
     url: &str,
     img_tfm: &Option<image_processing::ARAwareTransform>,
     aspect_ratio: &String,
-    encode_images: bool,
-    img_to_rgb8: bool,
     retries: u8,
+    encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
     match image_from_url(client, url, retries).await {
         Ok(new_image) => {
-            image_processing::image_to_payload(
-                new_image,
-                img_tfm,
-                aspect_ratio,
-                encode_images,
-                img_to_rgb8,
-            )
-            .await
+            image_processing::image_to_payload(new_image, img_tfm, aspect_ratio, encoding).await
         }
         Err(e) => Err(e),
     }
@@ -122,9 +114,8 @@ async fn pull_sample(
     client: Arc<SharedClient>,
     sample_json: serde_json::Value,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
-    encode_images: bool,
-    img_to_rgb8: bool,
     retries: u8,
+    encoding: image_processing::ImageEncoding,
     samples_tx: Arc<kanal::Sender<Option<Sample>>>,
 ) -> Result<(), ()> {
     // Deserialize the sample metadata
@@ -140,9 +131,8 @@ async fn pull_sample(
             image_url,
             &img_tfm,
             &String::new(),
-            encode_images,
-            img_to_rgb8,
             retries,
+            encoding,
         )
         .await
         {
@@ -175,9 +165,8 @@ async fn pull_sample(
                     &latent.file_direct_url,
                     &img_tfm,
                     &aspect_ratio,
-                    encode_images,
-                    img_to_rgb8,
                     retries,
+                    encoding,
                 )
                 .await
                 {
@@ -196,14 +185,17 @@ async fn pull_sample(
                 }
             } else if latent.is_mask {
                 // Mask types, registered as latents but they need to be png-decoded
+                let mask_encoding = image_processing::ImageEncoding {
+                    img_to_rgb8: false, // Masks are not converted to RGB8
+                    ..encoding
+                };
                 match image_payload_from_url(
                     &client,
                     &latent.file_direct_url,
                     &img_tfm,
                     &aspect_ratio,
-                    encode_images,
-                    false, // Masks are not converted to RGB8
                     retries,
+                    mask_encoding,
                 )
                 .await
                 {
@@ -274,8 +266,7 @@ async fn async_pull_samples(
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
@@ -310,9 +301,8 @@ async fn async_pull_samples(
             client.clone(),
             received,
             shareable_img_tfm.clone(),
-            encode_images,
-            img_to_rgb8,
             max_retries,
+            encoding,
             shareable_channel_tx.clone(),
         ));
 
@@ -372,8 +362,7 @@ pub fn pull_samples(
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
     tokio::runtime::Builder::new_multi_thread()
@@ -387,8 +376,7 @@ pub fn pull_samples(
                 samples_meta_rx,
                 samples_tx,
                 image_transform,
-                encode_images,
-                img_to_rgb8,
+                encoding,
                 limit,
             )
             .await

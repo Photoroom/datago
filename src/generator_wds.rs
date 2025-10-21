@@ -458,8 +458,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     // Kick the workers which deserialize all the payloads
     let image_transform = client.image_transform.clone();
-    let encode_images = client.encode_images;
-    let img_to_rgb8 = client.image_to_rgb8;
+    let encoding = crate::image_processing::ImageEncoding {
+        encode_images: client.encode_images,
+        img_to_rgb8: client.img_to_rgb8,
+        encode_format: client.encode_format,
+        jpeg_quality: client.jpeg_quality,
+    };
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
     let worker = Some(thread::spawn(move || {
@@ -467,8 +471,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             samples_metadata_rx,
             samples_tx_worker,
             image_transform,
-            encode_images,
-            img_to_rgb8,
+            encoding,
             limit,
             extension_reference_image_type,
         );
