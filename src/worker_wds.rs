@@ -19,8 +19,7 @@ fn is_supported_type(ext: &str) -> bool {
 async fn process_sample(
     sample: TarballSample,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     samples_tx: Arc<kanal::Sender<Option<Sample>>>,
     extension_reference_image: String,
 ) -> Result<(), ()> {
@@ -49,8 +48,7 @@ async fn process_sample(
                                     raw_image,
                                     &img_tfm,
                                     &sample_aspect_ratio,
-                                    encode_images,
-                                    img_to_rgb8,
+                                    encoding,
                                 )
                                 .await
                                 .unwrap_or_else(|_| ImagePayload {
@@ -134,8 +132,7 @@ async fn async_deserialize_samples(
     samples_metadata_rx: kanal::Receiver<TarballSample>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
     extension_reference_image: String,
 ) -> Result<(), String> {
@@ -165,8 +162,7 @@ async fn async_deserialize_samples(
         tasks.spawn(process_sample(
             sample,
             shareable_img_tfm.clone(),
-            encode_images,
-            img_to_rgb8,
+            encoding,
             shareable_channel_tx.clone(),
             extension_reference_image.clone(),
         ));
@@ -221,8 +217,7 @@ pub fn deserialize_samples(
     samples_metadata_rx: kanal::Receiver<TarballSample>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
     extension_reference_image: String,
 ) {
@@ -236,8 +231,7 @@ pub fn deserialize_samples(
                 samples_metadata_rx,
                 samples_tx,
                 image_transform,
-                encode_images,
-                img_to_rgb8,
+                encoding,
                 limit,
                 extension_reference_image,
             )

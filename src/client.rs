@@ -22,7 +22,9 @@ pub struct DatagoClient {
     // Sample processing
     pub image_transform: Option<ARAwareTransform>,
     pub encode_images: bool,
-    pub image_to_rgb8: bool, // Convert all images to RGB 8 bits format
+    pub img_to_rgb8: bool,
+    pub encode_format: crate::image_processing::EncodeFormat,
+    pub jpeg_quality: u8,
 
     // Holds all the variables related to a running engine
     engine: Option<DatagoEngine>,
@@ -80,13 +82,18 @@ impl DatagoClient {
             Some(config) => {
                 let mut image_transform: Option<ARAwareTransform> = None;
                 let mut encode_images = false;
-                let mut image_to_rgb8 = false;
+                let mut img_to_rgb8 = false;
+                let mut encode_format = crate::image_processing::EncodeFormat::default();
+                let mut jpeg_quality = 92u8;
+
                 if let Some(image_config) = config.image_config {
                     if image_config.crop_and_resize {
                         image_transform = Some(image_config.get_ar_aware_transform());
                     }
                     encode_images = image_config.pre_encode_images;
-                    image_to_rgb8 = image_config.image_to_rgb8;
+                    img_to_rgb8 = image_config.image_to_rgb8;
+                    encode_format = image_config.encode_format;
+                    jpeg_quality = image_config.jpeg_quality;
                 }
 
                 DatagoClient {
@@ -98,7 +105,9 @@ impl DatagoClient {
                     max_connections: 128,
                     image_transform,
                     encode_images,
-                    image_to_rgb8,
+                    img_to_rgb8,
+                    encode_format,
+                    jpeg_quality,
                     engine: None,
                     is_valid: true,
                 }
@@ -114,7 +123,9 @@ impl DatagoClient {
                     max_connections: 0,
                     image_transform: None,
                     encode_images: false,
-                    image_to_rgb8: false,
+                    img_to_rgb8: false,
+                    encode_format: crate::image_processing::EncodeFormat::default(),
+                    jpeg_quality: 92,
                     engine: None,
                     is_valid: false,
                 }
@@ -436,7 +447,9 @@ mod tests {
             min_aspect_ratio: 0.5,
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
-            image_to_rgb8: false
+            image_to_rgb8: false,
+            encode_format: crate::image_processing::EncodeFormat::default(),
+            jpeg_quality: 92
         });
 
         let mut client = DatagoClient::new(config.to_string());
@@ -468,7 +481,9 @@ mod tests {
             min_aspect_ratio: 0.5,
             max_aspect_ratio: 2.0,
             pre_encode_images: true, // new part being tested
-            image_to_rgb8: false
+            image_to_rgb8: false,
+            encode_format: crate::image_processing::EncodeFormat::default(),
+            jpeg_quality: 92
         });
 
         let mut client = DatagoClient::new(config.to_string());

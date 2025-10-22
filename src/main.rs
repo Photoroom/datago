@@ -101,6 +101,8 @@ fn main() {
             max_aspect_ratio: 2.0,
             pre_encode_images: true,
             image_to_rgb8: false,
+            encode_format: image_processing::EncodeFormat::default(),
+            jpeg_quality: 92,
         })
     } else {
         None

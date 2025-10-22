@@ -85,6 +85,9 @@ if __name__ == "__main__":
             "min_aspect_ratio": 0.5,
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
+            # Optional: Use JPEG encoding instead of PNG (defaults to PNG if not specified)
+            # "encode_format": "jpeg",  # or "png"
+            # "jpeg_quality": 92,  # 0-100, only used when encode_format is "jpeg"
         },
         "prefetch_buffer_size": 64,
         "samples_buffer_size": 128,
