@@ -187,6 +187,7 @@ async fn pull_sample(
                 // Mask types, registered as latents but they need to be png-decoded
                 let mask_encoding = image_processing::ImageEncoding {
                     img_to_rgb8: false, // Masks are not converted to RGB8
+                    encode_format: image_processing::EncodeFormat::Png, // Masks are always PNGs, never JPEGs
                     ..encoding
                 };
                 match image_payload_from_url(

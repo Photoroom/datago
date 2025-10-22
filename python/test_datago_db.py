@@ -179,7 +179,7 @@ def test_jpeg_compression():
 
 
 def test_png_compression():
-    # Check that PNG compression still works (default behavior)
+    # Check that PNG compression works (default behavior)
     client_config = get_json_config()
     client_config["image_config"]["pre_encode_images"] = True
     # Don't specify encode_format - should default to PNG
