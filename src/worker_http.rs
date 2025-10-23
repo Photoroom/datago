@@ -26,7 +26,7 @@ pub async fn bytes_from_url(
 ) -> Option<Vec<u8>> {
     // Retry on the request a few times
     let timeout = std::time::Duration::from_secs(120);
-    let _permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire().await;
 
     // Get a client reference with optimized settings
     let client = &shared_client.client;
