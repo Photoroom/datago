@@ -335,7 +335,7 @@ async fn get_response(
     shared_client: Arc<SharedClient>,
     request: &reqwest::Request,
 ) -> Result<serde_json::Value, reqwest_middleware::Error> {
-    let _permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire().await;
 
     match shared_client
         .client
@@ -363,7 +363,7 @@ async fn async_pull_and_dispatch_pages(
     let mut headers = HeaderMap::new();
     headers.insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&format!("Token  {api_key}")).unwrap(),
+        HeaderValue::from_str(&format!("Token {api_key}")).unwrap(),
     );
 
     let db_request = build_request(source_config.clone());
