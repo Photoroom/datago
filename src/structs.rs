@@ -135,9 +135,14 @@ pub fn new_shared_client(max_connections: usize) -> SharedClient {
         )
         .build_with_max_retries(3);
 
-    let client = ClientBuilder::new(reqwest::Client::new())
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .build();
+    let client = ClientBuilder::new(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap(),
+    )
+    .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+    .build();
 
     SharedClient {
         client,

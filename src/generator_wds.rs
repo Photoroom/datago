@@ -73,7 +73,7 @@ async fn pull_tarballs(
     let url = url.as_str().unwrap();
 
     // We use a shared client to make it possible to limit the number of outstanding connections
-    let _permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire().await;
     let mut request_builder = shared_client.client.get(url);
     if let Some(token) = auth_token {
         request_builder = request_builder.bearer_auth(token);
@@ -235,7 +235,7 @@ async fn get_url_list(
     shared_client: &Arc<SharedClient>,
     config: &SourceWebDatasetConfig,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let _permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire().await;
 
     // Either ping the url to get the pages, or use the {...} syntax
     if config.url.contains("{") {
