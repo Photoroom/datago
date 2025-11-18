@@ -9,26 +9,34 @@ from tqdm import tqdm
 
 
 def benchmark(
-    root_path: str = typer.Option(os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"),
+    root_path: str = typer.Option(
+        os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"
+    ),
     limit: int = typer.Option(2000, help="The number of samples to test on"),
-    crop_and_resize: bool = typer.Option(False, help="Crop and resize the images on the fly"),
+    crop_and_resize: bool = typer.Option(
+        False, help="Crop and resize the images on the fly"
+    ),
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
     num_workers: int = typer.Option(os.cpu_count(), help="Number of workers to use"),
     sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
 ):
     if sweep:
-        results = {}
-        for num_workers in range(2, (os.cpu_count() or 2), 16):
-            results[num_workers] = benchmark(root_path, limit, crop_and_resize, compare_torch, num_workers, False)
+        results_sweep = {}
+        for num_workers in range(2, (os.cpu_count() or 2), 2):
+            results_sweep[num_workers] = benchmark(
+                root_path, limit, crop_and_resize, compare_torch, num_workers, False
+            )
 
         # Save results to a json file
 
         with open("benchmark_results_filesystem.json", "w") as f:
-            json.dump(results, f, indent=2)
+            json.dump(results_sweep, f, indent=2)
 
-        return results
+        return results_sweep
 
-    print(f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers")
+    print(
+        f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers"
+    )
 
     # This setting is not exposed in the config, but an env variable can be used instead
     os.environ["DATAGO_MAX_TASKS"] = str(num_workers)
@@ -80,7 +88,9 @@ def benchmark(
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize((1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS),
+                    transforms.Resize(
+                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
+                    ),
                 ]
             )
             if crop_and_resize
@@ -88,7 +98,9 @@ def benchmark(
         )
 
         # Create the ImageFolder dataset
-        dataset = datasets.ImageFolder(root=root_path, transform=transform, allow_empty=True)
+        dataset = datasets.ImageFolder(
+            root=root_path, transform=transform, allow_empty=True
+        )
 
         # Create a DataLoader to allow for multiple workers
         # Use available CPU count for num_workers

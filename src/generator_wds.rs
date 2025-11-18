@@ -363,10 +363,10 @@ async fn tasks_from_shards(
                 }
             }
 
-            if join_error.is_some() {
+            if let Some(error) = join_error {
                 // If we had an error, we log it and return an error
-                warn!("dispatch_shards: one of the tasks failed: {join_error:?}");
-                return Err(join_error.unwrap().to_string());
+                warn!("dispatch_shards: one of the tasks failed: {error:?}");
+                return Err(error.to_string());
             }
 
             // Bookkeeping and report

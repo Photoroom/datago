@@ -59,6 +59,7 @@ async fn process_sample(
                                     original_width: 0,
                                     bit_depth: 0,
                                     channels: 0,
+                                    is_encoded: false,
                                 });
 
                                 if sample_aspect_ratio.is_empty() {

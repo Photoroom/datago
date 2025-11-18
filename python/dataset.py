@@ -29,11 +29,12 @@ class DatagoIterDataset:
             return json.loads(item)
 
         if isinstance(item, dict):
-            # recurvisely convert the dictionary
+            # recursively convert the dictionary
             return {k: DatagoIterDataset.to_python_types(v, k) for k, v in item.items()}
 
         elif "image" in key:
-            return raw_array_to_pil_image(item)
+            # Use the new Rust-side conversion to PIL image
+            return item.to_pil_image()
         elif "latent" in key:
             return raw_array_to_numpy(item)
 

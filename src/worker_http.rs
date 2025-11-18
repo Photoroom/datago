@@ -247,6 +247,7 @@ async fn pull_sample(
             width: 0,
             channels: 0,
             bit_depth: 0,
+            is_encoded: false,
         }),
         masks,
         additional_images,

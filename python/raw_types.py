@@ -43,26 +43,38 @@ def raw_array_to_numpy(raw_array: 'ImagePayload') -> Optional[np.ndarray]:
 
 
 def raw_array_to_pil_image(raw_array: 'ImagePayload') -> Union[Optional[Image.Image], 'ImagePayload']:
-    if len(raw_array.data) == 0:
-        return None
+    """
+    Convert an ImagePayload to a PIL Image.
+    This function is kept for backward compatibility but now delegates to the Rust implementation.
+    """
+    if hasattr(raw_array, 'to_pil_image'):
+        # Use the new Rust-side implementation
+        return raw_array.to_pil_image()
+    else:
+        # Fallback to old implementation for backward compatibility
+        if len(raw_array.data) == 0:
+            return None
 
-    if raw_array.channels <= 0:
-        # Do not try to decode, we have a jpg or png buffer already
-        return raw_array
+        if hasattr(raw_array, 'channels') and raw_array.channels <= 0:
+            # Do not try to decode, we have a jpg or png buffer already
+            return raw_array
 
-    # Zero copy conversion of the image buffer from RAW to PIL.Image
-    np_array = uint8_array_to_numpy(raw_array)
-    h, w, c = np_array.shape
+        # Zero copy conversion of the image buffer from RAW to PIL.Image
+        np_array = uint8_array_to_numpy(raw_array)
+        if np_array is None:
+            return None
 
-    # Greyscale image
-    if c == 1:
-        return Image.fromarray(np_array[:, :, 0], mode="L")
+        h, w, c = np_array.shape
 
-    if c == 4:
-        return Image.frombuffer("RGBA", (w, h), np_array, "raw", "RGBA", 0, 1)
+        # Greyscale image
+        if c == 1:
+            return Image.fromarray(np_array[:, :, 0], mode="L")
 
-    assert c == 3, f"Expected 3 channels, got {c}"
-    return Image.fromarray(np_array)
+        if c == 4:
+            return Image.frombuffer("RGBA", (w, h), np_array, "raw", "RGBA", 0, 1)
+
+        assert c == 3, f"Expected 3 channels, got {c}"
+        return Image.fromarray(np_array)
 
 
 def decode_image_payload(payload: 'ImagePayload') -> Image.Image:

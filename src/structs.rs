@@ -64,6 +64,120 @@ pub struct ImagePayload {
     pub channels: i8,
     #[pyo3(get, set)]
     pub bit_depth: usize,
+    #[pyo3(get, set)]
+    pub is_encoded: bool, // Indicates if image is already encoded (JPEG/PNG)
+}
+
+impl Default for ImagePayload {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[pymethods]
+impl ImagePayload {
+    #[new]
+    pub fn new() -> Self {
+        ImagePayload {
+            data: Vec::new(),
+            original_height: 0,
+            original_width: 0,
+            height: 0,
+            width: 0,
+            channels: 0,
+            bit_depth: 0,
+            is_encoded: false,
+        }
+    }
+
+    /// Convert this ImagePayload to a PIL Image directly in Rust
+    /// This avoids the need for Python-side conversion and reduces data copying
+    pub fn to_pil_image(&self, py: Python<'_>) -> PyResult<PyObject> {
+        if self.is_encoded {
+            // For encoded images (JPEG, PNG), create PIL image directly from bytes
+            let pil = py.import("PIL.Image")?;
+            let bytes_io = py
+                .import("io")?
+                .getattr("BytesIO")?
+                .call1((self.data.as_slice(),))?;
+            let image = pil.call_method1("open", (bytes_io,))?;
+            Ok(image.into_py(py))
+        } else {
+            // For raw images, create numpy array first then convert to PIL
+            let numpy = py.import("numpy")?;
+            let shape: (usize, usize, usize) = if self.channels == 1 {
+                (self.height, self.width, 1)
+            } else {
+                (self.height, self.width, self.channels as usize)
+            };
+
+            let np_array = numpy
+                .call_method1(
+                    "frombuffer",
+                    (self.data.as_slice(), numpy.getattr("uint8")?),
+                )?
+                .call_method1("reshape", (shape,))?;
+
+            let pil = py.import("PIL.Image")?;
+            if self.channels == 1 {
+                // Greyscale image - use 2D shape and create directly
+                let shape_2d = (self.height, self.width);
+                let np_array_2d = numpy
+                    .call_method1(
+                        "frombuffer",
+                        (self.data.as_slice(), numpy.getattr("uint8")?),
+                    )?
+                    .call_method1("reshape", (shape_2d,))?;
+                let image = pil.call_method1("fromarray", (np_array_2d,))?;
+                Ok(image.call_method1("convert", ("L",))?.into_py(py))
+            } else if self.channels == 4 {
+                // RGBA image
+                let image = pil.call_method1("fromarray", (np_array,))?;
+                Ok(image.call_method1("convert", ("RGBA",))?.into_py(py))
+            } else {
+                // RGB image (assuming 3 channels)
+                let image = pil.call_method1("fromarray", (np_array,))?;
+                Ok(image.into_py(py))
+            }
+        }
+    }
+
+    /// Get the image as a numpy array (zero-copy when possible)
+    pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let numpy = py.import("numpy")?;
+
+        if self.is_encoded {
+            // For encoded images, we need to decode first
+            // This is not zero-copy but necessary for encoded data
+            let pil = py.import("PIL.Image")?;
+            let bytes_io = py
+                .import("io")?
+                .getattr("BytesIO")?
+                .call1((self.data.as_slice(),))?;
+            let image = pil.call_method1("open", (bytes_io,))?;
+            let np_array = image
+                .call_method0("convert")?
+                .call_method1("RGB", ())?
+                .call_method0("to_numpy")?;
+            Ok(np_array.to_object(py))
+        } else {
+            // For raw images, create zero-copy numpy array
+            let shape: (usize, usize, usize) = if self.channels == 1 {
+                (self.height, self.width, 1)
+            } else {
+                (self.height, self.width, self.channels as usize)
+            };
+
+            let np_array = numpy
+                .call_method1(
+                    "frombuffer",
+                    (self.data.as_slice(), numpy.getattr("uint8")?),
+                )?
+                .call_method1("reshape", (shape,))?;
+
+            Ok(np_array.to_object(py))
+        }
+    }
 }
 
 #[pyclass]
@@ -209,6 +323,7 @@ mod tests {
             width: 50,
             channels: 3,
             bit_depth: 8,
+            is_encoded: false,
         };
 
         assert_eq!(payload.original_height, 100);
@@ -218,6 +333,7 @@ mod tests {
         assert_eq!(payload.channels, 3);
         assert_eq!(payload.bit_depth, 8);
         assert_eq!(payload.data.len(), 3);
+        assert!(!payload.is_encoded);
     }
 
     #[test]
@@ -245,6 +361,7 @@ mod tests {
                 width: 100,
                 channels: 3,
                 bit_depth: 8,
+                is_encoded: false,
             },
             masks: HashMap::new(),
             additional_images: HashMap::new(),
@@ -275,6 +392,7 @@ mod tests {
                 width: 100,
                 channels: 3,
                 bit_depth: 8,
+                is_encoded: false,
             },
             masks: HashMap::new(),
             additional_images: HashMap::new(),
