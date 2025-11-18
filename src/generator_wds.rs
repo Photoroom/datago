@@ -587,13 +587,14 @@ mod tests {
             while let Ok(sample) = engine.samples_rx.recv() {
                 assert!(sample.is_some(), "Sample is None");
                 let sample = sample.unwrap();
-                assert!(!sample.image.data.is_empty(), "Image data is empty");
-                assert!(sample.image.original_height > 0, "Original height is 0");
-                assert!(sample.image.original_width > 0, "Original width is 0");
-                assert!(sample.image.height > 0, "Height is 0");
-                assert!(sample.image.width > 0, "Width is 0");
-                assert!(sample.image.channels > 0, "Channels is 0");
-                assert!(sample.image.bit_depth > 0, "Bit depth is 0");
+                let payload = sample.image.get_payload();
+                assert!(!payload.data.is_empty(), "Image data is empty");
+                assert!(payload.original_height > 0, "Original height is 0");
+                assert!(payload.original_width > 0, "Original width is 0");
+                assert!(payload.height > 0, "Height is 0");
+                assert!(payload.width > 0, "Width is 0");
+                assert!(payload.channels > 0, "Channels is 0");
+                assert!(payload.bit_depth > 0, "Bit depth is 0");
                 count += 1;
                 samples.push(sample);
                 if count >= limit {

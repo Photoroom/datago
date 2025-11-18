@@ -4,6 +4,7 @@ import tempfile
 import os
 from PIL import Image
 import sys
+import json
 
 # Add the current directory to Python path so we can import datago
 sys.path.insert(0, '/home/lefaudeux/Git/datago')
@@ -31,8 +32,6 @@ try:
             'samples_buffer_size': 10,
         }
 
-        import json
-
         # Test the client
         initialize_logging('warn')
         client = DatagoClient(json.dumps(config))
@@ -43,33 +42,38 @@ try:
             print('✓ Sample received successfully')
             print(f'Sample ID: {sample.id}')
 
-            # Test image access
-            image = sample.image
-            print(f'Image type: {type(image)}')
+            # Test the automatic conversion approach
+            print("\n=== Testing Automatic Conversion ===")
 
-            # Test calling the object to get PIL image
+            # Method 1: Direct access (should work with __getattr__)
             try:
-                pil_image = image()  # Call the object to get PIL image
+                mode = sample.image.mode
+                print(f'✓ Direct access works: mode = {mode}')
+            except Exception as e:
+                print(f'✗ Direct access failed: {e}')
+
+            # Method 2: Callable approach
+            try:
+                pil_image = sample.image()
                 mode = pil_image.mode
                 size = pil_image.size
-                format = pil_image.format
-                print(f'✓ PIL Image accessible via image():')
-                print(f'  - type: {type(pil_image)}')
-                print(f'  - mode: {mode}')
-                print(f'  - size: {size}')
-                print(f'  - format: {format}')
-                print('✓ SUCCESS: PythonImagePayload() returns a PIL Image!')
+                print(f'✓ Callable approach works: {type(pil_image)} - mode={mode}, size={size}')
             except Exception as e:
-                print(f'✗ ERROR calling image(): {e}')
-                import traceback
-                traceback.print_exc()
+                print(f'✗ Callable approach failed: {e}')
 
-            # Test that we can still access the payload
+            # Method 3: Manual conversion via get_payload
             try:
-                payload = image.get_payload()
-                print(f'✓ Payload accessible via get_payload(): {type(payload)}')
+                payload = sample.image.get_payload()
+                pil_from_payload = payload.to_pil_image()
+                print(f'✓ Manual conversion works: {type(pil_from_payload)}')
             except Exception as e:
-                print(f'✗ ERROR accessing payload: {e}')
+                print(f'✗ Manual conversion failed: {e}')
+
+            print("\n=== Summary ===")
+            print("The PythonImagePayload object provides multiple ways to access the PIL image:")
+            print("1. sample.image() - Call the object to get PIL image directly")
+            print("2. sample.image.get_payload().to_pil_image() - Manual conversion")
+            print("3. Python dataset code can automatically call sample.image() for seamless experience")
         else:
             print('✗ No sample received')
 

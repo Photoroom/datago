@@ -68,6 +68,12 @@ pub struct ImagePayload {
     pub is_encoded: bool, // Indicates if image is already encoded (JPEG/PNG)
 }
 
+#[pyclass(name = "ImagePayload")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PythonImagePayload {
+    inner: ImagePayload,
+}
+
 impl Default for ImagePayload {
     fn default() -> Self {
         Self::new()
@@ -180,6 +186,45 @@ impl ImagePayload {
     }
 }
 
+#[pymethods]
+impl PythonImagePayload {
+    #[new]
+    pub fn new(inner: ImagePayload) -> Self {
+        PythonImagePayload { inner }
+    }
+
+    /// Convert to PIL image (this is the main method that gets called)
+    pub fn __call__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        self.inner.to_pil_image(py)
+    }
+
+    /// Get the underlying ImagePayload data
+    pub fn get_payload(&self) -> ImagePayload {
+        self.inner.clone()
+    }
+
+    /// Make it behave like a PIL image by delegating all attribute access
+    pub fn __getattr__(&self, attr: &str, py: Python<'_>) -> PyResult<PyObject> {
+        // Convert to PIL image and delegate all attribute access
+        let pil_image = self.inner.to_pil_image(py)?;
+        pil_image.getattr(py, attr)
+    }
+}
+
+/// Helper function to convert ImagePayload to PythonImagePayload
+pub fn to_python_image_payload(payload: ImagePayload) -> PythonImagePayload {
+    PythonImagePayload::new(payload)
+}
+
+/// Helper function to convert a HashMap of ImagePayload to HashMap of PythonImagePayload
+pub fn to_python_image_payload_map(
+    map: HashMap<String, ImagePayload>,
+) -> HashMap<String, PythonImagePayload> {
+    map.into_iter()
+        .map(|(k, v)| (k, PythonImagePayload::new(v)))
+        .collect()
+}
+
 #[pyclass]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sample {
@@ -196,13 +241,13 @@ pub struct Sample {
     pub duplicate_state: i32,
 
     #[pyo3(get, set)]
-    pub image: ImagePayload,
+    pub image: PythonImagePayload,
 
     #[pyo3(get, set)]
-    pub masks: HashMap<String, ImagePayload>,
+    pub masks: HashMap<String, PythonImagePayload>,
 
     #[pyo3(get, set)]
-    pub additional_images: HashMap<String, ImagePayload>,
+    pub additional_images: HashMap<String, PythonImagePayload>,
 
     #[pyo3(get, set)]
     pub latents: HashMap<String, LatentPayload>,
@@ -353,7 +398,7 @@ mod tests {
             source: "test_source".to_string(),
             attributes,
             duplicate_state: 0,
-            image: ImagePayload {
+            image: to_python_image_payload(ImagePayload {
                 data: vec![],
                 original_height: 100,
                 original_width: 100,
@@ -362,7 +407,7 @@ mod tests {
                 channels: 3,
                 bit_depth: 8,
                 is_encoded: false,
-            },
+            }),
             masks: HashMap::new(),
             additional_images: HashMap::new(),
             latents: HashMap::new(),
@@ -384,7 +429,7 @@ mod tests {
             source: "test_source".to_string(),
             attributes: HashMap::new(),
             duplicate_state: 0,
-            image: ImagePayload {
+            image: to_python_image_payload(ImagePayload {
                 data: vec![],
                 original_height: 100,
                 original_width: 100,
@@ -393,7 +438,7 @@ mod tests {
                 channels: 3,
                 bit_depth: 8,
                 is_encoded: false,
-            },
+            }),
             masks: HashMap::new(),
             additional_images: HashMap::new(),
             latents: HashMap::new(),

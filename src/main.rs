@@ -137,12 +137,14 @@ fn main() {
         if let Some(sample) = client.get_sample() {
             if crop_and_resize {
                 // Count the number of samples per size
-                let size = format!("{}x{}", sample.image.width, sample.image.height);
+                let payload = sample.image.get_payload();
+                let size = format!("{}x{}", payload.width, payload.height);
                 let count = size_buckets.entry(size).or_insert(0);
                 *count += 1;
             }
             if save_samples {
-                let img = image::load_from_memory(&sample.image.data).unwrap();
+                let payload = sample.image.get_payload();
+                let img = image::load_from_memory(&payload.data).unwrap();
                 let filename = format!("sample_{num_samples_received:?}.jpg");
                 img.save(filename).unwrap();
             }

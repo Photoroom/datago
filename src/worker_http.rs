@@ -1,5 +1,8 @@
 use crate::image_processing;
-use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, SharedClient, UrlLatent};
+use crate::structs::{
+    to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
+    LatentPayload, Sample, SharedClient, UrlLatent,
+};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
@@ -239,7 +242,7 @@ async fn pull_sample(
         source: sample.source,
         attributes: sample.attributes,
         duplicate_state: sample.duplicate_state.unwrap_or(-1),
-        image: image_payload.unwrap_or(ImagePayload {
+        image: to_python_image_payload(image_payload.unwrap_or(ImagePayload {
             data: Vec::new(),
             original_height: 0,
             original_width: 0,
@@ -248,9 +251,9 @@ async fn pull_sample(
             channels: 0,
             bit_depth: 0,
             is_encoded: false,
-        }),
-        masks,
-        additional_images,
+        })),
+        masks: to_python_image_payload_map(masks),
+        additional_images: to_python_image_payload_map(additional_images),
         latents,
         coca_embedding: sample.coca_embedding.unwrap_or_default().vector,
         tags: sample.tags.unwrap_or_default(),

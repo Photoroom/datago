@@ -1,5 +1,5 @@
 use crate::image_processing;
-use crate::structs::{ImagePayload, Sample, TarballSample};
+use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
 use log::{debug, error, info, warn};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -51,22 +51,27 @@ async fn process_sample(
                                     encoding,
                                 )
                                 .await
-                                .unwrap_or_else(|_| ImagePayload {
-                                    data: vec![],
-                                    width: 0,
-                                    height: 0,
-                                    original_height: 0,
-                                    original_width: 0,
-                                    bit_depth: 0,
-                                    channels: 0,
-                                    is_encoded: false,
+                                .map(to_python_image_payload)
+                                .unwrap_or_else(|_| {
+                                    to_python_image_payload(ImagePayload {
+                                        data: vec![],
+                                        width: 0,
+                                        height: 0,
+                                        original_height: 0,
+                                        original_width: 0,
+                                        bit_depth: 0,
+                                        channels: 0,
+                                        is_encoded: false,
+                                    })
                                 });
 
                                 if sample_aspect_ratio.is_empty() {
                                     // If we don't have an aspect ratio yet, we set it
+                                    // We need to get the payload from the PythonImagePayload to access width/height
+                                    let payload = image.get_payload();
                                     sample_aspect_ratio = image_processing::aspect_ratio_to_str((
-                                        image.width as u32,
-                                        image.height as u32,
+                                        payload.width as u32,
+                                        payload.height as u32,
                                     ));
                                 }
 
@@ -75,7 +80,7 @@ async fn process_sample(
                                     final_sample = Some(Sample {
                                         id: String::from(sample_id.to_str().unwrap_or("unknown")),
                                         source: sample.name.clone(),
-                                        image: image.clone(),
+                                        image,
                                         attributes: attributes.clone(),
                                         coca_embedding: vec![],
                                         tags: vec![],

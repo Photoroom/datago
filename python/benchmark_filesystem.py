@@ -22,7 +22,7 @@ def benchmark(
 ):
     if sweep:
         results_sweep = {}
-        for num_workers in range(2, (os.cpu_count() or 2), 2):
+        for num_workers in range(2, (os.cpu_count() * 2 or 2), 2):
             results_sweep[num_workers] = benchmark(
                 root_path, limit, crop_and_resize, compare_torch, num_workers, False
             )
@@ -67,6 +67,11 @@ def benchmark(
     for sample in tqdm(datago_dataset, desc="Datago", dynamic_ncols=True):
         assert sample["id"] != ""
         img = sample["image"]
+
+        if count < limit - 1:
+            del img
+            img = None  # Help with memory pressure
+
         count += 1
 
     assert count == limit, f"Expected {limit} samples, got {count}"
@@ -119,6 +124,8 @@ def benchmark(
             n_images += len(batch)
             if n_images > limit:
                 break
+
+            del batch  # Help with memory pressure, same as above
         fps = n_images / (time.time() - start)
         results["torch"] = {"fps": fps, "count": n_images}
         print(f"Torch - FPS {fps:.2f} - workers {num_workers}")
