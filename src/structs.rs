@@ -1,3 +1,7 @@
+// FIXME: to be removed upon migration to a newer version of pyo3
+// https://github.com/PyO3/pyo3/pull/4838 that was release in 0.24
+#![allow(clippy::useless_conversion)]
+
 use crate::image_processing::ImageTransformConfig;
 use pyo3::prelude::*;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
@@ -101,16 +105,16 @@ impl ImagePayload {
     pub fn to_pil_image(&self, py: Python<'_>) -> PyResult<PyObject> {
         if self.is_encoded {
             // For encoded images (JPEG, PNG), create PIL image directly from bytes
-            let pil = py.import("PIL.Image")?;
+            let pil = py.import_bound("PIL.Image")?;
             let bytes_io = py
-                .import("io")?
+                .import_bound("io")?
                 .getattr("BytesIO")?
                 .call1((self.data.as_slice(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
             Ok(image.into_py(py))
         } else {
             // For raw images, create numpy array first then convert to PIL
-            let numpy = py.import("numpy")?;
+            let numpy = py.import_bound("numpy")?;
             let shape: (usize, usize, usize) = if self.channels == 1 {
                 (self.height, self.width, 1)
             } else {
@@ -124,7 +128,7 @@ impl ImagePayload {
                 )?
                 .call_method1("reshape", (shape,))?;
 
-            let pil = py.import("PIL.Image")?;
+            let pil = py.import_bound("PIL.Image")?;
             if self.channels == 1 {
                 // Greyscale image - use 2D shape and create directly
                 let shape_2d = (self.height, self.width);
@@ -150,14 +154,14 @@ impl ImagePayload {
 
     /// Get the image as a numpy array (zero-copy when possible)
     pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let numpy = py.import("numpy")?;
+        let numpy = py.import_bound("numpy")?;
 
         if self.is_encoded {
             // For encoded images, we need to decode first
             // This is not zero-copy but necessary for encoded data
-            let pil = py.import("PIL.Image")?;
+            let pil = py.import_bound("PIL.Image")?;
             let bytes_io = py
-                .import("io")?
+                .import_bound("io")?
                 .getattr("BytesIO")?
                 .call1((self.data.as_slice(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
