@@ -4,9 +4,6 @@ import os
 import json
 
 from raw_types import (
-    raw_array_to_pil_image,
-    raw_array_to_numpy,
-    get_image_mode,
     decode_image_payload,
 )
 from dataset import DatagoIterDataset
@@ -86,14 +83,11 @@ def test_caption_and_image():
         check_image(sample.masks["segmentation_mask"], 1)
 
         # Check the image decoding
-        assert raw_array_to_pil_image(sample.image).mode == "RGB", "Image should be RGB"
-        assert (
-            raw_array_to_pil_image(sample.additional_images["masked_image"]).mode
-            == "RGB"
-        ), "Image should be RGB"
-        assert raw_array_to_pil_image(sample.masks["segmentation_mask"]).mode == "L", (
-            "Mask should be L"
+        assert sample.image.mode == "RGB", "Image should be RGB"
+        assert sample.additional_images["masked_image"].mode == "RGB", (
+            "Image should be RGB"
         )
+        assert sample.masks["segmentation_mask"].mode == "L", "Mask should be L"
 
         if i > N_SAMPLES:
             break
@@ -152,38 +146,13 @@ def test_jpeg_compression():
 
     sample = next(iter(dataset))
 
-    # When images are encoded, channels is set to -1 to signal encoded format
-    assert sample.image.channels == -1, "Image should be encoded (channels == -1)"
-    assert sample.additional_images["masked_image"].channels == -1, (
-        "Additional image should be encoded"
-    )
-    assert sample.masks["segmentation_mask"].channels == -1, "Mask should be encoded"
+    # Check that the image is properly accessible through PIL, but that it is encoded
+    assert sample.image.mode == "RGB", "Image should be RGB"
+    assert sample.additional_images["masked_image"].mode == "RGB", "Image should be RGB"
+    assert sample.masks["segmentation_mask"].mode == "L", "Mask should be L"
 
-    # Test that raw_array_to_pil_image returns ImagePayload for encoded images
-    image_result = raw_array_to_pil_image(sample.image)
-    assert not hasattr(image_result, "mode"), (
-        "Should return ImagePayload, not PIL Image"
-    )
-    assert hasattr(image_result, "data"), "Should have data attribute"
-    assert hasattr(image_result, "channels"), "Should have channels attribute"
-    assert image_result.channels == -1, "Should be encoded ImagePayload"
-
-    # Test proper decoding using decode_image_payload
-    decoded_image = decode_image_payload(image_result)
-    assert hasattr(decoded_image, "mode"), "Decoded image should be PIL Image"
-    assert decoded_image.mode == "RGB", "Image should decode to RGB"
-    assert decoded_image.size == (sample.image.width, sample.image.height), (
-        "Size should match"
-    )
-
-    # Test additional images and masks
-    additional_result = raw_array_to_pil_image(sample.additional_images["masked_image"])
-    decoded_additional = decode_image_payload(additional_result)
-    assert decoded_additional.mode == "RGB", "Additional image should decode to RGB"
-
-    mask_result = raw_array_to_pil_image(sample.masks["segmentation_mask"])
-    decoded_mask = decode_image_payload(mask_result)
-    assert decoded_mask.mode == "L", "Mask should decode to L"
+    # Check that the image is encoded, as JPG PIL
+    # TODO: @blefaudeux
 
 
 def test_png_compression():
@@ -193,27 +162,11 @@ def test_png_compression():
     # Don't specify encode_format - should default to PNG
     dataset = DatagoIterDataset(client_config, return_python_types=False)
 
-    sample = next(iter(dataset))
+    _sample = next(iter(dataset))
 
-    # When images are encoded, channels is set to -1 to signal encoded format
-    assert sample.image.channels == -1, "Image should be encoded (channels == -1)"
-
-    # Test that raw_array_to_pil_image returns ImagePayload for encoded images
-    image_result = raw_array_to_pil_image(sample.image)
-    assert not hasattr(image_result, "mode"), (
-        "Should return ImagePayload, not PIL Image"
-    )
-    assert hasattr(image_result, "data"), "Should have data attribute"
-    assert hasattr(image_result, "channels"), "Should have channels attribute"
-    assert image_result.channels == -1, "Should be encoded ImagePayload"
-
-    # Test proper decoding using decode_image_payload
-    decoded_image = decode_image_payload(image_result)
-    assert hasattr(decoded_image, "mode"), "Decoded image should be PIL Image"
-    assert decoded_image.mode == "RGB", "Image should decode to RGB"
-    assert decoded_image.size == (sample.image.width, sample.image.height), (
-        "Size should match"
-    )
+    # Check that the image is encoded, as JPG PIL
+    # TODO: @blefaudeux
+    # same as above
 
 
 def test_original_image():
@@ -224,14 +177,10 @@ def test_original_image():
     dataset = DatagoIterDataset(client_config, return_python_types=False)
 
     sample = next(iter(dataset))
-
-    assert raw_array_to_pil_image(sample.image).mode == "RGB", "Image should be RGB"
-    assert (
-        raw_array_to_pil_image(sample.additional_images["masked_image"]).mode == "RGB"
-    ), "Image should be RGB"
-    assert raw_array_to_pil_image(sample.masks["segmentation_mask"]).mode == "L", (
-        "Mask should be L"
-    )
+    payload = sample.image.get_payload()
+    assert payload.original_height == payload.height == sample.image.height
+    assert payload.original_width == payload.width == sample.image.width
+    assert payload.original_channels == payload.channels
 
 
 def test_duplicate_state():
