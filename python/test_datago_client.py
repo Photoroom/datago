@@ -115,6 +115,7 @@ class TestDatagoClient:
                 assert sample.source == "filesystem"
                 assert sample.image.width > 0
                 assert sample.image.height > 0
+                print(sample.image)
                 assert len(sample.image.data) > 0
 
     def test_client_with_image_transformations(self):
@@ -177,6 +178,7 @@ class TestDatagoClient:
             sample = client.get_sample()
 
             assert sample is not None
+            print(sample.image)
             assert sample.image.channels == -1  # Encoded images have channels = -1
             assert len(sample.image.data) > 0
 

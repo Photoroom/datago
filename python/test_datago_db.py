@@ -3,7 +3,12 @@ import pytest
 import os
 import json
 
-from raw_types import raw_array_to_pil_image, raw_array_to_numpy, get_image_mode, decode_image_payload
+from raw_types import (
+    raw_array_to_pil_image,
+    raw_array_to_numpy,
+    get_image_mode,
+    decode_image_payload,
+)
 from dataset import DatagoIterDataset
 
 
@@ -62,8 +67,9 @@ def test_caption_and_image():
         assert img.height > 0
         assert img.width > 0
 
-        assert img.height <= img.original_height
-        assert img.width <= img.original_width
+        payload = img.get_payload()
+        assert img.height <= payload.original_height
+        assert img.width <= payload.original_width
         assert img.channels == channels
 
     for i, sample in enumerate(dataset):
@@ -148,25 +154,27 @@ def test_jpeg_compression():
 
     # When images are encoded, channels is set to -1 to signal encoded format
     assert sample.image.channels == -1, "Image should be encoded (channels == -1)"
-    assert (
-        sample.additional_images["masked_image"].channels == -1
-    ), "Additional image should be encoded"
-    assert (
-        sample.masks["segmentation_mask"].channels == -1
-    ), "Mask should be encoded"
+    assert sample.additional_images["masked_image"].channels == -1, (
+        "Additional image should be encoded"
+    )
+    assert sample.masks["segmentation_mask"].channels == -1, "Mask should be encoded"
 
     # Test that raw_array_to_pil_image returns ImagePayload for encoded images
     image_result = raw_array_to_pil_image(sample.image)
-    assert not hasattr(image_result, 'mode'), "Should return ImagePayload, not PIL Image"
-    assert hasattr(image_result, 'data'), "Should have data attribute"
-    assert hasattr(image_result, 'channels'), "Should have channels attribute"
+    assert not hasattr(image_result, "mode"), (
+        "Should return ImagePayload, not PIL Image"
+    )
+    assert hasattr(image_result, "data"), "Should have data attribute"
+    assert hasattr(image_result, "channels"), "Should have channels attribute"
     assert image_result.channels == -1, "Should be encoded ImagePayload"
 
     # Test proper decoding using decode_image_payload
     decoded_image = decode_image_payload(image_result)
-    assert hasattr(decoded_image, 'mode'), "Decoded image should be PIL Image"
+    assert hasattr(decoded_image, "mode"), "Decoded image should be PIL Image"
     assert decoded_image.mode == "RGB", "Image should decode to RGB"
-    assert decoded_image.size == (sample.image.width, sample.image.height), "Size should match"
+    assert decoded_image.size == (sample.image.width, sample.image.height), (
+        "Size should match"
+    )
 
     # Test additional images and masks
     additional_result = raw_array_to_pil_image(sample.additional_images["masked_image"])
@@ -192,16 +200,20 @@ def test_png_compression():
 
     # Test that raw_array_to_pil_image returns ImagePayload for encoded images
     image_result = raw_array_to_pil_image(sample.image)
-    assert not hasattr(image_result, 'mode'), "Should return ImagePayload, not PIL Image"
-    assert hasattr(image_result, 'data'), "Should have data attribute"
-    assert hasattr(image_result, 'channels'), "Should have channels attribute"
+    assert not hasattr(image_result, "mode"), (
+        "Should return ImagePayload, not PIL Image"
+    )
+    assert hasattr(image_result, "data"), "Should have data attribute"
+    assert hasattr(image_result, "channels"), "Should have channels attribute"
     assert image_result.channels == -1, "Should be encoded ImagePayload"
 
     # Test proper decoding using decode_image_payload
     decoded_image = decode_image_payload(image_result)
-    assert hasattr(decoded_image, 'mode'), "Decoded image should be PIL Image"
+    assert hasattr(decoded_image, "mode"), "Decoded image should be PIL Image"
     assert decoded_image.mode == "RGB", "Image should decode to RGB"
-    assert decoded_image.size == (sample.image.width, sample.image.height), "Size should match"
+    assert decoded_image.size == (sample.image.width, sample.image.height), (
+        "Size should match"
+    )
 
 
 def test_original_image():
