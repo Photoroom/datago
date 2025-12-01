@@ -267,7 +267,7 @@ mod tests {
     use crate::image_processing::ImageTransformConfig;
 
     #[cfg(test)]
-    use crate::structs::ImagePayload;
+    use crate::structs::PythonImagePayload;
 
     #[cfg(test)]
     fn get_test_source() -> String {
@@ -374,27 +374,31 @@ mod tests {
     use log::debug;
 
     #[cfg(test)]
-    fn check_image(img: &ImagePayload) {
-        assert!(!img.data.is_empty());
+    fn check_image(img: &PythonImagePayload) {
+        let payload = img.get_payload();
+        assert!(!payload.data.is_empty());
 
-        if img.channels > 0 {
+        if payload.channels > 0 {
             // Raw image
-            assert!(img.channels == 3 || img.channels == 1);
-            assert!(img.width > 0);
-            assert!(img.height > 0);
+            assert!(payload.channels == 3 || payload.channels == 1);
+            assert!(payload.width > 0);
+            assert!(payload.height > 0);
             assert!(
-                img.data.len() * 8
-                    == img.width * img.height * img.bit_depth * img.channels as usize
+                payload.data.len() * 8
+                    == payload.width
+                        * payload.height
+                        * payload.bit_depth
+                        * payload.channels as usize
             );
         } else {
             // Encoded image
-            assert!(img.width > 0);
-            assert!(img.height > 0);
-            assert!(!img.data.is_empty());
-            assert!(img.channels == -1);
+            assert!(payload.width > 0);
+            assert!(payload.height > 0);
+            assert!(!payload.data.is_empty());
+            assert!(payload.channels == -1);
 
             // Check that we can decode the image
-            let _img = image::load_from_memory(&img.data).unwrap();
+            let _img = image::load_from_memory(&payload.data).unwrap();
         }
     }
 
@@ -640,8 +644,9 @@ mod tests {
 
         let sample = sample.unwrap();
         assert!(!sample.id.is_empty());
-        assert!(sample.image.width * sample.image.height >= 1000000);
-        assert!(sample.image.width * sample.image.height <= 2000000);
+        let payload = sample.image.get_payload();
+        assert!(payload.width * payload.height >= 1000000);
+        assert!(payload.width * payload.height <= 2000000);
         client.stop();
     }
 

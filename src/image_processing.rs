@@ -361,10 +361,7 @@ pub async fn image_to_payload(
                         image.color().into(),
                     )
                     .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            e.to_string(),
-                        ))
+                        image::ImageError::IoError(std::io::Error::other(e.to_string()))
                     })?;
             }
             EncodeFormat::Png => {
@@ -400,6 +397,7 @@ pub async fn image_to_payload(
         width,
         channels,
         bit_depth,
+        is_encoded: encoding.encode_images,
     })
 }
 
@@ -486,6 +484,7 @@ mod tests {
         assert_eq!(payload.channels, 3);
         assert_eq!(payload.bit_depth, 8);
         assert!(!payload.data.is_empty());
+        assert!(!payload.is_encoded); // Should not be encoded
     }
 
     #[tokio::test]
@@ -508,6 +507,7 @@ mod tests {
         assert_eq!(payload.height, 50);
         assert_eq!(payload.channels, -1); // Encoded images have channels = -1
         assert!(!payload.data.is_empty());
+        assert!(payload.is_encoded); // Should be encoded
 
         // Should be able to decode the image back
         let decoded = image::load_from_memory(&payload.data);

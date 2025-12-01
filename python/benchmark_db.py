@@ -6,7 +6,7 @@ import typer
 from benchmark_defaults import IMAGE_CONFIG
 from datago import DatagoClient  # type: ignore
 from PIL import Image
-from raw_types import raw_array_to_numpy, raw_array_to_pil_image
+from raw_types import raw_array_to_numpy
 from tqdm import tqdm
 
 
@@ -58,21 +58,7 @@ def benchmark(
     for _ in tqdm(range(limit), dynamic_ncols=True):
         sample = client.get_sample()
         if sample.id:
-            # Bring the masks and image to PIL
-            if hasattr(sample, "image"):
-                img = raw_array_to_pil_image(sample.image)
-
-            if hasattr(sample, "masks"):
-                for _, mask_buffer in sample.masks.items():
-                    mask = raw_array_to_pil_image(mask_buffer)
-
-            if (
-                hasattr(sample, "additional_images")
-                and "masked_image" in sample.additional_images
-            ):
-                masked_image = raw_array_to_pil_image(
-                    sample.AdditionalImages["masked_image"]
-                )
+            # Images are already PIL by default
 
             # Bring the latents to numpy
             if hasattr(sample, "latents"):

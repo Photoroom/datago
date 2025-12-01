@@ -1,5 +1,5 @@
 use crate::image_processing;
-use crate::structs::{ImagePayload, Sample};
+use crate::structs::{to_python_image_payload, ImagePayload, Sample};
 use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ async fn pull_sample(
             let sample = Sample {
                 id: sample_json.to_string(),
                 source: "filesystem".to_string(),
-                image,
+                image: to_python_image_payload(image),
                 attributes: HashMap::new(),
                 coca_embedding: vec![],
                 tags: vec![],
@@ -322,8 +322,9 @@ mod tests {
         let sample = received.unwrap();
         assert_eq!(sample.source, "filesystem");
         assert!(!sample.id.is_empty());
-        assert_eq!(sample.image.width, 1);
-        assert_eq!(sample.image.height, 1);
+        let payload = sample.image.get_payload();
+        assert_eq!(payload.width, 1);
+        assert_eq!(payload.height, 1);
         assert!(sample.attributes.is_empty());
         assert!(sample.coca_embedding.is_empty());
         assert!(sample.tags.is_empty());
@@ -397,8 +398,9 @@ mod tests {
         assert_eq!(received_samples.len(), image_paths.len());
         for sample in &received_samples {
             assert_eq!(sample.source, "filesystem");
-            assert_eq!(sample.image.width, 1);
-            assert_eq!(sample.image.height, 1);
+            let payload = sample.image.get_payload();
+            assert_eq!(payload.width, 1);
+            assert_eq!(payload.height, 1);
         }
     }
 
@@ -519,8 +521,9 @@ mod tests {
         let sample = received.unwrap();
         assert_eq!(sample.source, "filesystem");
         assert!(!sample.id.is_empty());
-        assert_eq!(sample.image.width, 2);
-        assert_eq!(sample.image.height, 2);
+        let payload = sample.image.get_payload();
+        assert_eq!(payload.width, 2);
+        assert_eq!(payload.height, 2);
     }
 
     #[test]

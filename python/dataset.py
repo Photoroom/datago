@@ -1,7 +1,7 @@
 from datago import DatagoClient, initialize_logging
 import json
 from typing import Dict, Any
-from raw_types import raw_array_to_pil_image, raw_array_to_numpy
+from raw_types import raw_array_to_numpy
 
 
 class DatagoIterDataset:
@@ -29,11 +29,13 @@ class DatagoIterDataset:
             return json.loads(item)
 
         if isinstance(item, dict):
-            # recurvisely convert the dictionary
+            # recursively convert the dictionary
             return {k: DatagoIterDataset.to_python_types(v, k) for k, v in item.items()}
 
         elif "image" in key:
-            return raw_array_to_pil_image(item)
+            # The Rust-side returns PythonImagePayload objects that are callable
+            # Call them to get the actual PIL image
+            return item()
         elif "latent" in key:
             return raw_array_to_numpy(item)
 
