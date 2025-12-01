@@ -70,7 +70,7 @@ def test_get_sample_filesystem(pre_encode_images: bool, rgb16: bool, rgba: bool)
 
             # Open the image in python scope and check properties
             if pre_encode_images:
-                test_image = Image.open(BytesIO(image_payload.data))
+                test_image = Image.open(BytesIO(bytes(image_payload.data)))
                 assert test_image.width == 100
                 assert test_image.height == 100
                 assert test_image.mode == "RGB"

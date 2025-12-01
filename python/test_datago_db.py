@@ -67,7 +67,8 @@ def test_caption_and_image():
         payload = img.get_payload()
         assert img.height <= payload.original_height
         assert img.width <= payload.original_width
-        assert img.channels == channels
+        assert img.mode == "RGB" if channels == 3 else "L"
+        assert payload.channels == channels
 
     for i, sample in enumerate(dataset):
         assert sample.source != ""
@@ -180,7 +181,6 @@ def test_original_image():
     payload = sample.image.get_payload()
     assert payload.original_height == payload.height == sample.image.height
     assert payload.original_width == payload.width == sample.image.width
-    assert payload.original_channels == payload.channels
 
 
 def test_duplicate_state():

@@ -115,8 +115,13 @@ class TestDatagoClient:
                 assert sample.source == "filesystem"
                 assert sample.image.width > 0
                 assert sample.image.height > 0
-                print(sample.image)
-                assert len(sample.image.data) > 0
+
+                # Check the payload path
+                payload = sample.image.get_payload()
+                assert len(payload.data) > 0
+                assert payload.width == sample.image.width
+                assert payload.height == sample.image.height
+                assert payload.channels == 3
 
     def test_client_with_image_transformations(self):
         """Test client with image transformation configuration."""
@@ -150,7 +155,7 @@ class TestDatagoClient:
             assert sample is not None
             assert sample.image.width <= 64
             assert sample.image.height <= 64
-            assert sample.image.channels == 3  # RGB8
+            assert sample.image.mode == "RGB"
 
     def test_client_with_image_encoding(self):
         """Test client with image encoding enabled."""
@@ -178,9 +183,7 @@ class TestDatagoClient:
             sample = client.get_sample()
 
             assert sample is not None
-            print(sample.image)
-            assert sample.image.channels == -1  # Encoded images have channels = -1
-            assert len(sample.image.data) > 0
+            assert sample.image.mode == "RGB"
 
     def test_random_sampling(self):
         """Test that random sampling produces different results."""
