@@ -49,32 +49,34 @@ fn enumerate_files(
     // Get an iterator over the files in the root path
     let supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
 
-    let files = walkdir::WalkDir::new(&source_config.root_path)
+    // Use streaming walkdir to avoid loading all files into memory at once
+    let _supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
+    let walker = walkdir::WalkDir::new(&source_config.root_path)
         .follow_links(false)
         .into_iter()
-        .filter_map(|e| e.ok());
-
-    // We need to materialize the file list to be able to shuffle it
-    let mut files_list: Vec<walkdir::DirEntry> = files
+        .filter_map(|e| e.ok())
         .filter_map(|entry| {
             let path = entry.path();
-            let file_name = path.to_string_lossy().into_owned();
+            let file_name = path.to_string_lossy().to_lowercase();
             if supported_extensions
                 .iter()
-                .any(|&ext| file_name.to_lowercase().ends_with(ext))
+                .any(|&ext| file_name.ends_with(ext))
             {
                 Some(entry)
             } else {
                 None
             }
-        })
-        .collect();
+        });
 
-    // If shuffle is set, shuffle the files
-    if source_config.random_sampling {
-        let mut rng = rand::rng(); // Get a random number generator, thread local. We don´t seed, so typically won't be reproducible
-        files_list.shuffle(&mut rng); // This happens in place
-    }
+    // For random sampling, we need to collect files, but limit the collection size
+    let mut files_list: Vec<walkdir::DirEntry> = if source_config.random_sampling {
+        walker
+            .take(limit * 2) // Limit collection size to start enumerating faster
+            .collect()
+    } else {
+        // For non-random case, we still need to collect to have consistent types
+        walker.take(limit * 2).collect()
+    };
 
     // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
     if source_config.world_size > 1 {
@@ -84,6 +86,15 @@ fn enumerate_files(
         files_list = files_list[start..end].to_vec();
     }
 
+    // If shuffle is set, shuffle the files
+    if source_config.random_sampling {
+        let mut rng = rand::rng(); // Get a random number generator, thread local. We don't seed, so typically won't be reproducible
+        files_list.shuffle(&mut rng); // This happens in place
+    }
+
+    // Use the collected list for processing
+    let file_iter = files_list.into_iter();
+
     // Iterate over the files and send the paths as they come
     let mut count = 0;
 
@@ -92,7 +103,7 @@ fn enumerate_files(
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
 
     // Build a page from the files iterator
-    for entry in files_list.iter() {
+    for entry in file_iter {
         let file_name: String = entry.path().to_str().unwrap().to_string();
 
         if samples_metadata_tx
@@ -105,7 +116,7 @@ fn enumerate_files(
         count += 1;
 
         if count >= max_submitted_samples {
-            // NOTE: This doesn´t count the samples which have actually been processed
+            // NOTE: This doesn't count the samples which have actually been processed
             debug!("ping_pages: reached the limit of samples requested. Shutting down");
             break;
         }
@@ -147,6 +158,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     let feeder = Some(thread::spawn(move || {
         enumerate_files(samples_metadata_tx, source_config, limit);
+        debug!("Feeder thread completed");
     }));
 
     // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
@@ -168,6 +180,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             encoding,
             limit,
         );
+        debug!("Worker thread completed");
     }));
 
     DatagoEngine {
