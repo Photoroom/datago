@@ -68,15 +68,8 @@ fn enumerate_files(
             }
         });
 
-    // For random sampling, we need to collect files, but limit the collection size
-    let mut files_list: Vec<walkdir::DirEntry> = if source_config.random_sampling {
-        walker
-            .take(limit * 2) // Limit collection size to start enumerating faster
-            .collect()
-    } else {
-        // For non-random case, we still need to collect to have consistent types
-        walker.take(limit * 2).collect()
-    };
+    // Collect some of the files, over sample to increase randomness or allow for faulty files
+    let mut files_list: Vec<walkdir::DirEntry> = walker.take(limit * 2).collect();
 
     // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
     if source_config.world_size > 1 {
@@ -92,24 +85,21 @@ fn enumerate_files(
         files_list.shuffle(&mut rng); // This happens in place
     }
 
-    // Use the collected list for processing
-    let file_iter = files_list.into_iter();
-
     // Iterate over the files and send the paths as they come
-    let mut count = 0;
-
     // We oversubmit arbitrarily by 10% to account for the fact that some files might be corrupted or unreadable.
     // There's another mechanism to limit the number of samples processed as requested by the user, so this is just a buffer.
+    let mut count = 0;
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
 
     // Build a page from the files iterator
-    for entry in file_iter {
+    for entry in files_list.into_iter() {
         let file_name: String = entry.path().to_str().unwrap().to_string();
 
         if samples_metadata_tx
             .send(serde_json::Value::String(file_name))
             .is_err()
         {
+            // Channel is closed, we can't send any more samples
             break;
         }
 
