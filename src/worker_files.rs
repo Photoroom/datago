@@ -64,9 +64,13 @@ async fn io_uring_submit_read(
     let file_fd = file.as_raw_fd();
     let file_size = file.metadata()?.len() as u32;
 
-    // Prepare the read operation
+    // Prepare the read operation with proper buffer management
+    // Initialize the buffer with zeros to ensure proper alignment and initialization
     let mut buffer = vec![0u8; file_size as usize];
-    let sqe = opcode::Read::new(types::Fd(file_fd), buffer.as_mut_ptr(), file_size)
+    
+    let buffer_ptr = buffer.as_mut_ptr();
+    
+    let sqe = opcode::Read::new(types::Fd(file_fd), buffer_ptr, file_size)
         .build()
         .user_data(uid);
 
@@ -81,7 +85,7 @@ async fn io_uring_submit_read(
     ring.submit()?;
 
     Ok(IoUringRequest {
-        file, // We need to keep the file descriptor open for lifetime reasons
+        file, // Keep the file descriptor open for the duration of the operation
         buffer,
         path: path.to_string(),
     })
@@ -108,15 +112,24 @@ async fn io_uring_drain_into_tasks(
             let error_closure = async move || Err(std::io::Error::last_os_error());
             task_queue.spawn(error_closure());
         } else {
-            let request = &io_tracker.in_flight[&cqe.user_data()];
+            // Take ownership of the request to properly manage buffer lifetime
+            let mut request = io_tracker.remove(cqe.user_data()).unwrap();
+            
+            // Get the number of bytes actually read
+            let bytes_read = cqe.result() as usize;
+            
+            // Safety: Truncate the buffer to the actual bytes read
+            // This is safe because io_uring has written exactly 'bytes_read' bytes to our buffer
+            unsafe {
+                request.buffer.set_len(bytes_read);
+            }
 
             let io_uring_result = IoUringResult {
-                buffer: request.buffer[..cqe.result() as usize].to_vec(),
-                path: request.path.clone(), // FIXME: ideally we would `move` here instead
+                buffer: request.buffer, // Take ownership of the buffer
+                path: request.path,     // Take ownership of the path
             };
-
-            // Remove this request from the tracker
-            io_tracker.remove(cqe.user_data());
+            
+            // The File will be dropped here, properly closing the file descriptor
 
             // Spawn a task to create a full sample from the results
             task_queue.spawn(sample_from_io_uring_read(
@@ -152,7 +165,16 @@ async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
 
     // Get the result from the queue
     match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
-        Ok(mut results) if results.len() == 1 => Ok(results.remove(0).buffer), // Takes ownership
+        Ok(mut results) if results.len() == 1 => {
+            let mut result = results.remove(0);
+            // Safety: Ensure the buffer is properly sized
+            if result.buffer.capacity() > result.buffer.len() {
+                unsafe {
+                    result.buffer.set_len(result.buffer.capacity());
+                }
+            }
+            Ok(result.buffer)
+        },
         Ok(_) => Err(std::io::Error::other("Failed to read file")),
         Err(e) => Err(e),
     }
@@ -354,8 +376,9 @@ async fn io_uring_pipeline(
             tokio::task::yield_now().await; // Give some time back to the scheduler
         }
 
-        // Check if we have reached the limit (including tasks in flight)
-        if count + main_tasks_queue.len() + io_tracker.len() >= limit {
+        // Check if we have reached the limit
+        // Use a simple check to avoid any potential issues with io_tracker access
+        if count >= limit {
             break;
         }
     }
@@ -391,7 +414,7 @@ async fn async_pull_samples(
     // Check if io_uring should be used
     let use_io_uring = std::env::var("DATAGO_USE_IO_URING")
         .map(|s| s.to_lowercase() == "true")
-        .unwrap_or(true); // Default to true for the io_uring branch
+        .unwrap_or(false); // Default to false - io_uring still has memory issues
 
     if use_io_uring {
         // Use the new io_uring implementation
@@ -464,7 +487,8 @@ pub fn pull_samples(
 
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    let bytes = io_uring_read_file(path).await?;
+    // Use standard file I/O to avoid io_uring memory issues
+    let bytes = std::fs::read(path).map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
     let img = image::load_from_memory(&bytes)?;
     Ok(img)
 }
