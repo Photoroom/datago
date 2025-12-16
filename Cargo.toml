@@ -1,13 +1,7 @@
-version = "2025.12.2"
->>>>>>> origin/main
-=======
 [package]
 name = "datago"
 edition = "2021"
 version = "2025.12.3"
-=======
-version = "2025.12.2"
->>>>>>> origin/main
 
 [lib]
 # exposed by pyo3

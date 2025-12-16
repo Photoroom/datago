@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-const DEFAULT_JPEG_QUALITY: u8 = 92;
+pub const DEFAULT_JPEG_QUALITY: u8 = 92;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]

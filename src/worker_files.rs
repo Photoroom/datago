@@ -160,12 +160,16 @@ async fn sample_from_io_uring_read(
 ) -> Result<(), std::io::Error> {
     match image::load_from_memory(&result.buffer) {
         Ok(raw_image) => {
+            let encoding = image_processing::ImageEncoding {
+                encode_images,
+                img_to_rgb8,
+                ..Default::default()
+            };
             let image = image_processing::image_to_payload(
                 raw_image,
                 &image_transform,
                 &"".to_string(),
-                encode_images,
-                img_to_rgb8,
+                encoding,
             )
             .await
             .unwrap();
@@ -173,7 +177,7 @@ async fn sample_from_io_uring_read(
             let sample = Sample {
                 id: result.path,
                 source: "filesystem".to_string(),
-                image,
+                image: to_python_image_payload(image),
                 attributes: HashMap::new(),
                 coca_embedding: vec![],
                 tags: vec![],
@@ -407,6 +411,9 @@ async fn async_pull_samples(
 
         // Wait for all pipelines to complete
         let _ = pipelines.join_all().await;
+
+        // Signal the end of the stream for io_uring path
+        if samples_tx.send(None).is_ok() {};
     } else {
         // Fall back to the original async implementation
         async_pull_samples_fallback(
@@ -416,10 +423,9 @@ async fn async_pull_samples(
             encoding,
             limit,
         ).await;
-    }
 
-    // Signal the end of the stream
-    if samples_tx.send(None).is_ok() {};
+        // The fallback function already sends the end signal
+    }
 }
 
 pub fn pull_samples(
@@ -446,27 +452,25 @@ pub fn pull_samples(
         });
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // used for unit tests
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
     let bytes = io_uring_read_file(path).await?;
     let img = image::load_from_memory(&bytes)?;
     Ok(img)
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // used for unit tests
 async fn image_payload_from_path(
     path: &str,
     image_transform: &Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
     let img = image_from_path(path).await?;
     let payload = image_processing::image_to_payload(
         img,
         image_transform,
         &"".to_string(),
-        encode_images,
-        img_to_rgb8,
+        encoding,
     )
     .await?;
     Ok(payload)
@@ -491,7 +495,7 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
-        let result = image_from_path(image_path.to_str().unwrap()).await;
+        let result = image_from_path_compat(image_path.to_str().unwrap()).await;
         assert!(result.is_ok());
 
         let img = result.unwrap();
@@ -536,8 +540,13 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
+        let encoding = image_processing::ImageEncoding {
+            encode_images: false,
+            img_to_rgb8: false,
+            ..Default::default()
+        };
         let result =
-            image_payload_from_path(image_path.to_str().unwrap(), &None, false, false).await;
+            image_payload_from_path(image_path.to_str().unwrap(), &None, encoding).await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -565,12 +574,19 @@ mod tests {
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
             image_to_rgb8: false,
+            encode_format: image_processing::EncodeFormat::default(),
+            jpeg_quality: image_processing::DEFAULT_JPEG_QUALITY,
         };
 
         let transform = Some(transform_config.get_ar_aware_transform());
 
+        let encoding = image_processing::ImageEncoding {
+            encode_images: false,
+            img_to_rgb8: false,
+            ..Default::default()
+        };
         let result =
-            image_payload_from_path(image_path.to_str().unwrap(), &transform, false, false).await;
+            image_payload_from_path(image_path.to_str().unwrap(), &transform, encoding).await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -587,11 +603,15 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
+        let encoding = image_processing::ImageEncoding {
+            encode_images: true,
+            img_to_rgb8: false,
+            ..Default::default()
+        };
         let result = image_payload_from_path(
             image_path.to_str().unwrap(),
             &None,
-            true, // encode_images = true
-            false,
+            encoding,
         )
         .await;
 
@@ -614,11 +634,15 @@ mod tests {
         let img = image::DynamicImage::new_rgba8(1, 1);
         img.save(&image_path).unwrap();
 
+        let encoding = image_processing::ImageEncoding {
+            encode_images: false,
+            img_to_rgb8: true,
+            ..Default::default()
+        };
         let result = image_payload_from_path(
             image_path.to_str().unwrap(),
             &None,
-            false,
-            true, // image_to_rgb8 = true
+            encoding,
         )
         .await;
 
@@ -740,7 +764,12 @@ mod tests {
         metadata_tx.send(serde_json::Value::Null).unwrap();
 
         let limit = 3;
-        async_pull_samples(metadata_rx, samples_tx, None, false, false, limit).await;
+        let encoding = image_processing::ImageEncoding {
+            encode_images: false,
+            img_to_rgb8: false,
+            ..Default::default()
+        };
+        async_pull_samples(metadata_rx, samples_tx, None, encoding, limit).await;
 
         // Count received samples
         let mut count = 0;
@@ -783,8 +812,13 @@ mod tests {
         let image_path = temp_dir.path().join("test.webp");
         create_test_webp_image(&image_path);
 
+        let encoding = image_processing::ImageEncoding {
+            encode_images: false,
+            img_to_rgb8: false,
+            ..Default::default()
+        };
         let result =
-            image_payload_from_path(image_path.to_str().unwrap(), &None, false, false).await;
+            image_payload_from_path(image_path.to_str().unwrap(), &None, encoding).await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -855,7 +889,8 @@ mod tests {
 /// Compatibility functions for the original async implementation
 /// These are kept for backwards compatibility and testing
 
-async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
+#[allow(dead_code)]
+async fn image_from_path_compat(path: &str) -> Result<image::DynamicImage, image::ImageError> {
     // Use buffered reading instead of loading entire file at once for better memory efficiency
     let file = std::fs::File::open(path)
         .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
@@ -866,12 +901,13 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
         .decode()
 }
 
-async fn image_payload_from_path(
+#[allow(dead_code)]
+async fn image_payload_from_path_compat(
     path: &str,
     img_tfm: &Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
-    match image_from_path(path).await {
+    match image_from_path_compat(path).await {
         Ok(new_image) => {
             image_processing::image_to_payload(new_image, img_tfm, &"".to_string(), encoding).await
         }
