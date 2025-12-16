@@ -77,6 +77,9 @@ async fn io_uring_submit_read(
             .expect("Failed to push to submission queue");
     }
 
+    // Actually submit the operation to the kernel
+    ring.submit()?;
+
     Ok(IoUringRequest {
         file, // We need to keep the file descriptor open for lifetime reasons
         buffer,
@@ -142,6 +145,10 @@ async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
             return Err(e);
         }
     }
+
+    // Give the io_uring operation a chance to complete
+    // This is a workaround for the fact that io_uring operations might not be immediately available
+    tokio::task::yield_now().await;
 
     // Get the result from the queue
     match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
@@ -213,8 +220,10 @@ async fn io_uring_retire_available_reads(
 
     let mut results = Vec::<IoUringResult>::with_capacity(io_tracker.len());
 
-    ring.completion().sync(); // Ensure kernel -> userspace sync
+    // Ensure kernel -> userspace sync first
+    ring.completion().sync();
 
+    // Now process all available completions
     while let Some(cqe) = ring.completion().next() {
         if cqe.result() < 0 {
             error!("io_uring: Read failed: {}", cqe.result());
@@ -345,7 +354,8 @@ async fn io_uring_pipeline(
             tokio::task::yield_now().await; // Give some time back to the scheduler
         }
 
-        if count > limit {
+        // Check if we have reached the limit (including tasks in flight)
+        if count + main_tasks_queue.len() + io_tracker.len() >= limit {
             break;
         }
     }
@@ -452,14 +462,13 @@ pub fn pull_samples(
         });
 }
 
-#[allow(dead_code)] // used for unit tests
+
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
     let bytes = io_uring_read_file(path).await?;
     let img = image::load_from_memory(&bytes)?;
     Ok(img)
 }
 
-#[allow(dead_code)] // used for unit tests
 async fn image_payload_from_path(
     path: &str,
     image_transform: &Option<image_processing::ARAwareTransform>,
@@ -476,6 +485,111 @@ async fn image_payload_from_path(
     Ok(payload)
 }
 
+async fn pull_sample(
+    sample_json: serde_json::Value,
+    img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
+    encoding: image_processing::ImageEncoding,
+    samples_tx: kanal::Sender<Option<Sample>>,
+) -> Result<(), ()> {
+    let path = sample_json.as_str().unwrap();
+    debug!("Starting to process file: {}", path);
+
+    match image_payload_from_path(path, &img_tfm, encoding).await {
+        Ok(image) => {
+            debug!("Successfully processed file: {}", path);
+            let sample = Sample {
+                id: sample_json.to_string(),
+                source: "filesystem".to_string(),
+                image: to_python_image_payload(image),
+                attributes: HashMap::new(),
+                coca_embedding: vec![],
+                tags: vec![],
+                masks: HashMap::new(),
+                latents: HashMap::new(),
+                additional_images: HashMap::new(),
+                duplicate_state: 0,
+            };
+
+            if samples_tx.send(Some(sample)).is_err() {
+                return Err(());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to load image from path {}: {}", path, e);
+            // Add more specific error handling based on error type
+            if let image::ImageError::IoError(io_err) = e {
+                error!("IO Error for file {}: {}", path, io_err);
+            }
+            Err(())
+        }
+    }
+}
+
+async fn async_pull_samples_fallback(
+    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
+    samples_tx: kanal::Sender<Option<Sample>>,
+    image_transform: Option<image_processing::ARAwareTransform>,
+    encoding: image_processing::ImageEncoding,
+    limit: usize,
+) {
+    // Fallback implementation using the original async approach
+    // This is kept for compatibility and testing
+    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(num_cpus::get());
+
+    let max_tasks = std::cmp::min(default_max_tasks, limit);
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut count = 0;
+    let shareable_img_tfm = Arc::new(image_transform);
+
+    while let Ok(received) = samples_metadata_rx.recv() {
+        if received == serde_json::Value::Null {
+            debug!("file_worker: end of stream received, stopping there");
+            let _ = samples_metadata_rx.close();
+            break;
+        }
+
+        // Check if we have reached the limit (including tasks in flight)
+        if count + tasks.len() >= limit {
+            break;
+        }
+
+        // Check if we have capacity before spawning new tasks
+        if tasks.len() >= max_tasks {
+            // Wait for some tasks to complete before adding more
+            if let Some(result) = tasks.join_next().await {
+                if result.is_ok() {
+                    count += 1;
+                }
+            }
+        }
+
+        // Append a new task to the queue
+        tasks.spawn(pull_sample(
+            received,
+            shareable_img_tfm.clone(),
+            encoding,
+            samples_tx.clone(),
+        ));
+    }
+
+    // Make sure to wait for all the remaining tasks
+    let _ = tasks.join_all().await.iter().map(|result| {
+        if let Ok(()) = result {
+            count += 1;
+        }
+    });
+    debug!("file_worker: total samples sent: {}", count);
+
+    // Signal the end of the stream
+    if samples_tx.send(None).is_ok() {};
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +601,17 @@ mod tests {
         // Create a simple 24x32 PNG image
         let img = image::DynamicImage::new_rgb8(24, 32);
         img.save(path).unwrap();
+    }
+
+    async fn image_from_path_compat(path: &str) -> Result<image::DynamicImage, image::ImageError> {
+        // Use buffered reading instead of loading entire file at once for better memory efficiency
+        let file = std::fs::File::open(path)
+            .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
+        let reader = std::io::BufReader::new(file);
+
+        image::ImageReader::new(reader)
+            .with_guessed_format()?
+            .decode()
     }
 
     #[tokio::test]
@@ -652,93 +777,6 @@ mod tests {
         assert_eq!(payload.bit_depth, 8);
     }
 
-    // #[tokio::test]
-    // async fn test_pull_sample_success() {
-    //     let temp_dir = TempDir::new().unwrap();
-    //     let image_path = temp_dir.path().join("test.png");
-    //     create_test_image(&image_path);
-
-    //     let (tx, rx) = kanal::bounded(10);
-    //     let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
-
-    //     let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
-
-    //     assert!(result.is_ok());
-
-    //     // Check that a sample was sent
-    //     let received = rx.recv().unwrap();
-    //     assert!(received.is_some());
-
-    //     let sample = received.unwrap();
-    //     assert_eq!(sample.source, "filesystem");
-    //     assert!(!sample.id.is_empty());
-    //     assert_eq!(sample.image.width, 1);
-    //     assert_eq!(sample.image.height, 1);
-    //     assert!(sample.attributes.is_empty());
-    //     assert!(sample.coca_embedding.is_empty());
-    //     assert!(sample.tags.is_empty());
-    //     assert!(sample.masks.is_empty());
-    //     assert!(sample.latents.is_empty());
-    //     assert!(sample.additional_images.is_empty());
-    //     assert_eq!(sample.duplicate_state, 0);
-    // }
-
-    // #[tokio::test]
-    // async fn test_pull_sample_invalid_path() {
-    //     let (tx, rx) = kanal::bounded(10);
-    //     let sample_json = serde_json::Value::String("/nonexistent/path.png".to_string());
-
-    //     let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
-
-    //     assert!(result.is_err());
-
-    //     // No sample should be sent on error
-    //     assert!(rx.try_recv().is_err());
-    // }
-
-    // #[tokio::test]
-    // async fn test_async_pull_samples_basic() {
-    //     let temp_dir = TempDir::new().unwrap();
-
-    //     // Create multiple test images
-    //     let mut image_paths = Vec::new();
-    //     for i in 0..3 {
-    //         let image_path = temp_dir.path().join(format!("test_{i}.png"));
-    //         create_test_image(&image_path);
-    //         image_paths.push(image_path.to_str().unwrap().to_string());
-    //     }
-
-    //     let (metadata_tx, metadata_rx) = kanal::bounded(10);
-    //     let (samples_tx, samples_rx) = kanal::bounded(10);
-
-    //     // Send image paths
-    //     for path in &image_paths {
-    //         metadata_tx
-    //             .send(serde_json::Value::String(path.clone()))
-    //             .unwrap();
-    //     }
-    //     metadata_tx.send(serde_json::Value::Null).unwrap(); // End marker
-
-    //     async_pull_samples(metadata_rx, samples_tx, None, false, false, 10).await;
-
-    //     // Check received samples
-    //     let mut received_samples = Vec::new();
-    //     while let Ok(sample_opt) = samples_rx.recv() {
-    //         if let Some(sample) = sample_opt {
-    //             received_samples.push(sample);
-    //         } else {
-    //             break; // End marker
-    //         }
-    //     }
-
-    //     assert_eq!(received_samples.len(), image_paths.len());
-    //     for sample in &received_samples {
-    //         assert_eq!(sample.source, "filesystem");
-    //         assert_eq!(sample.image.width, 1);
-    //         assert_eq!(sample.image.height, 1);
-    //     }
-    // }
-
     #[tokio::test]
     async fn test_async_pull_samples_with_limit() {
         let temp_dir = TempDir::new().unwrap();
@@ -828,191 +866,4 @@ mod tests {
         assert_eq!(payload.original_height, 2);
         assert!(!payload.data.is_empty());
     }
-
-    // #[tokio::test]
-    // async fn test_pull_sample_webp() {
-    //     let temp_dir = TempDir::new().unwrap();
-    //     let image_path = temp_dir.path().join("test.webp");
-    //     create_test_webp_image(&image_path);
-
-    //     let (tx, rx) = kanal::bounded(10);
-    //     let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
-
-    //     let result = pull_sample(sample_json, Arc::new(None), false, false, tx).await;
-
-    //     assert!(result.is_ok());
-
-    //     // Check that a sample was sent
-    //     let received = rx.recv().unwrap();
-    //     assert!(received.is_some());
-
-    //     let sample = received.unwrap();
-    //     assert_eq!(sample.source, "filesystem");
-    //     assert!(!sample.id.is_empty());
-    //     assert_eq!(sample.image.width, 2);
-    //     assert_eq!(sample.image.height, 2);
-    // }
-
-    // #[test]
-    // fn test_pull_samples_sync_wrapper() {
-    //     let temp_dir = TempDir::new().unwrap();
-    //     let image_path = temp_dir.path().join("test.png");
-    //     create_test_image(&image_path);
-
-    //     let (metadata_tx, metadata_rx) = kanal::bounded(10);
-    //     let (samples_tx, samples_rx) = kanal::bounded(10);
-
-    //     // Send one image path
-    //     metadata_tx
-    //         .send(serde_json::Value::String(
-    //             image_path.to_str().unwrap().to_string(),
-    //         ))
-    //         .unwrap();
-    //     metadata_tx.send(serde_json::Value::Null).unwrap();
-
-    //     // Test the sync wrapper
-    //     pull_samples(metadata_rx, samples_tx, None, false, false, 1);
-
-    //     // Check that a sample was received
-    //     let sample_opt = samples_rx.recv().unwrap();
-    //     assert!(sample_opt.is_some());
-
-    //     let sample = sample_opt.unwrap();
-    //     assert_eq!(sample.source, "filesystem");
-
-    //     // Should receive end marker
-    //     let end_marker = samples_rx.recv().unwrap();
-    //     assert!(end_marker.is_none());
-    // }
-}
-
-/// Compatibility functions for the original async implementation
-/// These are kept for backwards compatibility and testing
-
-#[allow(dead_code)]
-async fn image_from_path_compat(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Use buffered reading instead of loading entire file at once for better memory efficiency
-    let file = std::fs::File::open(path)
-        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
-    let reader = std::io::BufReader::new(file);
-
-    image::ImageReader::new(reader)
-        .with_guessed_format()?
-        .decode()
-}
-
-#[allow(dead_code)]
-async fn image_payload_from_path_compat(
-    path: &str,
-    img_tfm: &Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-) -> Result<ImagePayload, image::ImageError> {
-    match image_from_path_compat(path).await {
-        Ok(new_image) => {
-            image_processing::image_to_payload(new_image, img_tfm, &"".to_string(), encoding).await
-        }
-        Err(e) => Err(e),
-    }
-}
-
-async fn pull_sample(
-    sample_json: serde_json::Value,
-    img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
-    encoding: image_processing::ImageEncoding,
-    samples_tx: kanal::Sender<Option<Sample>>,
-) -> Result<(), ()> {
-    let path = sample_json.as_str().unwrap();
-    debug!("Starting to process file: {}", path);
-
-    match image_payload_from_path(path, &img_tfm, encoding).await {
-        Ok(image) => {
-            debug!("Successfully processed file: {}", path);
-            let sample = Sample {
-                id: sample_json.to_string(),
-                source: "filesystem".to_string(),
-                image: to_python_image_payload(image),
-                attributes: HashMap::new(),
-                coca_embedding: vec![],
-                tags: vec![],
-                masks: HashMap::new(),
-                latents: HashMap::new(),
-                additional_images: HashMap::new(),
-                duplicate_state: 0,
-            };
-
-            if samples_tx.send(Some(sample)).is_err() {
-                return Err(());
-            }
-            Ok(())
-        }
-        Err(e) => {
-            error!("Failed to load image from path {}: {}", path, e);
-            // Add more specific error handling based on error type
-            if let image::ImageError::IoError(io_err) = e {
-                error!("IO Error for file {}: {}", path, io_err);
-            }
-            Err(())
-        }
-    }
-}
-
-async fn async_pull_samples_fallback(
-    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-) {
-    // Fallback implementation using the original async approach
-    // This is kept for compatibility and testing
-    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(num_cpus::get());
-
-    let max_tasks = std::cmp::min(default_max_tasks, limit);
-    let mut tasks = tokio::task::JoinSet::new();
-    let mut count = 0;
-    let shareable_img_tfm = Arc::new(image_transform);
-
-    while let Ok(received) = samples_metadata_rx.recv() {
-        if received == serde_json::Value::Null {
-            debug!("file_worker: end of stream received, stopping there");
-            let _ = samples_metadata_rx.close();
-            break;
-        }
-
-        // Check if we have capacity before spawning new tasks
-        if tasks.len() >= max_tasks {
-            // Wait for some tasks to complete before adding more
-            if let Some(result) = tasks.join_next().await {
-                if result.is_ok() {
-                    count += 1;
-                }
-            }
-        }
-
-        // Append a new task to the queue
-        tasks.spawn(pull_sample(
-            received,
-            shareable_img_tfm.clone(),
-            encoding,
-            samples_tx.clone(),
-        ));
-
-        if count >= limit {
-            break;
-        }
-    }
-
-    // Make sure to wait for all the remaining tasks
-    let _ = tasks.join_all().await.iter().map(|result| {
-        if let Ok(()) = result {
-            count += 1;
-        }
-    });
-    debug!("file_worker: total samples sent: {}", count);
-
-    // Signal the end of the stream
-    if samples_tx.send(None).is_ok() {};
 }
