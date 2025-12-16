@@ -1,9 +1,11 @@
-import time
-from tqdm import tqdm
+import json
 import os
+import time
+
 import typer
+from benchmark_defaults import IMAGE_CONFIG
 from dataset import DatagoIterDataset
-import gc
+from tqdm import tqdm
 
 
 def benchmark(
@@ -12,15 +14,27 @@ def benchmark(
         help="The source to test out. Please define DATAGO_TEST_FILESYSTEM env variable if you don't want to pass it as an argument",
     ),
     limit: int = typer.Option(2000, help="The number of samples to test on"),
-    crop_and_resize: bool = typer.Option(
-        False, help="Crop and resize the images on the fly"
-    ),
+    crop_and_resize: bool = typer.Option(False, help="Crop and resize the images on the fly"),
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
+    num_workers: int = typer.Option(os.cpu_count(), help="Number of workers to use"),
+    sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
 ):
-    print(f"Running benchmark for {root_path} - {limit} samples")
-    print(
-        "Please run the benchmark twice if you want to compare against torch dataloader, so that file caching affects both paths"
-    )
+    if sweep:
+        results_sweep = {}
+        for num_workers in range(2, (os.cpu_count() * 2 or 2), 2):
+            results_sweep[num_workers] = benchmark(root_path, limit, crop_and_resize, compare_torch, num_workers, False)
+
+        # Save results to a json file
+
+        with open("benchmark_results_filesystem.json", "w") as f:
+            json.dump(results_sweep, f, indent=2)
+
+        return results_sweep
+
+    print(f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers")
+
+    # This setting is not exposed in the config, but an env variable can be used instead
+    os.environ["DATAGO_MAX_TASKS"] = str(num_workers)
 
     client_config = {
         "source_type": "file",
@@ -29,18 +43,13 @@ def benchmark(
             "rank": 0,
             "world_size": 1,
         },
-        "image_config": {
-            "crop_and_resize": crop_and_resize,
-            "default_image_size": 1024,
-            "downsampling_ratio": 32,
-            "min_aspect_ratio": 0.5,
-            "max_aspect_ratio": 2.0,
-            "pre_encode_images": False,
-        },
         "prefetch_buffer_size": 256,
         "samples_buffer_size": 256,
         "limit": limit,
     }
+
+    if crop_and_resize:
+        client_config["image_config"] = IMAGE_CONFIG
 
     # Make sure in the following that we compare apples to apples, meaning in that case
     # that we materialize the payloads in the python scope in the expected format
@@ -50,18 +59,20 @@ def benchmark(
 
     img = None
     count = 0
-    for sample in tqdm(datago_dataset, dynamic_ncols=True):
+    for sample in tqdm(datago_dataset, desc="Datago", dynamic_ncols=True):
         assert sample["id"] != ""
         img = sample["image"]
-        count += 1
 
-        # Force garbage collection to avoid stop-the-world
-        if count % 1000 == 0:
-            gc.collect()
+        if count < limit - 1:
+            del img
+            img = None  # Help with memory pressure
+
+        count += 1
 
     assert count == limit, f"Expected {limit} samples, got {count}"
     fps = limit / (time.time() - start)
-    print(f"Datago FPS {fps:.2f}")
+    results = {"datago": {"fps": fps, "count": count}}
+    print(f"Datago - FPS {fps:.2f} - workers {num_workers}")
     del datago_dataset
 
     # Save the last image as a test
@@ -70,17 +81,14 @@ def benchmark(
 
     # Let's compare against a classic pytorch dataloader
     if compare_torch:
-        from torchvision import datasets, transforms  # type: ignore
         from torch.utils.data import DataLoader
+        from torchvision import datasets, transforms  # type: ignore
 
-        print("Benchmarking torch dataloader")
         # Define the transformations to apply to each image
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize(
-                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
-                    ),
+                    transforms.Resize((1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS),
                 ]
             )
             if crop_and_resize
@@ -88,13 +96,10 @@ def benchmark(
         )
 
         # Create the ImageFolder dataset
-        dataset = datasets.ImageFolder(
-            root=root_path, transform=transform, allow_empty=True
-        )
+        dataset = datasets.ImageFolder(root=root_path, transform=transform, allow_empty=True)
 
         # Create a DataLoader to allow for multiple workers
         # Use available CPU count for num_workers
-        num_workers = os.cpu_count() or 8  # Default to 8 if cpu_count returns None
         dataloader = DataLoader(
             dataset,
             batch_size=1,
@@ -106,12 +111,17 @@ def benchmark(
         # Iterate over the DataLoader
         start = time.time()
         n_images = 0
-        for batch in tqdm(dataloader, dynamic_ncols=True):
+        for batch in tqdm(dataloader, desc="Torch", dynamic_ncols=True):
             n_images += len(batch)
             if n_images > limit:
                 break
+
+            del batch  # Help with memory pressure, same as above
         fps = n_images / (time.time() - start)
-        print(f"Torch FPS {fps:.2f}")
+        results["torch"] = {"fps": fps, "count": n_images}
+        print(f"Torch - FPS {fps:.2f} - workers {num_workers}")
+
+    return results
 
 
 if __name__ == "__main__":

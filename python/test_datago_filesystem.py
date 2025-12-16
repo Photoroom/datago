@@ -54,21 +54,23 @@ def test_get_sample_filesystem(pre_encode_images: bool, rgb16: bool, rgba: bool)
 
         client = DatagoClient(json.dumps(client_config))
         count = 0
-        for i in range(limit):
+        for _ in range(limit):
             data = client.get_sample()
             if not data:
                 break
             count += 1
             assert data.id != ""
-            assert data.image.width == 100
-            assert data.image.height == 100
+
+            image_payload = data.image.get_payload()
+            assert image_payload.width == 100
+            assert image_payload.height == 100
 
             if rgb16:
-                assert data.image.bit_depth == 8
+                assert image_payload.bit_depth == 8
 
             # Open the image in python scope and check properties
             if pre_encode_images:
-                test_image = Image.open(BytesIO(data.image.data))
+                test_image = Image.open(BytesIO(bytes(image_payload.data)))
                 assert test_image.width == 100
                 assert test_image.height == 100
                 assert test_image.mode == "RGB"

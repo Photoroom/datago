@@ -1,5 +1,8 @@
 use crate::image_processing;
-use crate::structs::{CocaEmbedding, ImagePayload, LatentPayload, Sample, SharedClient, UrlLatent};
+use crate::structs::{
+    to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
+    LatentPayload, Sample, SharedClient, UrlLatent,
+};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
@@ -26,7 +29,7 @@ pub async fn bytes_from_url(
 ) -> Option<Vec<u8>> {
     // Retry on the request a few times
     let timeout = std::time::Duration::from_secs(120);
-    let _permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire().await;
 
     // Get a client reference with optimized settings
     let client = &shared_client.client;
@@ -56,7 +59,7 @@ pub async fn bytes_from_url(
 async fn image_from_url(
     client: &SharedClient,
     url: &str,
-    retries: i32,
+    retries: u8,
 ) -> Result<image::DynamicImage, image::ImageError> {
     // Retry on the fetch and decode a few times, could happen that we get a broken packet
     for _ in 0..retries {
@@ -99,21 +102,12 @@ async fn image_payload_from_url(
     url: &str,
     img_tfm: &Option<image_processing::ARAwareTransform>,
     aspect_ratio: &String,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    retries: u8,
+    encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
-    let retries = 5;
-
     match image_from_url(client, url, retries).await {
         Ok(new_image) => {
-            image_processing::image_to_payload(
-                new_image,
-                img_tfm,
-                aspect_ratio,
-                encode_images,
-                img_to_rgb8,
-            )
-            .await
+            image_processing::image_to_payload(new_image, img_tfm, aspect_ratio, encoding).await
         }
         Err(e) => Err(e),
     }
@@ -123,8 +117,8 @@ async fn pull_sample(
     client: Arc<SharedClient>,
     sample_json: serde_json::Value,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    retries: u8,
+    encoding: image_processing::ImageEncoding,
     samples_tx: Arc<kanal::Sender<Option<Sample>>>,
 ) -> Result<(), ()> {
     // Deserialize the sample metadata
@@ -140,8 +134,8 @@ async fn pull_sample(
             image_url,
             &img_tfm,
             &String::new(),
-            encode_images,
-            img_to_rgb8,
+            retries,
+            encoding,
         )
         .await
         {
@@ -174,8 +168,8 @@ async fn pull_sample(
                     &latent.file_direct_url,
                     &img_tfm,
                     &aspect_ratio,
-                    encode_images,
-                    img_to_rgb8,
+                    retries,
+                    encoding,
                 )
                 .await
                 {
@@ -194,13 +188,18 @@ async fn pull_sample(
                 }
             } else if latent.is_mask {
                 // Mask types, registered as latents but they need to be png-decoded
+                let mask_encoding = image_processing::ImageEncoding {
+                    img_to_rgb8: false, // Masks are not converted to RGB8
+                    encode_format: image_processing::EncodeFormat::Png, // Masks are always PNGs, never JPEGs
+                    ..encoding
+                };
                 match image_payload_from_url(
                     &client,
                     &latent.file_direct_url,
                     &img_tfm,
                     &aspect_ratio,
-                    encode_images,
-                    false, // Masks are not converted to RGB8
+                    retries,
+                    mask_encoding,
                 )
                 .await
                 {
@@ -243,7 +242,7 @@ async fn pull_sample(
         source: sample.source,
         attributes: sample.attributes,
         duplicate_state: sample.duplicate_state.unwrap_or(-1),
-        image: image_payload.unwrap_or(ImagePayload {
+        image: to_python_image_payload(image_payload.unwrap_or(ImagePayload {
             data: Vec::new(),
             original_height: 0,
             original_width: 0,
@@ -251,9 +250,10 @@ async fn pull_sample(
             width: 0,
             channels: 0,
             bit_depth: 0,
-        }),
-        masks,
-        additional_images,
+            is_encoded: false,
+        })),
+        masks: to_python_image_payload_map(masks),
+        additional_images: to_python_image_payload_map(additional_images),
         latents,
         coca_embedding: sample.coca_embedding.unwrap_or_default().vector,
         tags: sample.tags.unwrap_or_default(),
@@ -271,13 +271,22 @@ async fn async_pull_samples(
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
-    let max_tasks = min(num_cpus::get(), limit);
+    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse::<usize>()
+        .unwrap_or(num_cpus::get() * 4);
+
+    let max_retries = std::env::var("DATAGO_MAX_RETRIES")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(3);
+
+    let max_tasks = min(default_max_tasks, limit);
     debug!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
@@ -297,8 +306,8 @@ async fn async_pull_samples(
             client.clone(),
             received,
             shareable_img_tfm.clone(),
-            encode_images,
-            img_to_rgb8,
+            max_retries,
+            encoding,
             shareable_channel_tx.clone(),
         ));
 
@@ -358,8 +367,7 @@ pub fn pull_samples(
     samples_meta_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
     tokio::runtime::Builder::new_multi_thread()
@@ -373,8 +381,7 @@ pub fn pull_samples(
                 samples_meta_rx,
                 samples_tx,
                 image_transform,
-                encode_images,
-                img_to_rgb8,
+                encoding,
                 limit,
             )
             .await
@@ -387,4 +394,110 @@ pub fn pull_samples(
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::structs::new_shared_client;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::time::timeout;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_semaphore_connection_limiting() {
+        // Create a shared client with only 2 max connections
+        let shared_client = Arc::new(new_shared_client(2));
+
+        // Create a mock server that simulates a slow API response
+        let server = MockServer::start().await;
+        let _mock = Mock::given(method("GET"))
+            .and(path("/test"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("test response")
+                    .set_delay(Duration::from_millis(100)),
+            ) // Simulate 100ms runtime of the request
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/test", server.uri());
+
+        // Track when each request starts and completes
+        let mut handles = Vec::new();
+
+        // Spawn 3 tasks to test limiting using the actual bytes_from_url function
+        for i in 0..3 {
+            let client = shared_client.clone();
+            let url = url.clone();
+            let handle = tokio::spawn(async move {
+                let request_start = Instant::now();
+
+                let result = bytes_from_url(&client, &url, None).await;
+                let request_end = Instant::now();
+
+                (i, result.is_some(), request_start, request_end)
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all requests to complete with timeout
+        let result = timeout(Duration::from_secs(5), async {
+            let mut results = Vec::new();
+            for handle in handles {
+                if let Ok((i, success, req_start, req_end)) = handle.await {
+                    results.push((i, success, req_start, req_end));
+                }
+            }
+            results
+        })
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "Test timed out - semaphore may not be working correctly"
+        );
+        let results = result.unwrap();
+
+        // All requests should succeed
+        for (i, success, _, _) in &results {
+            assert!(success, "Request {} failed", i);
+        }
+
+        // Verify we made the expected number of requests
+        assert_eq!(results.len(), 3);
+
+        // Sort results by completion time to analyze concurrency
+        let mut sorted_results = results;
+        sorted_results.sort_by(|a, b| a.3.cmp(&b.3));
+
+        // Calculate the timing to verify semaphore limiting
+        let first_request_start = sorted_results[0].2;
+        let first_request_end = sorted_results[0].3;
+        let first_request_duration = first_request_end.duration_since(first_request_start);
+        let second_request_start = sorted_results[1].2;
+        let second_request_end = sorted_results[1].3;
+        let second_request_duration = second_request_end.duration_since(second_request_start);
+        let last_request_start = sorted_results[2].2;
+        let last_request_end = sorted_results[2].3;
+        let last_request_duration = last_request_end.duration_since(last_request_start);
+
+        // The first 2 requests should complete after ~100ms (server delay)
+        // The last request should complete after ~200ms (waits for first two to finish)
+        assert!(first_request_duration >= Duration::from_millis(100) && first_request_duration <= Duration::from_millis(200),
+            "First request completed too early (duration: {:?}), semaphore may not be limiting connections properly",
+            first_request_duration);
+        assert!(second_request_duration >= Duration::from_millis(100) && second_request_duration <= Duration::from_millis(200),
+            "Second request completed too early (duration: {:?}), semaphore may not be limiting connections properly",
+            second_request_duration);
+        assert!(last_request_duration >= Duration::from_millis(200) && last_request_duration <= Duration::from_millis(300),
+            "Last request completed too early (duration: {:?}), semaphore may not be limiting connections properly",
+            last_request_duration);
+
+        // Verify the semaphore is back to full capacity
+        assert_eq!(shared_client.semaphore.available_permits(), 2);
+    }
 }

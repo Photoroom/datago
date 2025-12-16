@@ -1,7 +1,7 @@
 from datago import DatagoClient, initialize_logging
 import json
 from typing import Dict, Any
-from raw_types import raw_array_to_pil_image, raw_array_to_numpy
+from raw_types import raw_array_to_numpy
 
 
 class DatagoIterDataset:
@@ -29,11 +29,13 @@ class DatagoIterDataset:
             return json.loads(item)
 
         if isinstance(item, dict):
-            # recurvisely convert the dictionary
+            # recursively convert the dictionary
             return {k: DatagoIterDataset.to_python_types(v, k) for k, v in item.items()}
 
         elif "image" in key:
-            return raw_array_to_pil_image(item)
+            # The Rust-side returns PythonImagePayload objects that are callable
+            # Call them to get the actual PIL image
+            return item()
         elif "latent" in key:
             return raw_array_to_numpy(item)
 
@@ -85,6 +87,9 @@ if __name__ == "__main__":
             "min_aspect_ratio": 0.5,
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
+            # Optional: Use JPEG encoding instead of PNG (defaults to PNG if not specified)
+            # "encode_format": "jpeg",  # or "png"
+            # "jpeg_quality": 92,  # 0-100, only used when encode_format is "jpeg"
         },
         "prefetch_buffer_size": 64,
         "samples_buffer_size": 128,

@@ -90,11 +90,13 @@ class TestDatagoEdgeCases:
             sample = client.get_sample()
 
             assert sample is not None
-            assert sample.image.original_width == 2000
-            assert sample.image.original_height == 2000
+            image_payload = sample.image.get_payload()
+            assert image_payload is not None
+            assert image_payload.original_width == 2000
+            assert image_payload.original_height == 2000
             # Should be resized
-            assert sample.image.width <= 512
-            assert sample.image.height <= 512
+            assert image_payload.width <= 512
+            assert image_payload.height <= 512
 
     def test_very_small_images(self):
         """Test handling of very small images."""

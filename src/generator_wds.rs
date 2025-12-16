@@ -73,7 +73,7 @@ async fn pull_tarballs(
     let url = url.as_str().unwrap();
 
     // We use a shared client to make it possible to limit the number of outstanding connections
-    let _permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire().await;
     let mut request_builder = shared_client.client.get(url);
     if let Some(token) = auth_token {
         request_builder = request_builder.bearer_auth(token);
@@ -196,10 +196,10 @@ async fn pull_tarballs(
 async fn pull_tarballs_task(
     shared_client: Arc<SharedClient>,
     url: serde_json::Value,
+    retries: u8,
     samples_metadata_tx: kanal::Sender<TarballSample>,
     config: SourceWebDatasetConfig,
 ) -> Result<(), String> {
-    let retries = 3;
     let mut attempt = 0;
 
     while attempt < retries {
@@ -235,7 +235,7 @@ async fn get_url_list(
     shared_client: &Arc<SharedClient>,
     config: &SourceWebDatasetConfig,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let _permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire().await;
 
     // Either ping the url to get the pages, or use the {...} syntax
     if config.url.contains("{") {
@@ -293,6 +293,7 @@ async fn tasks_from_shards(
     shared_client: Arc<SharedClient>,
     samples_metadata_tx: kanal::Sender<TarballSample>,
     config: &SourceWebDatasetConfig,
+    retries: u8,
 ) -> Result<serde_json::Value, String> {
     match get_url_list(&shared_client, config).await {
         Ok(mut task_list) => {
@@ -311,6 +312,7 @@ async fn tasks_from_shards(
                 tasks.spawn(pull_tarballs_task(
                     shared_client.clone(),
                     url,
+                    retries,
                     samples_metadata_tx.clone(),
                     config.clone(),
                 ));
@@ -361,10 +363,10 @@ async fn tasks_from_shards(
                 }
             }
 
-            if join_error.is_some() {
+            if let Some(error) = join_error {
                 // If we had an error, we log it and return an error
-                warn!("dispatch_shards: one of the tasks failed: {join_error:?}");
-                return Err(join_error.unwrap().to_string());
+                warn!("dispatch_shards: one of the tasks failed: {error:?}");
+                return Err(error.to_string());
             }
 
             // Bookkeeping and report
@@ -396,17 +398,28 @@ fn query_shards_and_dispatch(
     source_config: SourceWebDatasetConfig,
 ) {
     // List all the shards from the bucket
-    // for each of them, start an async task to download the TarballSample
-    // and unpack it in memory
+    // for each of them, start an async task to download the TarballSample and unpack it in memory
     // Then, for each sample in the tarball (multiple payloads typically), send it to the processing channel
+
+    // Collect DATAGO_MAX_RETRIES from the environment, default to 3
+    let max_retries = std::env::var("DATAGO_MAX_RETRIES")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(3);
+
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(source_config.max_concurrency)
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            match tasks_from_shards(shared_client.clone(), samples_metadata_tx, &source_config)
-                .await
+            match tasks_from_shards(
+                shared_client.clone(),
+                samples_metadata_tx,
+                &source_config,
+                max_retries,
+            )
+            .await
             {
                 Ok(_) => {
                     debug!("query_shards_and_dispatch: finished processing all shards");
@@ -445,8 +458,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     // Kick the workers which deserialize all the payloads
     let image_transform = client.image_transform.clone();
-    let encode_images = client.encode_images;
-    let img_to_rgb8 = client.image_to_rgb8;
+    let encoding = crate::image_processing::ImageEncoding {
+        encode_images: client.encode_images,
+        img_to_rgb8: client.img_to_rgb8,
+        encode_format: client.encode_format,
+        jpeg_quality: client.jpeg_quality,
+    };
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
     let worker = Some(thread::spawn(move || {
@@ -454,8 +471,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             samples_metadata_rx,
             samples_tx_worker,
             image_transform,
-            encode_images,
-            img_to_rgb8,
+            encoding,
             limit,
             extension_reference_image_type,
         );
@@ -571,13 +587,14 @@ mod tests {
             while let Ok(sample) = engine.samples_rx.recv() {
                 assert!(sample.is_some(), "Sample is None");
                 let sample = sample.unwrap();
-                assert!(!sample.image.data.is_empty(), "Image data is empty");
-                assert!(sample.image.original_height > 0, "Original height is 0");
-                assert!(sample.image.original_width > 0, "Original width is 0");
-                assert!(sample.image.height > 0, "Height is 0");
-                assert!(sample.image.width > 0, "Width is 0");
-                assert!(sample.image.channels > 0, "Channels is 0");
-                assert!(sample.image.bit_depth > 0, "Bit depth is 0");
+                let payload = sample.image.get_payload();
+                assert!(!payload.data.is_empty(), "Image data is empty");
+                assert!(payload.original_height > 0, "Original height is 0");
+                assert!(payload.original_width > 0, "Original width is 0");
+                assert!(payload.height > 0, "Height is 0");
+                assert!(payload.width > 0, "Width is 0");
+                assert!(payload.channels > 0, "Channels is 0");
+                assert!(payload.bit_depth > 0, "Bit depth is 0");
                 count += 1;
                 samples.push(sample);
                 if count >= limit {

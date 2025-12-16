@@ -335,7 +335,7 @@ async fn get_response(
     shared_client: Arc<SharedClient>,
     request: &reqwest::Request,
 ) -> Result<serde_json::Value, reqwest_middleware::Error> {
-    let _permit = shared_client.semaphore.acquire();
+    let _permit = shared_client.semaphore.acquire().await;
 
     match shared_client
         .client
@@ -363,7 +363,7 @@ async fn async_pull_and_dispatch_pages(
     let mut headers = HeaderMap::new();
     headers.insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&format!("Token  {api_key}")).unwrap(),
+        HeaderValue::from_str(&format!("Token {api_key}")).unwrap(),
     );
 
     let db_request = build_request(source_config.clone());
@@ -523,8 +523,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     // Spawn a thread which will handle the async workers
     let image_transform = client.image_transform.clone();
-    let encode_images = client.encode_images;
-    let img_to_rgb8 = client.image_to_rgb8;
+    let encoding = crate::image_processing::ImageEncoding {
+        encode_images: client.encode_images,
+        img_to_rgb8: client.img_to_rgb8,
+        encode_format: client.encode_format,
+        jpeg_quality: client.jpeg_quality,
+    };
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
@@ -535,8 +539,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             samples_metadata_rx_worker,
             samples_tx_worker,
             image_transform,
-            encode_images,
-            img_to_rgb8,
+            encoding,
             limit,
         );
     }));

@@ -1,5 +1,5 @@
 use crate::image_processing;
-use crate::structs::{ImagePayload, Sample};
+use crate::structs::{to_python_image_payload, ImagePayload, Sample};
 use io_uring::{opcode, types, IoUring};
 use log::{debug, error};
 use std::collections::HashMap;
@@ -371,39 +371,52 @@ async fn async_pull_samples(
     samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
-    // Each pipeline will host a io_uring queue.
-    // Max number of concurrent pipelines would depend on the underlying hardware
-    // TODO: @lefaudeux - env variable, VAST or SSD may benefit from different settings
-    let mut pipelines = tokio::task::JoinSet::new();
-    let max_pipelines = std::env::var("DATAGO_IO_URING_PIPELINES")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(num_cpus::get() / 2); // CPUs outside of typical hyperthreading
+    // Check if io_uring should be used
+    let use_io_uring = std::env::var("DATAGO_USE_IO_URING")
+        .map(|s| s.to_lowercase() == "true")
+        .unwrap_or(true); // Default to true for the io_uring branch
 
-    debug!("Using {max_pipelines} io_uring pipelines in parallel");
+    if use_io_uring {
+        // Use the new io_uring implementation
+        let max_pipelines = std::env::var("DATAGO_IO_URING_PIPELINES")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(num_cpus::get() / 2);
 
-    let shareable_img_tfm = Arc::new(image_transform);
+        debug!("Using {max_pipelines} io_uring pipelines in parallel");
 
-    while pipelines.len() < max_pipelines {
-        let rx_channel = samples_metadata_rx.clone();
-        let tx_channel = samples_tx.clone();
-        let img_tfm = shareable_img_tfm.clone();
-        pipelines.spawn(io_uring_pipeline(
-            rx_channel,
-            tx_channel,
-            img_tfm,
-            encode_images,
-            img_to_rgb8,
+        let shareable_img_tfm = Arc::new(image_transform);
+        let mut pipelines = tokio::task::JoinSet::new();
+
+        while pipelines.len() < max_pipelines {
+            let rx_channel = samples_metadata_rx.clone();
+            let tx_channel = samples_tx.clone();
+            let img_tfm = shareable_img_tfm.clone();
+            pipelines.spawn(io_uring_pipeline(
+                rx_channel,
+                tx_channel,
+                img_tfm,
+                encoding.encode_images,
+                encoding.img_to_rgb8,
+                limit,
+            ));
+        }
+
+        // Wait for all pipelines to complete
+        let _ = pipelines.join_all().await;
+    } else {
+        // Fall back to the original async implementation
+        async_pull_samples_fallback(
+            samples_metadata_rx,
+            samples_tx,
+            image_transform,
+            encoding,
             limit,
-        ));
+        ).await;
     }
-
-    // If we have enough tasks, we'll wait for the older one to finish
-    let _ = pipelines.join_all().await;
 
     // Signal the end of the stream
     if samples_tx.send(None).is_ok() {};
@@ -413,8 +426,7 @@ pub fn pull_samples(
     samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
     tokio::runtime::Builder::new_multi_thread() // one thread per core by default
@@ -427,8 +439,7 @@ pub fn pull_samples(
                 samples_metadata_rx,
                 samples_tx,
                 image_transform,
-                encode_images,
-                img_to_rgb8,
+                encoding,
                 limit,
             )
             .await;
@@ -839,4 +850,133 @@ mod tests {
     //     let end_marker = samples_rx.recv().unwrap();
     //     assert!(end_marker.is_none());
     // }
+}
+
+/// Compatibility functions for the original async implementation
+/// These are kept for backwards compatibility and testing
+
+async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
+    // Use buffered reading instead of loading entire file at once for better memory efficiency
+    let file = std::fs::File::open(path)
+        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
+    let reader = std::io::BufReader::new(file);
+
+    image::ImageReader::new(reader)
+        .with_guessed_format()?
+        .decode()
+}
+
+async fn image_payload_from_path(
+    path: &str,
+    img_tfm: &Option<image_processing::ARAwareTransform>,
+    encoding: image_processing::ImageEncoding,
+) -> Result<ImagePayload, image::ImageError> {
+    match image_from_path(path).await {
+        Ok(new_image) => {
+            image_processing::image_to_payload(new_image, img_tfm, &"".to_string(), encoding).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn pull_sample(
+    sample_json: serde_json::Value,
+    img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
+    encoding: image_processing::ImageEncoding,
+    samples_tx: kanal::Sender<Option<Sample>>,
+) -> Result<(), ()> {
+    let path = sample_json.as_str().unwrap();
+    debug!("Starting to process file: {}", path);
+
+    match image_payload_from_path(path, &img_tfm, encoding).await {
+        Ok(image) => {
+            debug!("Successfully processed file: {}", path);
+            let sample = Sample {
+                id: sample_json.to_string(),
+                source: "filesystem".to_string(),
+                image: to_python_image_payload(image),
+                attributes: HashMap::new(),
+                coca_embedding: vec![],
+                tags: vec![],
+                masks: HashMap::new(),
+                latents: HashMap::new(),
+                additional_images: HashMap::new(),
+                duplicate_state: 0,
+            };
+
+            if samples_tx.send(Some(sample)).is_err() {
+                return Err(());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to load image from path {}: {}", path, e);
+            // Add more specific error handling based on error type
+            if let image::ImageError::IoError(io_err) = e {
+                error!("IO Error for file {}: {}", path, io_err);
+            }
+            Err(())
+        }
+    }
+}
+
+async fn async_pull_samples_fallback(
+    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
+    samples_tx: kanal::Sender<Option<Sample>>,
+    image_transform: Option<image_processing::ARAwareTransform>,
+    encoding: image_processing::ImageEncoding,
+    limit: usize,
+) {
+    // Fallback implementation using the original async approach
+    // This is kept for compatibility and testing
+    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(num_cpus::get());
+
+    let max_tasks = std::cmp::min(default_max_tasks, limit);
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut count = 0;
+    let shareable_img_tfm = Arc::new(image_transform);
+
+    while let Ok(received) = samples_metadata_rx.recv() {
+        if received == serde_json::Value::Null {
+            debug!("file_worker: end of stream received, stopping there");
+            let _ = samples_metadata_rx.close();
+            break;
+        }
+
+        // Check if we have capacity before spawning new tasks
+        if tasks.len() >= max_tasks {
+            // Wait for some tasks to complete before adding more
+            if let Some(result) = tasks.join_next().await {
+                if result.is_ok() {
+                    count += 1;
+                }
+            }
+        }
+
+        // Append a new task to the queue
+        tasks.spawn(pull_sample(
+            received,
+            shareable_img_tfm.clone(),
+            encoding,
+            samples_tx.clone(),
+        ));
+
+        if count >= limit {
+            break;
+        }
+    }
+
+    // Make sure to wait for all the remaining tasks
+    let _ = tasks.join_all().await.iter().map(|result| {
+        if let Ok(()) = result {
+            count += 1;
+        }
+    });
+    debug!("file_worker: total samples sent: {}", count);
+
+    // Signal the end of the stream
+    if samples_tx.send(None).is_ok() {};
 }

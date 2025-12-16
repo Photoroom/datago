@@ -3,7 +3,9 @@ import pytest
 import os
 import json
 
-from raw_types import raw_array_to_pil_image, raw_array_to_numpy
+from raw_types import (
+    decode_image_payload,
+)
 from dataset import DatagoIterDataset
 
 
@@ -62,9 +64,11 @@ def test_caption_and_image():
         assert img.height > 0
         assert img.width > 0
 
-        assert img.height <= img.original_height
-        assert img.width <= img.original_width
-        assert img.channels == channels
+        payload = img.get_payload()
+        assert img.height <= payload.original_height
+        assert img.width <= payload.original_width
+        assert img.mode == "RGB" if channels == 3 else "L"
+        assert payload.channels == channels
 
     for i, sample in enumerate(dataset):
         assert sample.source != ""
@@ -80,14 +84,11 @@ def test_caption_and_image():
         check_image(sample.masks["segmentation_mask"], 1)
 
         # Check the image decoding
-        assert raw_array_to_pil_image(sample.image).mode == "RGB", "Image should be RGB"
-        assert (
-            raw_array_to_pil_image(sample.additional_images["masked_image"]).mode
-            == "RGB"
-        ), "Image should be RGB"
-        assert raw_array_to_pil_image(sample.masks["segmentation_mask"]).mode == "L", (
-            "Mask should be L"
+        assert sample.image.mode == "RGB", "Image should be RGB"
+        assert sample.additional_images["masked_image"].mode == "RGB", (
+            "Image should be RGB"
         )
+        assert sample.masks["segmentation_mask"].mode == "L", "Mask should be L"
 
         if i > N_SAMPLES:
             break
@@ -136,26 +137,37 @@ def test_empty_image():
     _ = next(iter(dataset))
 
 
-def no_test_jpg_compression():
-    # Check that the images are compressed as expected
+def test_jpeg_compression():
+    # Check that JPEG compression works as expected
     client_config = get_json_config()
     client_config["image_config"]["pre_encode_images"] = True
+    client_config["image_config"]["encode_format"] = "jpeg"
+    client_config["image_config"]["jpeg_quality"] = 92
     dataset = DatagoIterDataset(client_config, return_python_types=False)
 
     sample = next(iter(dataset))
 
-    assert raw_array_to_pil_image(sample.image).mode == "RGB", "Image should be RGB"
-    assert (
-        raw_array_to_pil_image(sample.additional_images["masked_image"]).mode == "RGB"
-    ), "Image should be RGB"
-    assert raw_array_to_pil_image(sample.masks["segmentation_mask"]).mode == "L", (
-        "Mask should be L"
-    )
+    # Check that the image is properly accessible through PIL, but that it is encoded
+    assert sample.image.mode == "RGB", "Image should be RGB"
+    assert sample.additional_images["masked_image"].mode == "RGB", "Image should be RGB"
+    assert sample.masks["segmentation_mask"].mode == "L", "Mask should be L"
 
-    # Check the embeddings decoding
-    assert raw_array_to_numpy(sample.coca_embedding) is not None, (
-        "Embedding should be set"
-    )
+    # Check that the image is encoded, as JPG PIL
+    # TODO: @blefaudeux
+
+
+def test_png_compression():
+    # Check that PNG compression works (default behavior)
+    client_config = get_json_config()
+    client_config["image_config"]["pre_encode_images"] = True
+    # Don't specify encode_format - should default to PNG
+    dataset = DatagoIterDataset(client_config, return_python_types=False)
+
+    _sample = next(iter(dataset))
+
+    # Check that the image is encoded, as JPG PIL
+    # TODO: @blefaudeux
+    # same as above
 
 
 def test_original_image():
@@ -166,14 +178,9 @@ def test_original_image():
     dataset = DatagoIterDataset(client_config, return_python_types=False)
 
     sample = next(iter(dataset))
-
-    assert raw_array_to_pil_image(sample.image).mode == "RGB", "Image should be RGB"
-    assert (
-        raw_array_to_pil_image(sample.additional_images["masked_image"]).mode == "RGB"
-    ), "Image should be RGB"
-    assert raw_array_to_pil_image(sample.masks["segmentation_mask"]).mode == "L", (
-        "Mask should be L"
-    )
+    payload = sample.image.get_payload()
+    assert payload.original_height == payload.height == sample.image.height
+    assert payload.original_width == payload.width == sample.image.width
 
 
 def test_duplicate_state():

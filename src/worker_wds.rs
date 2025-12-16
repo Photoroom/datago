@@ -1,5 +1,5 @@
 use crate::image_processing;
-use crate::structs::{ImagePayload, Sample, TarballSample};
+use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
 use log::{debug, error, info, warn};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -19,8 +19,7 @@ fn is_supported_type(ext: &str) -> bool {
 async fn process_sample(
     sample: TarballSample,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     samples_tx: Arc<kanal::Sender<Option<Sample>>>,
     extension_reference_image: String,
 ) -> Result<(), ()> {
@@ -49,25 +48,30 @@ async fn process_sample(
                                     raw_image,
                                     &img_tfm,
                                     &sample_aspect_ratio,
-                                    encode_images,
-                                    img_to_rgb8,
+                                    encoding,
                                 )
                                 .await
-                                .unwrap_or_else(|_| ImagePayload {
-                                    data: vec![],
-                                    width: 0,
-                                    height: 0,
-                                    original_height: 0,
-                                    original_width: 0,
-                                    bit_depth: 0,
-                                    channels: 0,
+                                .map(to_python_image_payload)
+                                .unwrap_or_else(|_| {
+                                    to_python_image_payload(ImagePayload {
+                                        data: vec![],
+                                        width: 0,
+                                        height: 0,
+                                        original_height: 0,
+                                        original_width: 0,
+                                        bit_depth: 0,
+                                        channels: 0,
+                                        is_encoded: false,
+                                    })
                                 });
 
                                 if sample_aspect_ratio.is_empty() {
                                     // If we don't have an aspect ratio yet, we set it
+                                    // We need to get the payload from the PythonImagePayload to access width/height
+                                    let payload = image.get_payload();
                                     sample_aspect_ratio = image_processing::aspect_ratio_to_str((
-                                        image.width as u32,
-                                        image.height as u32,
+                                        payload.width as u32,
+                                        payload.height as u32,
                                     ));
                                 }
 
@@ -76,7 +80,7 @@ async fn process_sample(
                                     final_sample = Some(Sample {
                                         id: String::from(sample_id.to_str().unwrap_or("unknown")),
                                         source: sample.name.clone(),
-                                        image: image.clone(),
+                                        image,
                                         attributes: attributes.clone(),
                                         coca_embedding: vec![],
                                         tags: vec![],
@@ -134,14 +138,18 @@ async fn async_deserialize_samples(
     samples_metadata_rx: kanal::Receiver<TarballSample>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
     extension_reference_image: String,
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
-    let max_tasks = min(num_cpus::get(), limit);
+    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse::<usize>()
+        .unwrap_or(num_cpus::get() * 4);
+    let max_tasks = min(default_max_tasks, limit);
+
     info!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
@@ -160,8 +168,7 @@ async fn async_deserialize_samples(
         tasks.spawn(process_sample(
             sample,
             shareable_img_tfm.clone(),
-            encode_images,
-            img_to_rgb8,
+            encoding,
             shareable_channel_tx.clone(),
             extension_reference_image.clone(),
         ));
@@ -216,8 +223,7 @@ pub fn deserialize_samples(
     samples_metadata_rx: kanal::Receiver<TarballSample>,
     samples_tx: kanal::Sender<Option<Sample>>,
     image_transform: Option<image_processing::ARAwareTransform>,
-    encode_images: bool,
-    img_to_rgb8: bool,
+    encoding: image_processing::ImageEncoding,
     limit: usize,
     extension_reference_image: String,
 ) {
@@ -231,8 +237,7 @@ pub fn deserialize_samples(
                 samples_metadata_rx,
                 samples_tx,
                 image_transform,
-                encode_images,
-                img_to_rgb8,
+                encoding,
                 limit,
                 extension_reference_image,
             )

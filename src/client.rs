@@ -22,7 +22,9 @@ pub struct DatagoClient {
     // Sample processing
     pub image_transform: Option<ARAwareTransform>,
     pub encode_images: bool,
-    pub image_to_rgb8: bool, // Convert all images to RGB 8 bits format
+    pub img_to_rgb8: bool,
+    pub encode_format: crate::image_processing::EncodeFormat,
+    pub jpeg_quality: u8,
 
     // Holds all the variables related to a running engine
     engine: Option<DatagoEngine>,
@@ -80,13 +82,18 @@ impl DatagoClient {
             Some(config) => {
                 let mut image_transform: Option<ARAwareTransform> = None;
                 let mut encode_images = false;
-                let mut image_to_rgb8 = false;
+                let mut img_to_rgb8 = false;
+                let mut encode_format = crate::image_processing::EncodeFormat::default();
+                let mut jpeg_quality = 92u8;
+
                 if let Some(image_config) = config.image_config {
                     if image_config.crop_and_resize {
                         image_transform = Some(image_config.get_ar_aware_transform());
                     }
                     encode_images = image_config.pre_encode_images;
-                    image_to_rgb8 = image_config.image_to_rgb8;
+                    img_to_rgb8 = image_config.image_to_rgb8;
+                    encode_format = image_config.encode_format;
+                    jpeg_quality = image_config.jpeg_quality;
                 }
 
                 DatagoClient {
@@ -98,7 +105,9 @@ impl DatagoClient {
                     max_connections: 128,
                     image_transform,
                     encode_images,
-                    image_to_rgb8,
+                    img_to_rgb8,
+                    encode_format,
+                    jpeg_quality,
                     engine: None,
                     is_valid: true,
                 }
@@ -114,7 +123,9 @@ impl DatagoClient {
                     max_connections: 0,
                     image_transform: None,
                     encode_images: false,
-                    image_to_rgb8: false,
+                    img_to_rgb8: false,
+                    encode_format: crate::image_processing::EncodeFormat::default(),
+                    jpeg_quality: 92,
                     engine: None,
                     is_valid: false,
                 }
@@ -256,7 +267,7 @@ mod tests {
     use crate::image_processing::ImageTransformConfig;
 
     #[cfg(test)]
-    use crate::structs::ImagePayload;
+    use crate::structs::PythonImagePayload;
 
     #[cfg(test)]
     fn get_test_source() -> String {
@@ -363,27 +374,31 @@ mod tests {
     use log::debug;
 
     #[cfg(test)]
-    fn check_image(img: &ImagePayload) {
-        assert!(!img.data.is_empty());
+    fn check_image(img: &PythonImagePayload) {
+        let payload = img.get_payload();
+        assert!(!payload.data.is_empty());
 
-        if img.channels > 0 {
+        if payload.channels > 0 {
             // Raw image
-            assert!(img.channels == 3 || img.channels == 1);
-            assert!(img.width > 0);
-            assert!(img.height > 0);
+            assert!(payload.channels == 3 || payload.channels == 1);
+            assert!(payload.width > 0);
+            assert!(payload.height > 0);
             assert!(
-                img.data.len() * 8
-                    == img.width * img.height * img.bit_depth * img.channels as usize
+                payload.data.len() * 8
+                    == payload.width
+                        * payload.height
+                        * payload.bit_depth
+                        * payload.channels as usize
             );
         } else {
             // Encoded image
-            assert!(img.width > 0);
-            assert!(img.height > 0);
-            assert!(!img.data.is_empty());
-            assert!(img.channels == -1);
+            assert!(payload.width > 0);
+            assert!(payload.height > 0);
+            assert!(!payload.data.is_empty());
+            assert!(payload.channels == -1);
 
             // Check that we can decode the image
-            let _img = image::load_from_memory(&img.data).unwrap();
+            let _img = image::load_from_memory(&payload.data).unwrap();
         }
     }
 
@@ -436,7 +451,9 @@ mod tests {
             min_aspect_ratio: 0.5,
             max_aspect_ratio: 2.0,
             pre_encode_images: false,
-            image_to_rgb8: false
+            image_to_rgb8: false,
+            encode_format: crate::image_processing::EncodeFormat::default(),
+            jpeg_quality: 92
         });
 
         let mut client = DatagoClient::new(config.to_string());
@@ -468,7 +485,9 @@ mod tests {
             min_aspect_ratio: 0.5,
             max_aspect_ratio: 2.0,
             pre_encode_images: true, // new part being tested
-            image_to_rgb8: false
+            image_to_rgb8: false,
+            encode_format: crate::image_processing::EncodeFormat::default(),
+            jpeg_quality: 92
         });
 
         let mut client = DatagoClient::new(config.to_string());
@@ -625,8 +644,9 @@ mod tests {
 
         let sample = sample.unwrap();
         assert!(!sample.id.is_empty());
-        assert!(sample.image.width * sample.image.height >= 1000000);
-        assert!(sample.image.width * sample.image.height <= 2000000);
+        let payload = sample.image.get_payload();
+        assert!(payload.width * payload.height >= 1000000);
+        assert!(payload.width * payload.height <= 2000000);
         client.stop();
     }
 
