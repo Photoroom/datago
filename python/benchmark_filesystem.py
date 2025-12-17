@@ -22,7 +22,7 @@ def benchmark(
 ):
     if sweep:
         results_sweep = {}
-        for num_workers in range(2, (os.cpu_count() or 1) * 2, 16):
+        for num_workers in range(2, (os.cpu_count() or 1) * 2, 4):
             results_sweep[num_workers] = benchmark(
                 root_path, limit, crop_and_resize, compare_torch, num_workers, False
             )
