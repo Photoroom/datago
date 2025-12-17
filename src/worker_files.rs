@@ -118,10 +118,11 @@ async fn io_uring_drain_into_tasks(
             // Get the number of bytes actually read
             let bytes_read = cqe.result() as usize;
             
-            // Safety: Truncate the buffer to the actual bytes read
+            // Safe: Truncate the buffer to the actual bytes read
             // This is safe because io_uring has written exactly 'bytes_read' bytes to our buffer
-            unsafe {
-                request.buffer.set_len(bytes_read);
+            // and we're using Vec's built-in truncate method
+            if bytes_read < request.buffer.len() {
+                request.buffer.truncate(bytes_read);
             }
 
             let io_uring_result = IoUringResult {
@@ -166,13 +167,8 @@ async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
     // Get the result from the queue
     match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
         Ok(mut results) if results.len() == 1 => {
-            let mut result = results.remove(0);
-            // Safety: Ensure the buffer is properly sized
-            if result.buffer.capacity() > result.buffer.len() {
-                unsafe {
-                    result.buffer.set_len(result.buffer.capacity());
-                }
-            }
+            let result = results.remove(0);
+            // The buffer should already be properly sized by io_uring_retire_available_reads
             Ok(result.buffer)
         },
         Ok(_) => Err(std::io::Error::other("Failed to read file")),
@@ -252,15 +248,21 @@ async fn io_uring_retire_available_reads(
             return Err(std::io::Error::last_os_error());
         }
 
-        let request = &io_tracker.in_flight[&cqe.user_data()];
+        // Take ownership of the request to properly manage buffer lifetime
+        let mut request = io_tracker.remove(cqe.user_data()).unwrap();
+        
+        // Get the number of bytes actually read
+        let bytes_read = cqe.result() as usize;
+        
+        // Safe: Truncate the buffer to the actual bytes read
+        if bytes_read < request.buffer.len() {
+            request.buffer.truncate(bytes_read);
+        }
 
         results.push(IoUringResult {
-            buffer: request.buffer[..cqe.result() as usize].to_vec(),
-            path: request.path.clone(), // FIXME: ideally we would `move` here instead
+            buffer: request.buffer, // Take ownership of the buffer
+            path: request.path,     // Take ownership of the path
         });
-
-        // Remove this request from the tracker
-        io_tracker.remove(cqe.user_data());
     }
     Ok(results)
 }
@@ -414,7 +416,7 @@ async fn async_pull_samples(
     // Check if io_uring should be used
     let use_io_uring = std::env::var("DATAGO_USE_IO_URING")
         .map(|s| s.to_lowercase() == "true")
-        .unwrap_or(false); // Default to false - io_uring still has memory issues
+        .unwrap_or(true); // Default to true - memory issues have been fixed
 
     if use_io_uring {
         // Use the new io_uring implementation
@@ -889,5 +891,53 @@ mod tests {
         assert_eq!(payload.original_width, 2);
         assert_eq!(payload.original_height, 2);
         assert!(!payload.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_io_uring_memory_stress() {
+        // Create a temporary directory
+        let temp_dir = TempDir::new().unwrap();
+        
+        // Create multiple test image files of different sizes
+        let image_sizes = [(24, 32), (64, 64), (128, 128), (256, 256), (512, 512)];
+        let mut file_paths = Vec::new();
+        
+        for (i, (width, height)) in image_sizes.iter().enumerate() {
+            let file_path = temp_dir.path().join(format!("test_{i}.png"));
+            
+            // Create a test image with predictable pixel data
+            let img = image::DynamicImage::new_rgb8(*width, *height);
+            
+            // Save the image
+            img.save(&file_path).unwrap();
+            
+            file_paths.push(file_path);
+        }
+        
+        // Test reading all files concurrently using io_uring
+        let mut tasks = Vec::new();
+        for file_path in &file_paths {
+            let path = file_path.to_str().unwrap().to_string();
+            tasks.push(tokio::spawn(async move {
+                // Use the io_uring_read_file function
+                let result = io_uring_read_file(&path).await;
+                assert!(result.is_ok(), "Failed to read file: {}", path);
+                
+                let bytes = result.unwrap();
+                assert!(!bytes.is_empty(), "Empty buffer for file: {}", path);
+                
+                // Verify we can load the image from the bytes
+                let img_result = image::load_from_memory(&bytes);
+                assert!(img_result.is_ok(), "Failed to load image from bytes: {}", path);
+                
+                let img = img_result.unwrap();
+                assert!(img.width() > 0 && img.height() > 0, "Invalid image dimensions: {}", path);
+            }));
+        }
+        
+        // Wait for all tasks to complete
+        for task in tasks {
+            task.await.unwrap();
+        }
     }
 }
