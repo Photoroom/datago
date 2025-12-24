@@ -5,6 +5,7 @@ use crate::worker_wds;
 use async_tar::Archive;
 use kanal::bounded;
 use log::{debug, error, info, warn};
+use num_cpus;
 use rand::seq::SliceRandom;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -81,14 +82,19 @@ async fn pull_tarballs(
 
     // Grab an async byte stream from the request, we'll try to untar the results on the fly
     let response = request_builder.send().await;
-    if response.is_err() {
-        return Err("Failed to send request".into());
-    }
-    let response = response.unwrap();
+    let response = match response {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Failed to send request for {}: {}", url, e);
+            return Err(format!("Failed to send request: {}", e));
+        }
+    };
+
     if !response.status().is_success() {
+        error!("Failed to download TarballSample {}: HTTP {}", url, response.status());
         return Err(format!(
-            "Failed to download TarballSample: {}",
-            response.status()
+            "Failed to download TarballSample {}: HTTP {}",
+            url, response.status()
         ));
     }
 
@@ -97,8 +103,8 @@ async fn pull_tarballs(
     let stream_reader =
         StreamReader::new(byte_stream.map(|res_bytes| res_bytes.map_err(std::io::Error::other)));
 
-    // Wrap in BufReader for the async Tar reader
-    let buf_reader = BufReader::new(stream_reader);
+    // Wrap in BufReader for the async Tar reader with larger buffer
+    let buf_reader = BufReader::with_capacity(2 * 1024 * 1024, stream_reader); // 2MB buffer
 
     // Create a tar archive reader from the decompressed stream
     let archive = Archive::new(buf_reader.compat());
@@ -109,6 +115,9 @@ async fn pull_tarballs(
 
     let mut current_sample_key: Option<String> = None;
     let mut current_files_for_sample = TarballSample::new(url.to_string());
+
+    // Reusable buffer for reading file contents with larger initial capacity
+    let mut reusable_buffer = Vec::with_capacity(2 * 1024 * 1024); // Start with 2MB capacity
 
     while let Some(entry_result) = entries.next().await {
         let mut entry =
@@ -158,7 +167,7 @@ async fn pull_tarballs(
             if samples_metadata_tx.send(current_files_for_sample).is_err() {
                 debug!("dispatch_shards (streaming): samples_metadata_tx channel closed.");
                 let _ = samples_metadata_tx.close(); // Make sure that we close on both ends
-                return Err("Channel closed".into());
+                return Ok(());
             }
 
             // Start a new sample
@@ -166,13 +175,14 @@ async fn pull_tarballs(
             current_sample_key = Some(entry_key.clone());
         }
 
-        let mut buffer = Vec::new();
+        // Clear and reuse the buffer for the next file
+        reusable_buffer.clear();
         entry
-            .read_to_end(&mut buffer)
+            .read_to_end(&mut reusable_buffer)
             .await
             .map_err(|e| format!("Failed to read TarballSample {e}"))?; // Read the content of the current file
 
-        current_files_for_sample.add(BinaryFile { filename, buffer });
+        current_files_for_sample.add(BinaryFile { filename, buffer: reusable_buffer.clone() });
         debug!(
             "dispatch_shards (streaming): processed entry {:?}, key: {:?}",
             Path::new(&current_files_for_sample.content.last().unwrap().filename)
@@ -184,9 +194,9 @@ async fn pull_tarballs(
     // Send the last collected sample if any
     if !current_files_for_sample.content.is_empty()
         && samples_metadata_tx.send(current_files_for_sample).is_err()
+        && !samples_metadata_tx.is_closed()
     {
-        debug!("dispatch_shards (streaming): samples_metadata_tx channel closed for last sample.");
-        return Err("Channel closed".into());
+        return Err("Failed to send last sample".into());
     }
 
     debug!("dispatch_shards (streaming): finished processing TarballSample {url}");
@@ -308,7 +318,20 @@ async fn tasks_from_shards(
             let mut count = 0;
             let mut join_error: Option<String> = None;
 
+            // Calculate download concurrency - use max_concurrency but ensure it's reasonable
+            let download_concurrency = std::cmp::max(4, config.max_concurrency); // Minimum of 4 download tasks
+            let processing_concurrency = std::cmp::max(8, num_cpus::get() * 2); // Minimum of 8 processing tasks
+
+            info!("WDS: Using {} download tasks and {} processing tasks", download_concurrency, processing_concurrency);
+
             for url in task_list {
+                // Escape out if the channel is closed
+                if samples_metadata_tx.is_closed() {
+                    debug!("dispatch_shards: channel is closed, enough samples probably. Bailing out");
+                    break;
+                }
+
+                // All good, submit a new async task
                 tasks.spawn(pull_tarballs_task(
                     shared_client.clone(),
                     url,
@@ -319,7 +342,7 @@ async fn tasks_from_shards(
 
                 // Some bookkeeping, to limit the number of tasks in flight
                 // we'll wait for the first one to finish before adding a new one
-                if tasks.len() >= config.max_concurrency {
+                if tasks.len() >= download_concurrency {
                     match tasks.join_next().await {
                         Some(res) => {
                             match res.unwrap() {
@@ -334,7 +357,6 @@ async fn tasks_from_shards(
                                     break;
                                 }
                             }
-                            debug!("dispatch_shards: task completed successfully");
                         }
                         None => {
                             // Task was cancelled or panicked
@@ -407,8 +429,10 @@ fn query_shards_and_dispatch(
         .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(3);
 
+    // Use more threads for the download runtime to handle increased concurrency
+    let download_threads = std::cmp::max(4, source_config.max_concurrency);
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(source_config.max_concurrency)
+        .worker_threads(download_threads)
         .enable_all()
         .build()
         .unwrap()
@@ -433,8 +457,9 @@ fn query_shards_and_dispatch(
 
 // ---- Global orchestration ---------
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
-    // Allocate all the message passing pipes
-    let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(32);
+    // Allocate all the message passing pipes with larger buffers for better throughput
+    let metadata_buffer_size = std::cmp::max(128, client.samples_buffer * 2); // Larger buffer for metadata
+    let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(metadata_buffer_size);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
 
     info!("Using webdataset as source");

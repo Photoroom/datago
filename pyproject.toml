@@ -15,7 +15,9 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
 ]
-dependencies = []
+dependencies = [
+    "pip>=25.0.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"

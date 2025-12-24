@@ -1,7 +1,6 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
 use log::{debug, error, info, warn};
-use std::cmp::min;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -91,16 +90,35 @@ async fn process_sample(
                                     });
                                 } else {
                                     // Otherwise, we store it in the additional images
-                                    match final_sample {
-                                        Some(ref mut final_sample_ref) => {
-                                            final_sample_ref
-                                                .additional_images
-                                                .insert(item.filename.clone(), image.clone());
-                                        }
-                                        None => {
-                                            // If final_sample is not initialized, we create it
-                                            panic!( "Final sample should be initialized before adding additional images");
-                                        }
+                                    // Initialize final_sample if it doesn't exist yet
+                                    if final_sample.is_none() {
+                                        final_sample = Some(Sample {
+                                            id: String::from(sample_id.to_str().unwrap_or("unknown")),
+                                            source: sample.name.clone(),
+                                            image: to_python_image_payload(ImagePayload {
+                                                data: vec![],
+                                                width: 0,
+                                                height: 0,
+                                                original_height: 0,
+                                                original_width: 0,
+                                                bit_depth: 0,
+                                                channels: 0,
+                                                is_encoded: false,
+                                            }),
+                                            attributes: attributes.clone(),
+                                            coca_embedding: vec![],
+                                            tags: vec![],
+                                            masks: HashMap::new(),
+                                            latents: HashMap::new(),
+                                            additional_images: HashMap::new(),
+                                            duplicate_state: 0,
+                                        });
+                                    }
+
+                                    if let Some(ref mut final_sample_ref) = final_sample {
+                                        final_sample_ref
+                                            .additional_images
+                                            .insert(item.filename.clone(), image.clone());
                                     }
                                 }
                                 debug!("wds_worker: unpacked {}", item.filename);
@@ -118,8 +136,8 @@ async fn process_sample(
                     }
                 }
 
-                if samples_tx.send(final_sample).is_err() {
-                    debug!("wds_worker: stream already closed, wrapping up");
+                if samples_tx.send(final_sample).is_err() && !samples_tx.is_closed() {
+                    error!("wds_worker: error dispatching sample");
                     return Err(());
                 }
                 return Ok(());
@@ -148,9 +166,9 @@ async fn async_deserialize_samples(
         .unwrap_or_else(|_| "0".to_string())
         .parse::<usize>()
         .unwrap_or(num_cpus::get() * 4);
-    let max_tasks = min(default_max_tasks, limit);
+    let max_tasks = std::cmp::max(8, default_max_tasks); // Ensure minimum of 8 processing tasks
 
-    info!("Using {max_tasks} tasks in the async threadpool");
+    info!("WDS: Using {max_tasks} processing tasks in worker threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
@@ -227,8 +245,10 @@ pub fn deserialize_samples(
     limit: usize,
     extension_reference_image: String,
 ) {
+    // Use more threads for processing to handle increased throughput
+    let worker_threads = std::cmp::max(4, num_cpus::get());
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
+        .worker_threads(worker_threads)
         .enable_all()
         .build()
         .unwrap()

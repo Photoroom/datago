@@ -9,10 +9,8 @@ from tqdm import tqdm
 
 
 def benchmark(
-    limit: int = typer.Option(10, help="The number of samples to test on"),
-    crop_and_resize: bool = typer.Option(
-        True, help="Crop and resize the images on the fly"
-    ),
+    limit: int = typer.Option(1000, help="The number of samples to test on"),
+    crop_and_resize: bool = typer.Option(False, help="Crop and resize the images on the fly"),
     compare_wds: bool = typer.Option(True, help="Compare against torch dataloader"),
     num_workers: int = typer.Option(
         16,
@@ -22,8 +20,12 @@ def benchmark(
 ):
     if sweep:
         results = {}
-        for num_workers in range(2, max(64, (os.cpu_count() or 1)), 8):
+        max_cpus = os.cpu_count() or 16
+
+        num_workers = 1
+        while num_workers < max_cpus:
             results[num_workers] = benchmark(limit, crop_and_resize, compare_wds, num_workers, False)
+            num_workers *= 2
 
         # Save results to a json file
         with open("benchmark_results_wds.json", "w") as f:
@@ -92,13 +94,11 @@ def benchmark(
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize(
-                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
-                    ),
+                    transforms.Resize((1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS),
                 ]
             )
             if crop_and_resize
-            else None
+            else lambda x: x
         )
 
         def custom_transform(sample):
@@ -121,12 +121,13 @@ def benchmark(
             dataset,
             batch_size=1,
             num_workers=num_workers,
-            prefetch_factor=2,
+            prefetch_factor=8,  # Didn't sweep on that, but probably not super impactful
             collate_fn=lambda x: x,
         )
 
         # Iterate over the DataLoader
         start = time.time()
+        n_images = 0
         for n_images, _ in enumerate(tqdm(dataloader, desc="WDS", dynamic_ncols=True)):
             if n_images > limit:
                 break
