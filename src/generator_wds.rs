@@ -5,7 +5,6 @@ use crate::worker_wds;
 use async_tar::Archive;
 use kanal::bounded;
 use log::{debug, error, info, warn};
-use num_cpus;
 use rand::seq::SliceRandom;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -108,8 +107,8 @@ async fn pull_tarballs(
     let stream_reader =
         StreamReader::new(byte_stream.map(|res_bytes| res_bytes.map_err(std::io::Error::other)));
 
-    // Wrap in BufReader for the async Tar reader with larger buffer
-    let buf_reader = BufReader::with_capacity(2 * 1024 * 1024, stream_reader); // 2MB buffer
+    // Wrap in BufReader for the async Tar reader
+    let buf_reader = BufReader::new(stream_reader);
 
     // Create a tar archive reader from the decompressed stream
     let archive = Archive::new(buf_reader.compat());
@@ -120,9 +119,6 @@ async fn pull_tarballs(
 
     let mut current_sample_key: Option<String> = None;
     let mut current_files_for_sample = TarballSample::new(url.to_string());
-
-    // Reusable buffer for reading file contents with larger initial capacity
-    let mut reusable_buffer = Vec::with_capacity(2 * 1024 * 1024); // Start with 2MB capacity
 
     while let Some(entry_result) = entries.next().await {
         let mut entry =
@@ -180,17 +176,13 @@ async fn pull_tarballs(
             current_sample_key = Some(entry_key.clone());
         }
 
-        // Clear and reuse the buffer for the next file
-        reusable_buffer.clear();
+        let mut buffer = Vec::new();
         entry
-            .read_to_end(&mut reusable_buffer)
+            .read_to_end(&mut buffer)
             .await
             .map_err(|e| format!("Failed to read TarballSample {e}"))?; // Read the content of the current file
 
-        current_files_for_sample.add(BinaryFile {
-            filename,
-            buffer: reusable_buffer.clone(),
-        });
+        current_files_for_sample.add(BinaryFile { filename, buffer });
         debug!(
             "dispatch_shards (streaming): processed entry {:?}, key: {:?}",
             Path::new(&current_files_for_sample.content.last().unwrap().filename)
@@ -326,14 +318,7 @@ async fn tasks_from_shards(
             let mut count = 0;
             let mut join_error: Option<String> = None;
 
-            // Calculate download concurrency - use max_concurrency but ensure it's reasonable
-            let download_concurrency = std::cmp::max(4, config.max_concurrency); // Minimum of 4 download tasks
-            let processing_concurrency = std::cmp::max(8, num_cpus::get() * 2); // Minimum of 8 processing tasks
-
-            info!(
-                "WDS: Using {} download tasks and {} processing tasks",
-                download_concurrency, processing_concurrency
-            );
+            info!("WDS: Using {} download tasks", config.max_concurrency);
 
             for url in task_list {
                 // Escape out if the channel is closed
@@ -355,7 +340,7 @@ async fn tasks_from_shards(
 
                 // Some bookkeeping, to limit the number of tasks in flight
                 // we'll wait for the first one to finish before adding a new one
-                if tasks.len() >= download_concurrency {
+                if tasks.len() >= config.max_concurrency {
                     match tasks.join_next().await {
                         Some(res) => {
                             match res.unwrap() {

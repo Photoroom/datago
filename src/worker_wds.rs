@@ -170,7 +170,7 @@ async fn async_deserialize_samples(
         .unwrap_or(num_cpus::get() * 4);
     let max_tasks = std::cmp::max(8, default_max_tasks); // Ensure minimum of 8 processing tasks
 
-    info!("WDS: Using {max_tasks} processing tasks in worker threadpool");
+    warn!("WDS: Using {max_tasks} processing tasks in worker threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
@@ -247,10 +247,8 @@ pub fn deserialize_samples(
     limit: usize,
     extension_reference_image: String,
 ) {
-    // Use more threads for processing to handle increased throughput
-    let worker_threads = std::cmp::max(4, num_cpus::get());
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(worker_threads)
+        .worker_threads(num_cpus::get()) // Tasks in flight are limited by DATAGO_MAX_TASKS env
         .enable_all()
         .build()
         .unwrap()
