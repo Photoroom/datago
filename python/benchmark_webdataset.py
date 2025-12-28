@@ -10,13 +10,19 @@ from tqdm import tqdm
 
 def benchmark(
     limit: int = typer.Option(1000, help="The number of samples to test on"),
-    crop_and_resize: bool = typer.Option(False, help="Crop and resize the images on the fly"),
-    compare_wds: bool = typer.Option(True, help="Compare against torch dataloader"),
-    num_workers: int = typer.Option(
-        16,
-        help="Number of processes to use",
+    crop_and_resize: bool = typer.Option(
+        False, help="Crop and resize the images on the fly"
     ),
-    sweep: bool = typer.Option(False, help="Sweep over the number of processes"),
+    compare_wds: bool = typer.Option(True, help="Compare against torch dataloader"),
+    num_downloads: int = typer.Option(
+        8,
+        help="Number of concurrent downloads",
+    ),
+    num_workers: int = typer.Option(
+        8,
+        help="Number of CPU workers",
+    ),
+    sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
 ):
     if sweep:
         results = {}
@@ -24,7 +30,9 @@ def benchmark(
 
         num_workers = 1
         while num_workers < max_cpus:
-            results[num_workers] = benchmark(limit, crop_and_resize, compare_wds, num_workers, False)
+            results[num_workers] = benchmark(
+                limit, crop_and_resize, compare_wds, num_downloads, num_workers, False
+            )
             num_workers *= 2
 
         # Save results to a json file
@@ -34,22 +42,26 @@ def benchmark(
         return results
 
     # URL of the test bucket
-    # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
-    # dataset = "/imagenet-train-{000000..001281}.tar"
+    bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
+    dataset = "/imagenet-train-{000000..001281}.tar"
 
-    bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
-    dataset = "main/{00155..02480}.tar"
+    # bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
+    # dataset = "main/{00155..02480}.tar"
     url = bucket + dataset
 
     print(
         f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples"
     )
+
+    # This setting is not exposed in the config, but an env variable can be used instead
+    os.environ["DATAGO_MAX_TASKS"] = str(num_workers)
+
     client_config = {
         "source_type": "webdataset",
         "source_config": {
             "url": url,
             "shuffle": True,
-            "max_concurrency": num_workers,  # Number of concurrent TarballSample downloads and dispatch
+            "max_concurrency": num_downloads,  # Number of concurrent TarballSample downloads and dispatch
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
         "prefetch_buffer_size": 256,
@@ -94,7 +106,9 @@ def benchmark(
         transform = (
             transforms.Compose(
                 [
-                    transforms.Resize((1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS),
+                    transforms.Resize(
+                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
+                    ),
                 ]
             )
             if crop_and_resize
@@ -136,6 +150,7 @@ def benchmark(
 
         results["webdataset"] = {"fps": fps, "count": n_images}
         return results
+
 
 if __name__ == "__main__":
     typer.run(benchmark)
