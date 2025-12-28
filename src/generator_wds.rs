@@ -91,10 +91,15 @@ async fn pull_tarballs(
     };
 
     if !response.status().is_success() {
-        error!("Failed to download TarballSample {}: HTTP {}", url, response.status());
+        error!(
+            "Failed to download TarballSample {}: HTTP {}",
+            url,
+            response.status()
+        );
         return Err(format!(
             "Failed to download TarballSample {}: HTTP {}",
-            url, response.status()
+            url,
+            response.status()
         ));
     }
 
@@ -182,7 +187,10 @@ async fn pull_tarballs(
             .await
             .map_err(|e| format!("Failed to read TarballSample {e}"))?; // Read the content of the current file
 
-        current_files_for_sample.add(BinaryFile { filename, buffer: reusable_buffer.clone() });
+        current_files_for_sample.add(BinaryFile {
+            filename,
+            buffer: reusable_buffer.clone(),
+        });
         debug!(
             "dispatch_shards (streaming): processed entry {:?}, key: {:?}",
             Path::new(&current_files_for_sample.content.last().unwrap().filename)
@@ -322,12 +330,17 @@ async fn tasks_from_shards(
             let download_concurrency = std::cmp::max(4, config.max_concurrency); // Minimum of 4 download tasks
             let processing_concurrency = std::cmp::max(8, num_cpus::get() * 2); // Minimum of 8 processing tasks
 
-            info!("WDS: Using {} download tasks and {} processing tasks", download_concurrency, processing_concurrency);
+            info!(
+                "WDS: Using {} download tasks and {} processing tasks",
+                download_concurrency, processing_concurrency
+            );
 
             for url in task_list {
                 // Escape out if the channel is closed
                 if samples_metadata_tx.is_closed() {
-                    debug!("dispatch_shards: channel is closed, enough samples probably. Bailing out");
+                    debug!(
+                        "dispatch_shards: channel is closed, enough samples probably. Bailing out"
+                    );
                     break;
                 }
 

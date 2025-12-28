@@ -93,7 +93,9 @@ async fn process_sample(
                                     // Initialize final_sample if it doesn't exist yet
                                     if final_sample.is_none() {
                                         final_sample = Some(Sample {
-                                            id: String::from(sample_id.to_str().unwrap_or("unknown")),
+                                            id: String::from(
+                                                sample_id.to_str().unwrap_or("unknown"),
+                                            ),
                                             source: sample.name.clone(),
                                             image: to_python_image_payload(ImagePayload {
                                                 data: vec![],
