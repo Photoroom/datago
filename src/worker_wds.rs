@@ -1,6 +1,6 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -170,7 +170,7 @@ async fn async_deserialize_samples(
         .unwrap_or(num_cpus::get());
     let max_tasks = std::cmp::min(num_cpus::get() * 4, default_max_tasks); // Ensure minimum of 8 processing tasks
 
-    warn!("WDS: Using {max_tasks} processing tasks in worker threadpool");
+    info!("WDS: Using {max_tasks} processing tasks in worker threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
@@ -179,7 +179,7 @@ async fn async_deserialize_samples(
 
     while let Ok(sample) = samples_metadata_rx.recv() {
         if sample.is_empty() {
-            warn!("wds_worker: end of stream received, stopping there");
+            info!("wds_worker: end of stream received, stopping there");
             let _ = samples_metadata_rx.close();
             break;
         }
