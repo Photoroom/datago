@@ -167,8 +167,8 @@ async fn async_deserialize_samples(
     let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
         .unwrap_or_else(|_| "0".to_string())
         .parse::<usize>()
-        .unwrap_or(num_cpus::get() * 4);
-    let max_tasks = std::cmp::max(8, default_max_tasks); // Ensure minimum of 8 processing tasks
+        .unwrap_or(num_cpus::get());
+    let max_tasks = std::cmp::min(num_cpus::get() * 4, default_max_tasks); // Ensure minimum of 8 processing tasks
 
     warn!("WDS: Using {max_tasks} processing tasks in worker threadpool");
     let mut tasks = tokio::task::JoinSet::new();

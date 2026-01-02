@@ -262,6 +262,16 @@ The following benchmarks are using ImageNet 1k, which is very low resolution and
 ### AMD EPYC 9454 - IN1k - disk - no processing
 ![AMD EPYC 9454](assets/epyc_vast.png)
 
+## Webdataset: FakeIN
+
+This benchmark is using low resolution images. It's accessed through the webdataset front end, datago is compared with the popular python webdataset library. Note that datago will start streaming the images faster here (almost instantly !), which emphasizes throughput differences depending on how long you test it for.
+
+Of note is also that this can be bottlenecked by your external bandwidth to the remote storage where WDS is hosted, in which case both solution would yield comparable numbers.
+
+### AMD Zen3 laptop - webdataset - no processing
+![AMD EPYC 9454](assets/zen3_wds_fakein.png)
+
+
 ## Webdataset: PD12M
 
 This benchmark is using high resolution images. It's accessed through the webdataset front end, datago is compared with the popular python webdataset library. Note that datago will start streaming the images faster here (almost instantly !), which emphasizes throughput differences depending on how long you test it for.

@@ -42,11 +42,11 @@ def benchmark(
         return results
 
     # URL of the test bucket
-    bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
-    dataset = "/imagenet-train-{000000..001281}.tar"
+    # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
+    # dataset = "/imagenet-train-{000000..001281}.tar"
 
-    # bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
-    # dataset = "main/{00155..02480}.tar"
+    bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
+    dataset = "main/{00155..02480}.tar"
     url = bucket + dataset
 
     print(
