@@ -6,6 +6,7 @@ import typer
 from benchmark_defaults import IMAGE_CONFIG
 from dataset import DatagoIterDataset
 from tqdm import tqdm
+from typing import Any
 
 
 def benchmark(
@@ -23,15 +24,28 @@ def benchmark(
         help="Number of CPU workers",
     ),
     sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
+    plot: bool = typer.Option(
+        False, help="Whether to save a plot at the end of the run"
+    ),
 ):
+    results: dict[Any, Any] = {}
+    assert not plot or (plot and sweep), (
+        "Plot option only makes sense if we sweeped results"
+    )
+
     if sweep:
-        results = {}
         max_cpus = os.cpu_count() or 16
 
         num_workers = 1
         while num_workers < max_cpus:
             results[num_workers] = benchmark(
-                limit, crop_and_resize, compare_wds, num_downloads, num_workers, False
+                limit,
+                crop_and_resize,
+                compare_wds,
+                num_downloads,
+                num_workers,
+                False,
+                False,
             )
             num_workers *= 2
 
@@ -39,18 +53,68 @@ def benchmark(
         with open("benchmark_results_wds.json", "w") as f:
             json.dump(results, f, indent=2)
 
+        if plot:
+            import pandas as pd
+            import matplotlib.pyplot as plt
+
+            # Convert to a DataFrame for plotting
+            df = pd.DataFrame(
+                {
+                    "Thread Count": [int(k) for k in results.keys()],
+                    "Datago FPS": [results[k]["datago"]["fps"] for k in results.keys()],
+                    "Webdataset FPS": [
+                        results[k]["webdataset"]["fps"] for k in results.keys()
+                    ],
+                }
+            )
+
+            # Plotting with vertical axis starting at 0
+            plt.figure(figsize=(10, 6))
+            plt.plot(
+                df["Thread Count"],
+                df["Datago FPS"],
+                marker="o",
+                label="Datago",
+            )
+            plt.plot(
+                df["Thread Count"],
+                df["Webdataset FPS"],
+                marker="o",
+                label="Webdataset",
+            )
+            plt.xlabel("Thread Count")
+            plt.ylabel("Frames Per Second (FPS)")
+            plt.title(f"Throughput: Datago vs Webdataset. Source: {source}")
+            plt.ylim(
+                0,
+                max(df["Datago FPS"].max(), df["Webdataset FPS"].max()) + 20,
+            )
+            plt.legend()
+            plt.grid(True)
+            plt.xticks(df["Thread Count"])
+            plt.tight_layout()
+            plt.savefig(
+                "bench_datago_webdataset.png",
+                format="PNG",
+                dpi=200,
+                bbox_inches="tight",
+            )
+            plt.close()
+
         return results
 
     # URL of the test bucket
     # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
     # dataset = "/imagenet-train-{000000..001281}.tar"
+    # source = "FakeIN"
 
     bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
     dataset = "main/{00155..02480}.tar"
     url = bucket + dataset
+    source = "PD12M"
 
     print(
-        f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples"
+        f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples. Source {source}"
     )
 
     # This setting is not exposed in the config, but an env variable can be used instead
@@ -131,7 +195,7 @@ def benchmark(
             # .to_tuple("png", "cls")  # Map keys to output tuple
         )
 
-        dataloader = DataLoader(
+        dataloader = DataLoader(  #  type:ignore
             dataset,
             batch_size=1,
             num_workers=num_workers,
