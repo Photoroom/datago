@@ -116,7 +116,7 @@ client_config = {
     "source_config": {
         "url": url,
         "random_sampling": False,
-        "max_concurrency": 8, # The number of TarballSamples which should be handled concurrently
+        "concurrent_downloads": 8, # The number of TarballSamples which should be handled concurrently
         "rank": 0,
         "world_size": 1,
     },
@@ -278,8 +278,18 @@ This benchmark is using high resolution images. It's accessed through the webdat
 
 Of note is also that this can be bottlenecked by your external bandwidth to the remote storage where WDS is hosted, in which case both solution would yield comparable numbers.
 
+### AMD Zen3 laptop - webdataset - no processing
+![AMD Zen3 laptop](assets/zen3_wds_pd12m.png)
+
+
 ### AMD EPYC 9454 - pd12m - webdataset - no processing
 ![AMD EPYC 9454](assets/epyc_wds_pd12m.png)
+
+
+### AMD Zen3 laptop - webdataset - processing
+Adding image processing (crop and resize to Transformer compatible size buckets) to the equation changes the picture, as the work spread becomes more important. If you're training a diffusion model or an image encoder from a diverse set of images, this is likely to be the most realistic micro-benchmark.
+
+![AMD Zen3 laptop](assets/zen3_wds_pd12m_processing.png)
 
 </details>
 

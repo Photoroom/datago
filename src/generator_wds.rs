@@ -35,7 +35,7 @@ pub struct SourceWebDatasetConfig {
     pub random_sampling: bool,
 
     #[serde(default)]
-    pub max_concurrency: usize,
+    pub concurrent_downloads: usize,
 
     #[serde(default)]
     pub auth_token: String,
@@ -318,7 +318,7 @@ async fn tasks_from_shards(
             let mut count = 0;
             let mut join_error: Option<String> = None;
 
-            info!("WDS: Using {} download tasks", config.max_concurrency);
+            info!("WDS: Using {} download tasks", config.concurrent_downloads);
 
             for url in task_list {
                 // Escape out if the channel is closed
@@ -340,7 +340,7 @@ async fn tasks_from_shards(
 
                 // Some bookkeeping, to limit the number of tasks in flight
                 // we'll wait for the first one to finish before adding a new one
-                if tasks.len() >= config.max_concurrency {
+                if tasks.len() >= config.concurrent_downloads {
                     match tasks.join_next().await {
                         Some(res) => {
                             match res.unwrap() {
@@ -428,7 +428,7 @@ fn query_shards_and_dispatch(
         .unwrap_or(3);
 
     // Use more threads for the download runtime to handle increased concurrency
-    let download_threads = std::cmp::max(4, source_config.max_concurrency);
+    let download_threads = std::cmp::max(4, source_config.concurrent_downloads);
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(download_threads)
         .enable_all()
@@ -467,9 +467,9 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         serde_json::from_value(client.source_config.clone()).unwrap();
     let extension_reference_image_type: String = source_config.reference_image_type.clone();
 
-    if source_config.max_concurrency == 0 {
-        info!("WDS: Defaulting to 8 max_concurrency");
-        source_config.max_concurrency = 8;
+    if source_config.concurrent_downloads == 0 {
+        info!("WDS: Defaulting to 8 concurrent_downloads");
+        source_config.concurrent_downloads = 8;
     }
 
     // List the contents of the bucket and feed the workers
@@ -541,7 +541,7 @@ mod tests {
                 auth_token: "".into(),
                 reference_image_type: "jpg".into(),
                 random_sampling: s,
-                max_concurrency: 2,
+                concurrent_downloads: 2,
                 rank: 0,
                 world_size: 1,
             };
@@ -592,7 +592,7 @@ mod tests {
                 "source_config": {
                     "url": "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/",
                     "random_sampling": do_random_sampling,
-                    "max_concurrency": 2
+                    "concurrent_downloads": 2
                 },
                 "limit": n_samples,
                 "num_threads": 1,
@@ -655,7 +655,7 @@ mod tests {
                 "source_config": {
                     "url": "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/",
                     "random_sampling": false,
-                    "max_concurrency": 2,
+                    "concurrent_downloads": 2,
                     "rank": rank,
                     "world_size": world_size,
                 },

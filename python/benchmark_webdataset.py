@@ -16,7 +16,7 @@ def benchmark(
     ),
     compare_wds: bool = typer.Option(True, help="Compare against torch dataloader"),
     num_downloads: int = typer.Option(
-        8,
+        32,
         help="Number of concurrent downloads",
     ),
     num_workers: int = typer.Option(
@@ -31,6 +31,21 @@ def benchmark(
     results: dict[Any, Any] = {}
     assert not plot or (plot and sweep), (
         "Plot option only makes sense if we sweeped results"
+    )
+
+    # URL of the test bucket
+    # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
+    # dataset = "/imagenet-train-{000000..001281}.tar"
+    # source = "FakeIN"
+
+    bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
+    dataset = "main/{00155..02480}.tar"
+    source = "PD12M"
+
+    url = bucket + dataset
+
+    print(
+        f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples. Source {source}"
     )
 
     if sweep:
@@ -103,20 +118,6 @@ def benchmark(
 
         return results
 
-    # URL of the test bucket
-    # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
-    # dataset = "/imagenet-train-{000000..001281}.tar"
-    # source = "FakeIN"
-
-    bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
-    dataset = "main/{00155..02480}.tar"
-    url = bucket + dataset
-    source = "PD12M"
-
-    print(
-        f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples. Source {source}"
-    )
-
     # This setting is not exposed in the config, but an env variable can be used instead
     os.environ["DATAGO_MAX_TASKS"] = str(num_workers)
 
@@ -125,7 +126,7 @@ def benchmark(
         "source_config": {
             "url": url,
             "shuffle": True,
-            "max_concurrency": num_downloads,  # Number of concurrent TarballSample downloads and dispatch
+            "concurrent_downloads": num_downloads,  # Number of concurrent TarballSample downloads and dispatch
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
         "prefetch_buffer_size": 256,
