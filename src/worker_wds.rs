@@ -80,7 +80,7 @@ async fn process_sample(
                                         id: String::from(sample_id.to_str().unwrap_or("unknown")),
                                         source: sample.name.clone(),
                                         image,
-                                        attributes: attributes.clone(),
+                                        attributes: HashMap::new(),
                                         coca_embedding: vec![],
                                         tags: vec![],
                                         masks: HashMap::new(),
@@ -107,7 +107,7 @@ async fn process_sample(
                                                 channels: 0,
                                                 is_encoded: false,
                                             }),
-                                            attributes: attributes.clone(),
+                                            attributes: HashMap::new(),
                                             coca_embedding: vec![],
                                             tags: vec![],
                                             masks: HashMap::new(),
@@ -134,8 +134,13 @@ async fn process_sample(
                         // Load the file in to a string
                         let class_file = String::from_utf8_lossy(&item.buffer).to_string();
                         attributes.insert(ext.to_string(), serde_json::json!(class_file));
-                        debug!("wds_worker: unpacked {}", item.filename);
+                        debug!("wds_worker: unpacked {} {}", item.filename, class_file);
                     }
+                }
+
+                // Make sure that the sample has the attributes we decoded
+                if let Some(ref mut final_sample_ref) = final_sample {
+                    final_sample_ref.attributes = attributes;
                 }
 
                 if samples_tx.send(final_sample).is_err() && !samples_tx.is_closed() {
