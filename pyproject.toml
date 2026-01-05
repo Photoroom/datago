@@ -16,7 +16,15 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
+    "matplotlib>=3.7.5",
+    "pandas>=2.0.3",
     "pip>=25.0.1",
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+    "tqdm>=4.67.1",
+    "typer>=0.10.0",
+    "webdataset>=0.2.100",
+    "zig>=1.0.dev0",
 ]
 
 [project.urls]
