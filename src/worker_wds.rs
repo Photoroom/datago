@@ -76,22 +76,33 @@ async fn process_sample(
 
                                 if ext == extension_reference_image {
                                     // If this is the reference image, we store it in the main image field
-                                    final_sample = Some(Sample {
-                                        id: String::from(sample_id.to_str().unwrap_or("unknown")),
-                                        source: sample.name.clone(),
-                                        image,
-                                        attributes: HashMap::new(),
-                                        coca_embedding: vec![],
-                                        tags: vec![],
-                                        masks: HashMap::new(),
-                                        latents: HashMap::new(),
-                                        additional_images: HashMap::new(),
-                                        duplicate_state: 0,
-                                    });
+                                    if let Some(mut_final_sample) = &mut final_sample {
+                                        mut_final_sample.image = image;
+                                    } else {
+                                        // Init the sample
+                                        final_sample = Some(Sample {
+                                            id: String::from(
+                                                sample_id.to_str().unwrap_or("unknown"),
+                                            ),
+                                            source: sample.name.clone(),
+                                            image,
+                                            attributes: HashMap::new(),
+                                            coca_embedding: vec![],
+                                            tags: vec![],
+                                            masks: HashMap::new(),
+                                            latents: HashMap::new(),
+                                            additional_images: HashMap::new(),
+                                            duplicate_state: 0,
+                                        });
+                                    }
                                 } else {
                                     // Otherwise, we store it in the additional images
-                                    // Initialize final_sample if it doesn't exist yet
-                                    if final_sample.is_none() {
+                                    if let Some(mut_final_sample) = &mut final_sample {
+                                        mut_final_sample
+                                            .additional_images
+                                            .insert(item.filename.clone(), image.clone());
+                                    } else {
+                                        // Init the sample
                                         final_sample = Some(Sample {
                                             id: String::from(
                                                 sample_id.to_str().unwrap_or("unknown"),
@@ -115,12 +126,6 @@ async fn process_sample(
                                             additional_images: HashMap::new(),
                                             duplicate_state: 0,
                                         });
-                                    }
-
-                                    if let Some(ref mut final_sample_ref) = final_sample {
-                                        final_sample_ref
-                                            .additional_images
-                                            .insert(item.filename.clone(), image.clone());
                                     }
                                 }
                                 debug!("wds_worker: unpacked {}", item.filename);
