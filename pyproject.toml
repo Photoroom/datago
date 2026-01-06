@@ -48,3 +48,6 @@ strip = true
 # Source distribution generator,
 # supports cargo (default) and git.
 sdist-generator = "cargo"
+
+[tool.ty.rules]
+unresolved-import = "ignore" 

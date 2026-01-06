@@ -100,14 +100,15 @@ def benchmark(
             if crop_and_resize
             else None
         )
-
-        def custom_transform(sample):
-            if "jpg" in sample:
-                sample["jpg"] = transform(sample["jpg"])
-            if "png" in sample:
-                sample["png"] = transform(sample["png"])
-            return sample
-
+        if transform:
+            def custom_transform(sample):
+                if "jpg" in sample:
+                    sample["jpg"] = transform(sample["jpg"])
+                if "png" in sample:
+                    sample["png"] = transform(sample["png"])
+                return sample
+        else:
+            custom_transform = lambda x: x
         # Create a WebDataset instance
         dataset = (
             wds.WebDataset(url, shardshuffle=False)

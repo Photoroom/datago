@@ -43,7 +43,7 @@ jobs:
 
       - name: Install deps
         run: |
-          uv pip install maturin twine
+          uv tool install maturin
           sudo snap install zig --classic --beta
 
       # Gather the name of the latest tag on the current main branch
