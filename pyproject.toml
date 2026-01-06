@@ -19,6 +19,7 @@ dependencies = [
     "matplotlib>=3.7.5",
     "pandas>=2.0.3",
     "pip>=25.0.1",
+    "pre-commit>=3.5.0",
     "torch>=2.5.1",
     "torchvision>=0.20.1",
     "tqdm>=4.67.1",

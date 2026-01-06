@@ -146,13 +146,18 @@ async fn process_sample(
                 // Make sure that the sample has the attributes we decoded
                 if let Some(ref mut final_sample_ref) = final_sample {
                     final_sample_ref.attributes = attributes;
+                    match samples_tx.send(final_sample) {
+                        Ok(_) => (),
+                        Err(e) => {
+                            if !samples_tx.is_closed() {
+                                debug!("wds_worker: error dispatching sample: {e}");
+                                return Err(());
+                            }
+                        }
+                    }
+                    return Ok(());
                 }
-
-                if samples_tx.send(final_sample).is_err() && !samples_tx.is_closed() {
-                    error!("wds_worker: error dispatching sample");
-                    return Err(());
-                }
-                return Ok(());
+                return Err(());
             }
             None => {
                 debug!("wds_worker: unpacking sample with no ID");
