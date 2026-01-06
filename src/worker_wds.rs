@@ -1,6 +1,7 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
 use log::{debug, error, info};
+use std::cmp::min;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -100,7 +101,7 @@ async fn process_sample(
                                     if let Some(mut_final_sample) = &mut final_sample {
                                         mut_final_sample
                                             .additional_images
-                                            .insert(item.filename.clone(), image.clone());
+                                            .insert(item.filename.clone(), image);
                                     } else {
                                         // Init the sample
                                         final_sample = Some(Sample {
@@ -183,7 +184,7 @@ async fn async_deserialize_samples(
         .unwrap_or_else(|_| "0".to_string())
         .parse::<usize>()
         .unwrap_or(num_cpus::get());
-    let max_tasks = std::cmp::min(num_cpus::get() * 4, default_max_tasks); // Ensure minimum of 8 processing tasks
+    let max_tasks = min(num_cpus::get() * 4, default_max_tasks); // Ensure minimum of 8 processing tasks
 
     info!("WDS: Using {max_tasks} processing tasks in worker threadpool");
     let mut tasks = tokio::task::JoinSet::new();

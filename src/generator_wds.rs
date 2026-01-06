@@ -455,8 +455,8 @@ fn query_shards_and_dispatch(
 
 // ---- Global orchestration ---------
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
-    // Allocate all the message passing pipes with larger buffers for better throughput
-    let metadata_buffer_size = std::cmp::max(128, client.samples_buffer * 2); // Larger buffer for metadata
+    // Allocate all the message passing pipes
+    let metadata_buffer_size = std::cmp::max(128, client.samples_buffer * 2);
     let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(metadata_buffer_size);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
 
