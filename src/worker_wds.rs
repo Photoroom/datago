@@ -1,6 +1,6 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::path::Path;
@@ -77,30 +77,56 @@ async fn process_sample(
 
                                 if ext == extension_reference_image {
                                     // If this is the reference image, we store it in the main image field
-                                    final_sample = Some(Sample {
-                                        id: String::from(sample_id.to_str().unwrap_or("unknown")),
-                                        source: sample.name.clone(),
-                                        image,
-                                        attributes: attributes.clone(),
-                                        coca_embedding: vec![],
-                                        tags: vec![],
-                                        masks: HashMap::new(),
-                                        latents: HashMap::new(),
-                                        additional_images: HashMap::new(),
-                                        duplicate_state: 0,
-                                    });
+                                    if let Some(mut_final_sample) = &mut final_sample {
+                                        mut_final_sample.image = image;
+                                    } else {
+                                        // Init the sample
+                                        final_sample = Some(Sample {
+                                            id: String::from(
+                                                sample_id.to_str().unwrap_or("unknown"),
+                                            ),
+                                            source: sample.name.clone(),
+                                            image,
+                                            attributes: HashMap::new(),
+                                            coca_embedding: vec![],
+                                            tags: vec![],
+                                            masks: HashMap::new(),
+                                            latents: HashMap::new(),
+                                            additional_images: HashMap::new(),
+                                            duplicate_state: 0,
+                                        });
+                                    }
                                 } else {
                                     // Otherwise, we store it in the additional images
-                                    match final_sample {
-                                        Some(ref mut final_sample_ref) => {
-                                            final_sample_ref
-                                                .additional_images
-                                                .insert(item.filename.clone(), image.clone());
-                                        }
-                                        None => {
-                                            // If final_sample is not initialized, we create it
-                                            panic!( "Final sample should be initialized before adding additional images");
-                                        }
+                                    if let Some(mut_final_sample) = &mut final_sample {
+                                        mut_final_sample
+                                            .additional_images
+                                            .insert(item.filename.clone(), image);
+                                    } else {
+                                        // Init the sample
+                                        final_sample = Some(Sample {
+                                            id: String::from(
+                                                sample_id.to_str().unwrap_or("unknown"),
+                                            ),
+                                            source: sample.name.clone(),
+                                            image: to_python_image_payload(ImagePayload {
+                                                data: vec![],
+                                                width: 0,
+                                                height: 0,
+                                                original_height: 0,
+                                                original_width: 0,
+                                                bit_depth: 0,
+                                                channels: 0,
+                                                is_encoded: false,
+                                            }),
+                                            attributes: HashMap::new(),
+                                            coca_embedding: vec![],
+                                            tags: vec![],
+                                            masks: HashMap::new(),
+                                            latents: HashMap::new(),
+                                            additional_images: HashMap::new(),
+                                            duplicate_state: 0,
+                                        });
                                     }
                                 }
                                 debug!("wds_worker: unpacked {}", item.filename);
@@ -114,15 +140,25 @@ async fn process_sample(
                         // Load the file in to a string
                         let class_file = String::from_utf8_lossy(&item.buffer).to_string();
                         attributes.insert(ext.to_string(), serde_json::json!(class_file));
-                        debug!("wds_worker: unpacked {}", item.filename);
+                        debug!("wds_worker: unpacked {} {}", item.filename, class_file);
                     }
                 }
 
-                if samples_tx.send(final_sample).is_err() {
-                    debug!("wds_worker: stream already closed, wrapping up");
-                    return Err(());
+                // Make sure that the sample has the attributes we decoded
+                if let Some(ref mut final_sample_ref) = final_sample {
+                    final_sample_ref.attributes = attributes;
+                    match samples_tx.send(final_sample) {
+                        Ok(_) => (),
+                        Err(e) => {
+                            if !samples_tx.is_closed() {
+                                debug!("wds_worker: error dispatching sample: {e}");
+                                return Err(());
+                            }
+                        }
+                    }
+                    return Ok(());
                 }
-                return Ok(());
+                return Err(());
             }
             None => {
                 debug!("wds_worker: unpacking sample with no ID");
@@ -147,10 +183,10 @@ async fn async_deserialize_samples(
     let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
         .unwrap_or_else(|_| "0".to_string())
         .parse::<usize>()
-        .unwrap_or(num_cpus::get() * 4);
-    let max_tasks = min(default_max_tasks, limit);
+        .unwrap_or(num_cpus::get());
+    let max_tasks = min(num_cpus::get() * 4, default_max_tasks); // Ensure minimum of 8 processing tasks
 
-    info!("Using {max_tasks} tasks in the async threadpool");
+    info!("WDS: Using {max_tasks} processing tasks in worker threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
@@ -159,7 +195,7 @@ async fn async_deserialize_samples(
 
     while let Ok(sample) = samples_metadata_rx.recv() {
         if sample.is_empty() {
-            warn!("wds_worker: end of stream received, stopping there");
+            info!("wds_worker: end of stream received, stopping there");
             let _ = samples_metadata_rx.close();
             break;
         }
@@ -228,7 +264,7 @@ pub fn deserialize_samples(
     extension_reference_image: String,
 ) {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
+        .worker_threads(num_cpus::get()) // Tasks in flight are limited by DATAGO_MAX_TASKS env
         .enable_all()
         .build()
         .unwrap()
