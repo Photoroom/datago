@@ -217,14 +217,16 @@ impl DatagoClient {
             debug!("Sample pipe closed...");
 
             if let Some(feeder) = engine.feeder.take() {
-                if feeder.join().is_err() {
-                    error!("Failed to join feeder thread");
+                match feeder.join() {
+                    Ok(_) => debug!("Feeder thread joined successfully"),
+                    Err(e) => error!("Failed to join feeder thread: {:?}", e),
                 }
             }
 
             if let Some(worker) = engine.worker.take() {
-                if worker.join().is_err() {
-                    error!("Failed to join worker thread");
+                match worker.join() {
+                    Ok(_) => debug!("Worker thread joined successfully"),
+                    Err(e) => error!("Failed to join worker thread: {:?}", e),
                 }
             }
             self.is_started = false;
