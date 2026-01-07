@@ -1,12 +1,12 @@
 import json
 import os
 import time
+from typing import Any
 
 import typer
 from benchmark_defaults import IMAGE_CONFIG
 from dataset import DatagoIterDataset
 from tqdm import tqdm
-from typing import Any
 
 
 def benchmark(
@@ -29,9 +29,9 @@ def benchmark(
     ),
 ):
     results: dict[Any, Any] = {}
-    assert not plot or (plot and sweep), (
-        "Plot option only makes sense if we sweeped results"
-    )
+    if plot and not sweep:
+        print("Plot option only makes sense if we sweeped results, will not be used since sweep is False")
+        plot = False
 
     # URL of the test bucket
     # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
@@ -69,8 +69,8 @@ def benchmark(
             json.dump(results, f, indent=2)
 
         if plot:
-            import pandas as pd
             import matplotlib.pyplot as plt
+            import pandas as pd
 
             # Convert to a DataFrame for plotting
             df = pd.DataFrame(
