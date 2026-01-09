@@ -13,6 +13,8 @@ on:
 
 permissions:
   contents: read
+env:
+  UV_SYSTEM_PYTHON: 1
 
 jobs:
   linux:
@@ -35,10 +37,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
 
       - name: Install deps
         run: |
-          python3 -m pip install maturin twine
+          uv pip install maturin twine
           sudo snap install zig --classic --beta
 
       # Gather the name of the latest tag on the current main branch
@@ -57,10 +62,9 @@ jobs:
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
         run: |
             if [ "${{ matrix.python-version }}" == "3.11" ]; then
-            python3 -m pip install dist/*.whl
-            python3 -m pip install -r requirements-tests.txt
+            uv pip install dist/*.whl
             cd python
-            python3 -m pytest -v .
+            uv run --group test pytest -v .
             else
             echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
             fi
