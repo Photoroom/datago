@@ -35,7 +35,7 @@ pub struct SourceWebDatasetConfig {
     pub random_sampling: bool,
 
     #[serde(default)]
-    pub max_concurrency: usize,
+    pub concurrent_downloads: usize,
 
     #[serde(default)]
     pub auth_token: String,
@@ -81,13 +81,23 @@ async fn pull_tarballs(
 
     // Grab an async byte stream from the request, we'll try to untar the results on the fly
     let response = request_builder.send().await;
-    if response.is_err() {
-        return Err("Failed to send request".into());
-    }
-    let response = response.unwrap();
+    let response = match response {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Failed to send request for {}: {}", url, e);
+            return Err(format!("Failed to send request: {}", e));
+        }
+    };
+
     if !response.status().is_success() {
+        error!(
+            "Failed to download TarballSample {}: HTTP {}",
+            url,
+            response.status()
+        );
         return Err(format!(
-            "Failed to download TarballSample: {}",
+            "Failed to download TarballSample {}: HTTP {}",
+            url,
             response.status()
         ));
     }
@@ -158,7 +168,7 @@ async fn pull_tarballs(
             if samples_metadata_tx.send(current_files_for_sample).is_err() {
                 debug!("dispatch_shards (streaming): samples_metadata_tx channel closed.");
                 let _ = samples_metadata_tx.close(); // Make sure that we close on both ends
-                return Err("Channel closed".into());
+                return Ok(());
             }
 
             // Start a new sample
@@ -184,9 +194,9 @@ async fn pull_tarballs(
     // Send the last collected sample if any
     if !current_files_for_sample.content.is_empty()
         && samples_metadata_tx.send(current_files_for_sample).is_err()
+        && !samples_metadata_tx.is_closed()
     {
-        debug!("dispatch_shards (streaming): samples_metadata_tx channel closed for last sample.");
-        return Err("Channel closed".into());
+        return Err("Failed to send last sample".into());
     }
 
     debug!("dispatch_shards (streaming): finished processing TarballSample {url}");
@@ -308,7 +318,18 @@ async fn tasks_from_shards(
             let mut count = 0;
             let mut join_error: Option<String> = None;
 
+            info!("WDS: Using {} download tasks", config.concurrent_downloads);
+
             for url in task_list {
+                // Escape out if the channel is closed
+                if samples_metadata_tx.is_closed() {
+                    debug!(
+                        "dispatch_shards: channel is closed, enough samples probably. Bailing out"
+                    );
+                    break;
+                }
+
+                // All good, submit a new async task
                 tasks.spawn(pull_tarballs_task(
                     shared_client.clone(),
                     url,
@@ -319,7 +340,7 @@ async fn tasks_from_shards(
 
                 // Some bookkeeping, to limit the number of tasks in flight
                 // we'll wait for the first one to finish before adding a new one
-                if tasks.len() >= config.max_concurrency {
+                if tasks.len() >= config.concurrent_downloads {
                     match tasks.join_next().await {
                         Some(res) => {
                             match res.unwrap() {
@@ -334,7 +355,6 @@ async fn tasks_from_shards(
                                     break;
                                 }
                             }
-                            debug!("dispatch_shards: task completed successfully");
                         }
                         None => {
                             // Task was cancelled or panicked
@@ -407,8 +427,10 @@ fn query_shards_and_dispatch(
         .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(3);
 
+    // Use more threads for the download runtime to handle increased concurrency
+    let download_threads = std::cmp::max(4, source_config.concurrent_downloads);
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(source_config.max_concurrency)
+        .worker_threads(download_threads)
         .enable_all()
         .build()
         .unwrap()
@@ -434,7 +456,8 @@ fn query_shards_and_dispatch(
 // ---- Global orchestration ---------
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Allocate all the message passing pipes
-    let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(32);
+    let metadata_buffer_size = std::cmp::max(128, client.samples_buffer * 2);
+    let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(metadata_buffer_size);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
 
     info!("Using webdataset as source");
@@ -444,9 +467,9 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         serde_json::from_value(client.source_config.clone()).unwrap();
     let extension_reference_image_type: String = source_config.reference_image_type.clone();
 
-    if source_config.max_concurrency == 0 {
-        info!("WDS: Defaulting to 8 max_concurrency");
-        source_config.max_concurrency = 8;
+    if source_config.concurrent_downloads == 0 {
+        info!("WDS: Defaulting to 8 concurrent_downloads");
+        source_config.concurrent_downloads = 8;
     }
 
     // List the contents of the bucket and feed the workers
@@ -518,7 +541,7 @@ mod tests {
                 auth_token: "".into(),
                 reference_image_type: "jpg".into(),
                 random_sampling: s,
-                max_concurrency: 2,
+                concurrent_downloads: 2,
                 rank: 0,
                 world_size: 1,
             };
@@ -569,7 +592,7 @@ mod tests {
                 "source_config": {
                     "url": "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/",
                     "random_sampling": do_random_sampling,
-                    "max_concurrency": 2
+                    "concurrent_downloads": 2
                 },
                 "limit": n_samples,
                 "num_threads": 1,
@@ -632,7 +655,7 @@ mod tests {
                 "source_config": {
                     "url": "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/",
                     "random_sampling": false,
-                    "max_concurrency": 2,
+                    "concurrent_downloads": 2,
                     "rank": rank,
                     "world_size": world_size,
                 },
