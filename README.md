@@ -211,7 +211,7 @@ rustflags = [
 
 ## Build a benchmark CLI
 
-`Cargo run --release --  -h` to get all the information, should be fairly straightforward
+`cargo run --release --  -h` to get all the information, should be fairly straightforward
 
 ## Run the rust test suite
 

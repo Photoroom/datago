@@ -52,7 +52,7 @@ def benchmark(
         max_cpus = os.cpu_count() or 16
 
         num_workers = 1
-        while num_workers < max_cpus:
+        while num_workers <= max_cpus:
             results[num_workers] = benchmark(
                 limit,
                 crop_and_resize,

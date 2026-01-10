@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-const DEFAULT_JPEG_QUALITY: u8 = 92;
+pub const DEFAULT_JPEG_QUALITY: u8 = 92;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -235,7 +235,7 @@ impl ARAwareTransform {
         if let Some(target_size) = self.aspect_ratio_to_size.get(&aspect_ratio) {
             // Check if resize is actually needed
             if image.width() == target_size.0 && image.height() == target_size.1 {
-                image.clone()
+                image.clone() // FIXME: @blefaudeux could we avoid the clone here and just move the image out ?
             } else {
                 let image_pixel_type = image.pixel_type().unwrap();
                 if image_pixel_type == fr::PixelType::U8

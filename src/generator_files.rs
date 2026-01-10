@@ -151,7 +151,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         debug!("Feeder thread completed");
     }));
 
-    // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
+    // Spawn a thread which will handle the async workers through a multithread tokio runtime
     let image_transform = client.image_transform.clone();
     let encoding = crate::image_processing::ImageEncoding {
         encode_images: client.encode_images,
