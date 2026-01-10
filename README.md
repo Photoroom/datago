@@ -116,7 +116,7 @@ client_config = {
     "source_config": {
         "url": url,
         "random_sampling": False,
-        "max_concurrency": 8, # The number of TarballSamples which should be handled concurrently
+        "concurrent_downloads": 8, # The number of TarballSamples which should be handled concurrently
         "rank": 0,
         "world_size": 1,
     },
@@ -250,18 +250,46 @@ Create a new tag and a new release in this repo, a new package will be pushed au
 <details> <summary><strong>Benchmarks</strong></summary>
 As usual, benchmarks are a tricky game, and you shouldn't read too much into the following plots but do your own tests. Some python benchmark examples are provided in the [python](./python/) folder.
 
-In general, Datago will be impactful if you want to load a lot of images very fast, but if you consume them as you go at a more leisury pace then it's not really needed. The more CPU work there is with the images and the higher quality they are, the more Datago will shine. The following benchmarks are using ImageNet 1k, which is very low resolution and thus kind of a worst case scenario. Data is served from cache (i.e. the OS cache) and the images are not pre-processed. In this case the receiving python process is typically the bottleneck, and caps at around 3000 images per second.
+In general, Datago will be impactful if you want to load a lot of images very fast, but if you consume them as you go at a more leisury pace then it's not really needed. The more CPU work there is with the images and the higher quality they are, the more Datago will shine.
 
-### AMD Zen3 laptop - IN1k - disk
+## From disk: ImageNet
+
+The following benchmarks are using ImageNet 1k, which is very low resolution and thus kind of a worst case scenario. Data is served from cache (i.e. the OS cache) and the images are not pre-processed. In this case the receiving python process is typically the bottleneck, and caps at around 3000 images per second.
+
+### AMD Zen3 laptop - IN1k - disk - no processing
 ![AMD Zen3 laptop & M2 SSD](assets/zen3_ssd.png)
 
-### AMD EPYC 9454 - IN1k - disk
+### AMD EPYC 9454 - IN1k - disk - no processing
 ![AMD EPYC 9454](assets/epyc_vast.png)
 
-This benchmark is using the PD12M dataset, which hosts high resolution images. It's accessed through the webdataset front end, datago is compared with the popular python webdataset library. Note that datago will start streaming the images faster here (almost instantly !), so given enough time the two results would look closer.
+## Webdataset: FakeIN
 
-### AMD EPYC 9454 - pd12m - webdataset
-![AMD EPYC 9454](assets/epyc_wds.png)
+This benchmark is using low resolution images. It's accessed through the webdataset front end, datago is compared with the popular python webdataset library. Note that datago will start streaming the images faster here (almost instantly !), which emphasizes throughput differences depending on how long you test it for.
+
+Of note is also that this can be bottlenecked by your external bandwidth to the remote storage where WDS is hosted, in which case both solution would yield comparable numbers.
+
+### AMD Zen3 laptop - webdataset - no processing
+![AMD EPYC 9454](assets/zen3_wds_fakein.png)
+
+
+## Webdataset: PD12M
+
+This benchmark is using high resolution images. It's accessed through the webdataset front end, datago is compared with the popular python webdataset library. Note that datago will start streaming the images faster here (almost instantly !), which emphasizes throughput differences depending on how long you test it for.
+
+Of note is also that this can be bottlenecked by your external bandwidth to the remote storage where WDS is hosted, in which case both solution would yield comparable numbers.
+
+### AMD Zen3 laptop - webdataset - no processing
+![AMD Zen3 laptop](assets/zen3_wds_pd12m.png)
+
+
+### AMD EPYC 9454 - pd12m - webdataset - no processing
+![AMD EPYC 9454](assets/epyc_wds_pd12m.png)
+
+
+### AMD Zen3 laptop - webdataset - processing
+Adding image processing (crop and resize to Transformer compatible size buckets) to the equation changes the picture, as the work spread becomes more important. If you're training a diffusion model or an image encoder from a diverse set of images, this is likely to be the most realistic micro-benchmark.
+
+![AMD Zen3 laptop](assets/zen3_wds_pd12m_processing.png)
 
 </details>
 

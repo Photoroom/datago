@@ -1,7 +1,7 @@
 [package]
 name = "datago"
 edition = "2021"
-version = "2025.12.3"
+version = "2026.1.4"
 
 [lib]
 # exposed by pyo3

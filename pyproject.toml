@@ -15,7 +15,9 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
 ]
-dependencies = []
+dependencies = ["pillow"]
+[dependency-groups]
+test = ["pytest", "typer", "tqdm", "numpy", "webdataset"]
 
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"
