@@ -67,9 +67,9 @@ async fn io_uring_submit_read(
     // Prepare the read operation with proper buffer management
     // Initialize the buffer with zeros to ensure proper alignment and initialization
     let mut buffer = vec![0u8; file_size as usize];
-    
+
     let buffer_ptr = buffer.as_mut_ptr();
-    
+
     let sqe = opcode::Read::new(types::Fd(file_fd), buffer_ptr, file_size)
         .build()
         .user_data(uid);
@@ -114,10 +114,10 @@ async fn io_uring_drain_into_tasks(
         } else {
             // Take ownership of the request to properly manage buffer lifetime
             let mut request = io_tracker.remove(cqe.user_data()).unwrap();
-            
+
             // Get the number of bytes actually read
             let bytes_read = cqe.result() as usize;
-            
+
             // Safe: Truncate the buffer to the actual bytes read
             // This is safe because io_uring has written exactly 'bytes_read' bytes to our buffer
             // and we're using Vec's built-in truncate method
@@ -129,7 +129,7 @@ async fn io_uring_drain_into_tasks(
                 buffer: request.buffer, // Take ownership of the buffer
                 path: request.path,     // Take ownership of the path
             };
-            
+
             // The File will be dropped here, properly closing the file descriptor
 
             // Spawn a task to create a full sample from the results
@@ -170,7 +170,7 @@ async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
             let result = results.remove(0);
             // The buffer should already be properly sized by io_uring_retire_available_reads
             Ok(result.buffer)
-        },
+        }
         Ok(_) => Err(std::io::Error::other("Failed to read file")),
         Err(e) => Err(e),
     }
@@ -250,10 +250,10 @@ async fn io_uring_retire_available_reads(
 
         // Take ownership of the request to properly manage buffer lifetime
         let mut request = io_tracker.remove(cqe.user_data()).unwrap();
-        
+
         // Get the number of bytes actually read
         let bytes_read = cqe.result() as usize;
-        
+
         // Safe: Truncate the buffer to the actual bytes read
         if bytes_read < request.buffer.len() {
             request.buffer.truncate(bytes_read);
@@ -457,7 +457,8 @@ async fn async_pull_samples(
             image_transform,
             encoding,
             limit,
-        ).await;
+        )
+        .await;
 
         // The fallback function already sends the end signal
     }
@@ -487,10 +488,10 @@ pub fn pull_samples(
         });
 }
 
-
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
     // Use standard file I/O to avoid io_uring memory issues
-    let bytes = std::fs::read(path).map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
     let img = image::load_from_memory(&bytes)?;
     Ok(img)
 }
@@ -501,13 +502,8 @@ async fn image_payload_from_path(
     encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
     let img = image_from_path(path).await?;
-    let payload = image_processing::image_to_payload(
-        img,
-        image_transform,
-        &"".to_string(),
-        encoding,
-    )
-    .await?;
+    let payload =
+        image_processing::image_to_payload(img, image_transform, &"".to_string(), encoding).await?;
     Ok(payload)
 }
 
@@ -614,8 +610,6 @@ async fn async_pull_samples_fallback(
     if samples_tx.send(None).is_ok() {};
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,8 +690,7 @@ mod tests {
             img_to_rgb8: false,
             ..Default::default()
         };
-        let result =
-            image_payload_from_path(image_path.to_str().unwrap(), &None, encoding).await;
+        let result = image_payload_from_path(image_path.to_str().unwrap(), &None, encoding).await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -759,12 +752,7 @@ mod tests {
             img_to_rgb8: false,
             ..Default::default()
         };
-        let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
-            &None,
-            encoding,
-        )
-        .await;
+        let result = image_payload_from_path(image_path.to_str().unwrap(), &None, encoding).await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -790,12 +778,7 @@ mod tests {
             img_to_rgb8: true,
             ..Default::default()
         };
-        let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
-            &None,
-            encoding,
-        )
-        .await;
+        let result = image_payload_from_path(image_path.to_str().unwrap(), &None, encoding).await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -881,8 +864,7 @@ mod tests {
             img_to_rgb8: false,
             ..Default::default()
         };
-        let result =
-            image_payload_from_path(image_path.to_str().unwrap(), &None, encoding).await;
+        let result = image_payload_from_path(image_path.to_str().unwrap(), &None, encoding).await;
 
         assert!(result.is_ok());
         let payload = result.unwrap();
@@ -897,23 +879,23 @@ mod tests {
     async fn test_io_uring_memory_stress() {
         // Create a temporary directory
         let temp_dir = TempDir::new().unwrap();
-        
+
         // Create multiple test image files of different sizes
         let image_sizes = [(24, 32), (64, 64), (128, 128), (256, 256), (512, 512)];
         let mut file_paths = Vec::new();
-        
+
         for (i, (width, height)) in image_sizes.iter().enumerate() {
             let file_path = temp_dir.path().join(format!("test_{i}.png"));
-            
+
             // Create a test image with predictable pixel data
             let img = image::DynamicImage::new_rgb8(*width, *height);
-            
+
             // Save the image
             img.save(&file_path).unwrap();
-            
+
             file_paths.push(file_path);
         }
-        
+
         // Test reading all files concurrently using io_uring
         let mut tasks = Vec::new();
         for file_path in &file_paths {
@@ -922,19 +904,27 @@ mod tests {
                 // Use the io_uring_read_file function
                 let result = io_uring_read_file(&path).await;
                 assert!(result.is_ok(), "Failed to read file: {}", path);
-                
+
                 let bytes = result.unwrap();
                 assert!(!bytes.is_empty(), "Empty buffer for file: {}", path);
-                
+
                 // Verify we can load the image from the bytes
                 let img_result = image::load_from_memory(&bytes);
-                assert!(img_result.is_ok(), "Failed to load image from bytes: {}", path);
-                
+                assert!(
+                    img_result.is_ok(),
+                    "Failed to load image from bytes: {}",
+                    path
+                );
+
                 let img = img_result.unwrap();
-                assert!(img.width() > 0 && img.height() > 0, "Invalid image dimensions: {}", path);
+                assert!(
+                    img.width() > 0 && img.height() > 0,
+                    "Invalid image dimensions: {}",
+                    path
+                );
             }));
         }
-        
+
         // Wait for all tasks to complete
         for task in tasks {
             task.await.unwrap();

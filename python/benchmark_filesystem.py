@@ -19,19 +19,86 @@ def benchmark(
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
     num_workers: int = typer.Option(os.cpu_count(), help="Number of workers to use"),
     sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
+    plot: bool = typer.Option(
+        False, help="Whether to save a plot at the end of the run"
+    ),
 ):
+    results = {}
+    if plot and not sweep:
+        print(
+            "Plot option only makes sense if we sweeped results, will not be used since sweep is False"
+        )
+        plot = False
+
     if sweep:
-        results_sweep = {}
-        for num_workers in range(2, (os.cpu_count() or 1) * 2, 4):
-            results_sweep[num_workers] = benchmark(
-                root_path, limit, crop_and_resize, compare_torch, num_workers, False
+        max_cpus = os.cpu_count() or 16
+
+        num_workers = 1
+        while num_workers <= max_cpus:
+            results[num_workers] = benchmark(
+                root_path,
+                limit,
+                crop_and_resize,
+                compare_torch,
+                num_workers,
+                False,
+                False,
             )
+            num_workers *= 2
 
         # Save results to a json file
         with open("benchmark_results_filesystem.json", "w") as f:
-            json.dump(results_sweep, f, indent=2)
+            json.dump(results, f, indent=2)
 
-        return results_sweep
+        if plot:
+            import matplotlib.pyplot as plt
+            import pandas as pd
+
+            # Convert to a DataFrame for plotting
+            df = pd.DataFrame(
+                {
+                    "Thread Count": [int(k) for k in results.keys()],
+                    "Datago FPS": [results[k]["datago"]["fps"] for k in results.keys()],
+                    "Torch dataset FPS": [
+                        results[k]["torch"]["fps"] for k in results.keys()
+                    ],
+                }
+            )
+
+            # Plotting with vertical axis starting at 0
+            plt.figure(figsize=(10, 6))
+            plt.plot(
+                df["Thread Count"],
+                df["Datago FPS"],
+                marker="o",
+                label="Datago",
+            )
+            plt.plot(
+                df["Thread Count"],
+                df["Torch dataset FPS"],
+                marker="o",
+                label="Torch dataset",
+            )
+            plt.xlabel("Thread Count")
+            plt.ylabel("Frames Per Second (FPS)")
+            plt.title("Throughput: Datago vs Torch dataset")
+            plt.ylim(
+                0,
+                max(df["Datago FPS"].max(), df["Torch dataset FPS"].max()) + 20,
+            )
+            plt.legend()
+            plt.grid(True)
+            plt.xticks(df["Thread Count"])
+            plt.tight_layout()
+            plt.savefig(
+                "bench_datago_torchdataset.png",
+                format="PNG",
+                dpi=200,
+                bbox_inches="tight",
+            )
+            plt.close()
+
+        return results
 
     print(
         f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers"

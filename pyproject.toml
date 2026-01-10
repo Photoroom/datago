@@ -15,9 +15,12 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
 ]
-dependencies = ["pillow"]
+dependencies = [
+    "pillow",
+    "typer>=0.20.1",
+]
 [dependency-groups]
-test = ["pytest", "typer", "tqdm", "numpy", "webdataset"]
+test = ["pytest", "typer", "tqdm", "numpy", "webdataset", "torch", "torchvision", "matplotlib", "pandas"]
 
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"
@@ -30,7 +33,7 @@ target = "x86_64-unknown-linux-gnu"
 
 [tool.maturin]
 # Include additional files
-include = ["LICENCE", "README.md"]
+include = ["LICENCE", "README.md", "python/dataset.py", "python/raw_types.py"]
 # Exclude files
 exclude = []
 # Bindings type
