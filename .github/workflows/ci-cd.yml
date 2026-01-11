@@ -1,118 +1,75 @@
-name: Python bindings
+# Example CI/CD Workflow Updated with Ruff and MyPy
+name: CI/CD
 
 on:
   push:
     branches:
       - main
-    tags:
-      - "*"
+      - 'release/**'
   pull_request:
     branches:
-      - "*"
-  workflow_dispatch:
-
-permissions:
-  contents: read
-env:
-  UV_SYSTEM_PYTHON: 1
+      - '*'
 
 jobs:
-  linux:
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
-      matrix:
-        platform:
-          - runner: ubuntu-latest
-            target: x86_64
-        python-version: ['3.10', '3.11', '3.12', '3.13']
-
-    environment:
-      name: release
-      url: https://pypi.org/p/datago
-
-    steps:
-      - uses: actions/checkout@v4
-      - run: git fetch --prune --unshallow
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install deps
-        run: |
-          uv tool install maturin
-          sudo snap install zig --classic --beta
-
-      # Gather the name of the latest tag on the current main branch
-      - name: Get the latest tag
-        id: get_tag
-        run: echo "tag=$(git describe --tags --abbrev=0)" >> $GITHUB_OUTPUT
-
-      - name: Build the package
-        run: |
-          maturin build -i python${{ matrix.python-version }} --release --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
-
-      - name: Test package
-        env:
-          DATAROOM_API_KEY: ${{ secrets.DATAROOM_API_KEY }}
-          DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
-          DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
-        run: |
-            if [ "${{ matrix.python-version }}" == "3.11" ]; then
-            uv pip install dist/*.whl
-            cd python
-            uv run --group test pytest -v .
-            else
-            echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
-            fi
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-${{ matrix.platform.target }}-py${{ matrix.python-version }}
-          path: dist
-
-  sdist:
+  lint:
+    name: Lint Codebase
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
-      - name: Upload sdist
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-sdist
-          path: dist
 
-  release:
-    name: Release
-    runs-on: ubuntu-latest
-    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
-    needs: [linux, sdist]
-    permissions:
-      # Use to sign the release artifacts
-      id-token: write
-      # Used to upload release artifacts
-      contents: write
-      # Used to generate artifact attestation
-      attestations: write
     steps:
-      - uses: actions/download-artifact@v4
-      - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v1
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          subject-path: "wheels-*/*"
-      - name: Publish to PyPI
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        uses: PyO3/maturin-action@v1
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Run Ruff
+        run: ruff .
+
+  type-check:
+    name: Type Check with MyPy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          command: upload
-          args: --non-interactive --skip-existing wheels-*/*
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+
+      - name: Run MyPy
+        run: mypy .
+
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: pytest
