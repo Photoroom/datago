@@ -3,12 +3,12 @@ repos:
     rev: v4.3.0
     hooks:
       - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-  - repo: https://github.com/doublify/pre-commit-rust
-    rev: v1.0
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: v0.45.0  # Use the revision or tag you want
     hooks:
-      - id: fmt
-      - id: cargo-check
-      - id: clippy
-        args: ["--", "-D", "warnings"]
+      - id: ruff
+        args: ['--fix']
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.5.1  # Use the revision or tag you want
+    hooks:
+      - id: mypy
