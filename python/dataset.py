@@ -2,15 +2,15 @@ from datago import DatagoClient, initialize_logging
 import json
 from typing import Dict, Any
 from raw_types import raw_array_to_numpy
+
+
 class DatagoIterDataset:
-    def __init__(self, datago_config: Dict[str, Any], return_python_types: bool = None):
+    def __init__(self, datago_config: Dict[str, Any], return_python_types: bool = True):
         self.client = DatagoClient(json.dumps(datago_config))
         self.client.start()
         self.return_python_types = return_python_types
         self.len = datago_config.get("limit", 1e9)
         print(self.len)
-
-
 
         print(datago_config)
         self.count = 0
