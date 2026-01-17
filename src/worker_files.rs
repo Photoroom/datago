@@ -79,7 +79,7 @@ async fn async_pull_samples(
     limit: usize,
 ) {
     // We use async-await here, to better use IO stalls
-    // We'll issue N async tasks in parallel, and wait for them to finish
+    // We'll issue N async tasks in parallel
     let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -90,6 +90,7 @@ async fn async_pull_samples(
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);
 
+    // Keep the task queue full, but not overboard
     while let Ok(received) = samples_metadata_rx.recv() {
         if received == serde_json::Value::Null {
             debug!("file_worker: end of stream received, stopping there");
@@ -97,17 +98,20 @@ async fn async_pull_samples(
             break;
         }
 
-        // Check if we have capacity before spawning new tasks
         if tasks.len() >= max_tasks {
-            // Wait for some tasks to complete before adding more
+            // If we're at capacity, wait for a task to complete, then spawn a new one
+            // This ensures we always have max_tasks running when possible
             if let Some(result) = tasks.join_next().await {
                 if result.is_ok() {
                     count += 1;
                 }
+                // Check if we've reached the limit before spawning more tasks
+                if count >= limit {
+                    break;
+                }
             }
         }
-
-        // Append a new task to the queue
+        // Now spawn the new task to replace the completed one
         tasks.spawn(pull_sample(
             received,
             shareable_img_tfm.clone(),
