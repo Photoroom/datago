@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-const DEFAULT_JPEG_QUALITY: u8 = 92;
+pub const DEFAULT_JPEG_QUALITY: u8 = 92;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -131,7 +131,7 @@ pub fn aspect_ratio_to_str(size: (u32, u32)) -> String {
     ar_str
 }
 
-fn image_to_dyn_image(dst_image: &Image) -> image::DynamicImage {
+fn image_to_dyn_image(dst_image: Image) -> image::DynamicImage {
     // Convert the fast_image_resize::Image back to image::DynamicImage
     let width = dst_image.width();
     let height = dst_image.height();
@@ -224,7 +224,7 @@ impl ARAwareTransform {
 
     pub async fn crop_and_resize(
         &self,
-        image: &image::DynamicImage,
+        image: image::DynamicImage,
         aspect_ratio_input: Option<&String>,
     ) -> image::DynamicImage {
         let aspect_ratio = match aspect_ratio_input {
@@ -235,7 +235,7 @@ impl ARAwareTransform {
         if let Some(target_size) = self.aspect_ratio_to_size.get(&aspect_ratio) {
             // Check if resize is actually needed
             if image.width() == target_size.0 && image.height() == target_size.1 {
-                image.clone()
+                image
             } else {
                 let image_pixel_type = image.pixel_type().unwrap();
                 if image_pixel_type == fr::PixelType::U8
@@ -265,7 +265,7 @@ impl ARAwareTransform {
                         .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
 
                     resizer
-                        .resize(image, &mut dst_image, &resize_options)
+                        .resize(&image, &mut dst_image, &resize_options)
                         .unwrap();
 
                     // Crop the resized image to the target size
@@ -293,7 +293,7 @@ impl ARAwareTransform {
                         )
                         .unwrap();
 
-                    image_to_dyn_image(&final_image)
+                    image_to_dyn_image(final_image)
                 } else {
                     image.resize_to_fill(
                         target_size.0,
@@ -328,7 +328,7 @@ pub async fn image_to_payload(
         } else {
             Some(aspect_ratio)
         };
-        image = img_tfm.crop_and_resize(&image, aspect_ratio_input).await;
+        image = img_tfm.crop_and_resize(image, aspect_ratio_input).await;
     }
 
     let height = image.height() as usize;
@@ -433,18 +433,18 @@ mod tests {
         // Test image resizing
         let img = DynamicImage::new_rgb8(300, 200);
         let resized = transform
-            .crop_and_resize(&img, Some(&"1.000".to_string()))
+            .crop_and_resize(img.clone(), Some(&"1.000".to_string()))
             .await;
         assert_eq!(resized.dimensions(), (224, 224));
 
         let resized = transform
-            .crop_and_resize(&img, Some(&"1.900".to_string()))
+            .crop_and_resize(img, Some(&"1.900".to_string()))
             .await;
         assert_eq!(resized.dimensions(), (304, 160));
 
         // Test empty aspect ratio input (should use closest)
         let img = DynamicImage::new_rgb8(400, 200);
-        let resized = transform.crop_and_resize(&img, None).await;
+        let resized = transform.crop_and_resize(img, None).await;
         assert_eq!(resized.dimensions(), (304, 160));
     }
 
@@ -747,7 +747,7 @@ mod tests {
         // Create an image that already has the target size
         let img = DynamicImage::new_rgb8(224, 224);
         let result = transform
-            .crop_and_resize(&img, Some(&"1.000".to_string()))
+            .crop_and_resize(img, Some(&"1.000".to_string()))
             .await;
 
         // Should return the same image since no resize is needed
@@ -767,7 +767,7 @@ mod tests {
             *item = (i % 256) as u8;
         }
 
-        let dyn_img = image_to_dyn_image(&img);
+        let dyn_img = image_to_dyn_image(img);
         assert_eq!(dyn_img.width(), width);
         assert_eq!(dyn_img.height(), height);
         assert_eq!(dyn_img.color(), image::ColorType::Rgb8);
@@ -784,7 +784,7 @@ mod tests {
             *item = ((i * 63) % 256) as u8;
         }
 
-        let dyn_img = image_to_dyn_image(&img);
+        let dyn_img = image_to_dyn_image(img);
         assert_eq!(dyn_img.width(), width);
         assert_eq!(dyn_img.height(), height);
         assert_eq!(dyn_img.color(), image::ColorType::Rgba8);
@@ -801,7 +801,7 @@ mod tests {
             *item = (i % 256) as u8;
         }
 
-        let dyn_img = image_to_dyn_image(&img);
+        let dyn_img = image_to_dyn_image(img);
         assert_eq!(dyn_img.width(), width);
         assert_eq!(dyn_img.height(), height);
         assert_eq!(dyn_img.color(), image::ColorType::L8);
@@ -811,6 +811,6 @@ mod tests {
     #[should_panic(expected = "Unsupported pixel type")]
     fn test_image_to_dyn_image_unsupported() {
         let img = Image::new(1, 1, fr::PixelType::U16);
-        image_to_dyn_image(&img);
+        image_to_dyn_image(img);
     }
 }
