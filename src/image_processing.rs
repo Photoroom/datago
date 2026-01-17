@@ -1,13 +1,62 @@
 use crate::structs::ImagePayload;
+use dashmap::DashMap;
 use fast_image_resize as fr;
 use fast_image_resize::images::Image;
 use fast_image_resize::{IntoImageView, ResizeOptions, Resizer};
 use image::ImageEncoder;
 use log::debug;
+use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::Arc;
+use thiserror::Error;
+// --- String interning for aspect ratios to reduce memory allocations ---
+static ASPECT_RATIO_POOL: Lazy<Arc<DashMap<String, String>>> =
+    Lazy::new(|| Arc::new(DashMap::new()));
+
+fn intern_aspect_ratio(ar: &str) -> String {
+    ASPECT_RATIO_POOL
+        .entry(ar.to_string())
+        .or_insert_with(|| ar.to_string())
+        .clone()
+}
+
+// --- Comprehensive error handling ---
+#[derive(Error, Debug)]
+pub enum DatagoImageError {
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("Image processing error: {0}")]
+    ImageError(#[from] image::ImageError),
+
+    #[error("Invalid aspect ratio: {0}")]
+    InvalidAspectRatio(String),
+
+    #[error("Invalid image dimensions: {0}")]
+    InvalidDimensions(String),
+
+    #[error("Unsupported pixel format: {0}")]
+    UnsupportedPixelFormat(String),
+
+    #[error("Encoding failed: {0}")]
+    EncodingFailed(String),
+
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
+}
+
+impl From<DatagoImageError> for image::ImageError {
+    fn from(err: DatagoImageError) -> Self {
+        match err {
+            DatagoImageError::ImageError(e) => e,
+            _ => image::ImageError::IoError(std::io::Error::other(err.to_string())),
+        }
+    }
+}
+
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 pub const DEFAULT_JPEG_QUALITY: u8 = 92;
@@ -128,31 +177,83 @@ pub struct ARAwareTransform {
 
 pub fn aspect_ratio_to_str(size: (u32, u32)) -> String {
     let ar_str = format!("{:.3}", size.0 as f64 / size.1 as f64);
-    ar_str
+    intern_aspect_ratio(&ar_str)
 }
 
-fn image_to_dyn_image(dst_image: &Image) -> image::DynamicImage {
+fn image_to_dyn_image(dst_image: Image) -> Result<image::DynamicImage, DatagoImageError> {
     // Convert the fast_image_resize::Image back to image::DynamicImage
     let width = dst_image.width();
     let height = dst_image.height();
-    let pixels = dst_image.buffer().to_vec();
 
-    match dst_image.pixel_type() {
+    if width == 0 || height == 0 {
+        return Err(DatagoImageError::InvalidDimensions(format!(
+            "Invalid image dimensions: {}x{}",
+            width, height
+        )));
+    }
+
+    let pixels = dst_image.buffer().to_vec();
+    let expected_pixel_count = width as usize * height as usize;
+
+    // Validate pixel buffer size
+    let pixel_type = dst_image.pixel_type();
+    let channels = match pixel_type {
+        fr::PixelType::U8x3 => 3,
+        fr::PixelType::U8x4 => 4,
+        fr::PixelType::U8 | fr::PixelType::U8x2 => 1,
+        _ => {
+            return Err(DatagoImageError::UnsupportedPixelFormat(format!(
+                "Unsupported pixel type: {:?}",
+                pixel_type
+            )))
+        }
+    };
+
+    let expected_buffer_size = expected_pixel_count * channels;
+    if pixels.len() != expected_buffer_size {
+        return Err(DatagoImageError::InvalidDimensions(format!(
+            "Pixel buffer size mismatch. Expected: {}, Got: {}",
+            expected_buffer_size,
+            pixels.len()
+        )));
+    }
+
+    match pixel_type {
         fr::PixelType::U8x3 => {
-            let img_buffer = image::RgbImage::from_raw(width, height, pixels).unwrap();
-            image::DynamicImage::ImageRgb8(img_buffer)
+            let img_buffer = image::RgbImage::from_raw(width, height, pixels).ok_or_else(|| {
+                DatagoImageError::InvalidDimensions(format!(
+                    "Failed to create RGB image from buffer: {}x{}",
+                    width, height
+                ))
+            })?;
+            Ok(image::DynamicImage::ImageRgb8(img_buffer))
         }
         fr::PixelType::U8x4 => {
-            let img_buffer = image::RgbaImage::from_raw(width, height, pixels).unwrap();
-            image::DynamicImage::ImageRgba8(img_buffer)
+            let img_buffer =
+                image::RgbaImage::from_raw(width, height, pixels).ok_or_else(|| {
+                    DatagoImageError::InvalidDimensions(format!(
+                        "Failed to create RGBA image from buffer: {}x{}",
+                        width, height
+                    ))
+                })?;
+            Ok(image::DynamicImage::ImageRgba8(img_buffer))
         }
 
         fr::PixelType::U8 | fr::PixelType::U8x2 => {
-            let img_buffer = image::GrayImage::from_raw(width, height, pixels).unwrap();
-            image::DynamicImage::ImageLuma8(img_buffer)
+            let img_buffer =
+                image::GrayImage::from_raw(width, height, pixels).ok_or_else(|| {
+                    DatagoImageError::InvalidDimensions(format!(
+                        "Failed to create grayscale image from buffer: {}x{}",
+                        width, height
+                    ))
+                })?;
+            Ok(image::DynamicImage::ImageLuma8(img_buffer))
         }
 
-        _ => panic!("Unsupported pixel type: {:?}", dst_image.pixel_type()),
+        _ => Err(DatagoImageError::UnsupportedPixelFormat(format!(
+            "Unsupported pixel type: {:?}",
+            pixel_type
+        ))),
     }
 }
 
@@ -202,20 +303,20 @@ impl ARAwareTransform {
             .aspect_ratios
             .binary_search_by(|&(ar, _)| ar.partial_cmp(&target_ar).unwrap())
         {
-            Ok(idx) => self.aspect_ratios[idx].1.clone(),
+            Ok(idx) => intern_aspect_ratio(&self.aspect_ratios[idx].1),
             Err(idx) => {
                 if idx == 0 {
-                    self.aspect_ratios[0].1.clone()
+                    intern_aspect_ratio(&self.aspect_ratios[0].1)
                 } else if idx == self.aspect_ratios.len() {
-                    self.aspect_ratios[self.aspect_ratios.len() - 1].1.clone()
+                    intern_aspect_ratio(&self.aspect_ratios[self.aspect_ratios.len() - 1].1)
                 } else {
                     // Choose the closer of the two adjacent ratios
                     let left_diff = (target_ar - self.aspect_ratios[idx - 1].0).abs();
                     let right_diff = (self.aspect_ratios[idx].0 - target_ar).abs();
                     if left_diff < right_diff {
-                        self.aspect_ratios[idx - 1].1.clone()
+                        intern_aspect_ratio(&self.aspect_ratios[idx - 1].1)
                     } else {
-                        self.aspect_ratios[idx].1.clone()
+                        intern_aspect_ratio(&self.aspect_ratios[idx].1)
                     }
                 }
             }
@@ -224,9 +325,9 @@ impl ARAwareTransform {
 
     pub async fn crop_and_resize(
         &self,
-        image: &image::DynamicImage,
+        image: image::DynamicImage,
         aspect_ratio_input: Option<&String>,
-    ) -> image::DynamicImage {
+    ) -> Result<image::DynamicImage, DatagoImageError> {
         let aspect_ratio = match aspect_ratio_input {
             Some(ar) => ar.to_string(),
             None => self.get_closest_aspect_ratio(image.width() as i32, image.height() as i32),
@@ -235,7 +336,7 @@ impl ARAwareTransform {
         if let Some(target_size) = self.aspect_ratio_to_size.get(&aspect_ratio) {
             // Check if resize is actually needed
             if image.width() == target_size.0 && image.height() == target_size.1 {
-                image.clone() // FIXME: @blefaudeux could we avoid the clone here and just move the image out ?
+                Ok(image)
             } else {
                 let image_pixel_type = image.pixel_type().unwrap();
                 if image_pixel_type == fr::PixelType::U8
@@ -243,8 +344,6 @@ impl ARAwareTransform {
                     || image_pixel_type == fr::PixelType::U8x3
                     || image_pixel_type == fr::PixelType::U8x4
                 {
-                    // Fast path with the fast_image_resize library
-
                     // Calculate the scale factors for both dimensions
                     let scale_x = target_size.0 as f64 / image.width() as f64;
                     let scale_y = target_size.1 as f64 / image.height() as f64;
@@ -259,13 +358,13 @@ impl ARAwareTransform {
                     let mut dst_image =
                         Image::new(new_width, new_height, image.pixel_type().unwrap());
 
-                    let mut resizer = Resizer::new();
-
                     let resize_options = ResizeOptions::new()
                         .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
 
+                    let mut resizer = Resizer::new();
+
                     resizer
-                        .resize(image, &mut dst_image, &resize_options)
+                        .resize(&image, &mut dst_image, &resize_options)
                         .unwrap();
 
                     // Crop the resized image to the target size
@@ -293,17 +392,20 @@ impl ARAwareTransform {
                         )
                         .unwrap();
 
-                    image_to_dyn_image(&final_image)
+                    Ok(image_to_dyn_image(final_image)?)
                 } else {
-                    image.resize_to_fill(
+                    Ok(image.resize_to_fill(
                         target_size.0,
                         target_size.1,
                         image::imageops::FilterType::Lanczos3,
-                    )
+                    ))
                 }
             }
         } else {
-            panic!("Aspect ratio not found in aspect ratio to size map");
+            Err(DatagoImageError::ConfigurationError(format!(
+                "Aspect ratio {} not found in aspect ratio to size map",
+                aspect_ratio
+            )))
         }
     }
 }
@@ -328,7 +430,7 @@ pub async fn image_to_payload(
         } else {
             Some(aspect_ratio)
         };
-        image = img_tfm.crop_and_resize(&image, aspect_ratio_input).await;
+        image = img_tfm.crop_and_resize(image, aspect_ratio_input).await?;
     }
 
     let height = image.height() as usize;
@@ -343,12 +445,28 @@ pub async fn image_to_payload(
     }
 
     // Encode the image if needed
-    let mut image_bytes: Vec<u8> = Vec::new();
+    let image_bytes: Vec<u8>;
     if encoding.encode_images {
+        // Pre-allocate buffer based on image characteristics for better performance
+        let estimated_size = match encoding.encode_format {
+            EncodeFormat::Jpeg => {
+                // JPEG compression ratio estimate based on quality
+                // Higher quality = less compression = larger file
+                let compression_ratio = 1.0 / (encoding.jpeg_quality as f64 / 100.0);
+                ((width * height * channels as usize) as f64 * compression_ratio * 0.8) as usize
+            }
+            EncodeFormat::Png => {
+                // PNG is typically larger than JPEG, especially for simple images
+                width * height * channels as usize * 2
+            }
+        };
+
+        let mut image_bytes_vec = Vec::with_capacity(estimated_size.max(1024)); // Minimum 1KB
+
         match encoding.encode_format {
             EncodeFormat::Jpeg => {
                 // Use JPEG encoder with specified quality
-                let mut cursor = Cursor::new(&mut image_bytes);
+                let mut cursor = Cursor::new(&mut image_bytes_vec);
                 let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
                     &mut cursor,
                     encoding.jpeg_quality,
@@ -365,12 +483,10 @@ pub async fn image_to_payload(
                     })?;
             }
             EncodeFormat::Png => {
-                // Pre-allocate buffer based on image size estimate
-                image_bytes.reserve(width * height * channels as usize);
-
                 // PNG encoding with optimized settings
+                let mut cursor = Cursor::new(&mut image_bytes_vec);
                 image::codecs::png::PngEncoder::new_with_quality(
-                    &mut Cursor::new(&mut image_bytes),
+                    &mut cursor,
                     image::codecs::png::CompressionType::Fast,
                     image::codecs::png::FilterType::Adaptive,
                 )
@@ -384,6 +500,7 @@ pub async fn image_to_payload(
             }
         }
 
+        image_bytes = image_bytes_vec;
         channels = -1; // Signal the fact that the image is encoded
     } else {
         image_bytes = image.into_bytes();
@@ -433,18 +550,23 @@ mod tests {
         // Test image resizing
         let img = DynamicImage::new_rgb8(300, 200);
         let resized = transform
-            .crop_and_resize(&img, Some(&"1.000".to_string()))
-            .await;
+            .crop_and_resize(img.clone(), Some(&"1.000".to_string()))
+            .await
+            .expect("Crop and resize should succeed");
         assert_eq!(resized.dimensions(), (224, 224));
 
         let resized = transform
-            .crop_and_resize(&img, Some(&"1.900".to_string()))
-            .await;
+            .crop_and_resize(img, Some(&"1.900".to_string()))
+            .await
+            .expect("Crop and resize should succeed");
         assert_eq!(resized.dimensions(), (304, 160));
 
         // Test empty aspect ratio input (should use closest)
         let img = DynamicImage::new_rgb8(400, 200);
-        let resized = transform.crop_and_resize(&img, None).await;
+        let resized = transform
+            .crop_and_resize(img, None)
+            .await
+            .expect("Crop and resize should succeed");
         assert_eq!(resized.dimensions(), (304, 160));
     }
 
@@ -747,8 +869,9 @@ mod tests {
         // Create an image that already has the target size
         let img = DynamicImage::new_rgb8(224, 224);
         let result = transform
-            .crop_and_resize(&img, Some(&"1.000".to_string()))
-            .await;
+            .crop_and_resize(img, Some(&"1.000".to_string()))
+            .await
+            .expect("Crop and resize should succeed");
 
         // Should return the same image since no resize is needed
         assert_eq!(result.width(), 224);
@@ -767,7 +890,7 @@ mod tests {
             *item = (i % 256) as u8;
         }
 
-        let dyn_img = image_to_dyn_image(&img);
+        let dyn_img = image_to_dyn_image(img).expect("Image conversion should succeed");
         assert_eq!(dyn_img.width(), width);
         assert_eq!(dyn_img.height(), height);
         assert_eq!(dyn_img.color(), image::ColorType::Rgb8);
@@ -784,7 +907,7 @@ mod tests {
             *item = ((i * 63) % 256) as u8;
         }
 
-        let dyn_img = image_to_dyn_image(&img);
+        let dyn_img = image_to_dyn_image(img).expect("Image conversion should succeed");
         assert_eq!(dyn_img.width(), width);
         assert_eq!(dyn_img.height(), height);
         assert_eq!(dyn_img.color(), image::ColorType::Rgba8);
@@ -801,16 +924,21 @@ mod tests {
             *item = (i % 256) as u8;
         }
 
-        let dyn_img = image_to_dyn_image(&img);
+        let dyn_img = image_to_dyn_image(img).expect("Image conversion should succeed");
         assert_eq!(dyn_img.width(), width);
         assert_eq!(dyn_img.height(), height);
         assert_eq!(dyn_img.color(), image::ColorType::L8);
     }
 
     #[test]
-    #[should_panic(expected = "Unsupported pixel type")]
     fn test_image_to_dyn_image_unsupported() {
         let img = Image::new(1, 1, fr::PixelType::U16);
-        image_to_dyn_image(&img);
+        let result = image_to_dyn_image(img);
+        assert!(result.is_err());
+        if let Err(DatagoImageError::UnsupportedPixelFormat(msg)) = result {
+            assert!(msg.contains("U16"));
+        } else {
+            panic!("Expected UnsupportedPixelFormat error");
+        }
     }
 }

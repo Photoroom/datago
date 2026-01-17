@@ -50,7 +50,6 @@ fn enumerate_files(
     let supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
 
     // Use streaming walkdir to avoid loading all files into memory at once
-    let _supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
     let walker = walkdir::WalkDir::new(&source_config.root_path)
         .follow_links(false)
         .into_iter()
@@ -68,22 +67,13 @@ fn enumerate_files(
             }
         });
 
-    // Collect some of the files, over sample to increase randomness or allow for faulty files
-    let mut files_list: Vec<walkdir::DirEntry> = walker.take(limit * 2).collect();
-
-    // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
-    if source_config.world_size > 1 {
-        let quorum = files_list.len();
-        let (start, end) =
-            get_data_slice_multirank(quorum, source_config.rank, source_config.world_size);
-        files_list = files_list[start..end].to_vec();
-    }
-
-    // If shuffle is set, shuffle the files
-    if source_config.random_sampling {
-        let mut rng = rand::rng(); // Get a random number generator, thread local. We don't seed, so typically won't be reproducible
-        files_list.shuffle(&mut rng); // This happens in place
-    }
+    // Create a streaming iterator that handles multi-rank distribution and shuffling
+    let files_iter = FilesIterator::new(
+        walker.take(limit * 2),
+        source_config.world_size,
+        source_config.rank,
+        source_config.random_sampling,
+    );
 
     // Iterate over the files and send the paths as they come
     // We oversubmit arbitrarily by 10% to account for the fact that some files might be corrupted or unreadable.
@@ -92,7 +82,7 @@ fn enumerate_files(
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
 
     // Build a page from the files iterator
-    for entry in files_list.into_iter() {
+    for entry in files_iter {
         let file_name: String = entry.path().to_str().unwrap().to_string();
 
         if samples_metadata_tx
@@ -122,6 +112,98 @@ fn enumerate_files(
             debug!("ping_pages: stream already closed, wrapping up");
         }
     };
+}
+
+/// Streaming iterator that handles multi-rank distribution and optional shuffling
+/// without loading all files into memory at once.
+struct FilesIterator<I> {
+    inner: I,
+    world_size: usize,
+    rank: usize,
+    random_sampling: bool,
+    buffer: Vec<walkdir::DirEntry>,
+    buffer_index: usize,
+    rng: rand::rngs::ThreadRng,
+}
+
+impl<I> FilesIterator<I>
+where
+    I: Iterator<Item = walkdir::DirEntry>,
+{
+    fn new(inner: I, world_size: usize, rank: usize, random_sampling: bool) -> Self {
+        Self {
+            inner,
+            world_size,
+            rank,
+            random_sampling,
+            buffer: Vec::new(),
+            buffer_index: 0,
+            rng: rand::rng(),
+        }
+    }
+}
+
+impl<I> Iterator for FilesIterator<I>
+where
+    I: Iterator<Item = walkdir::DirEntry>,
+{
+    type Item = walkdir::DirEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // If we have items in buffer, return them first
+        if self.buffer_index < self.buffer.len() {
+            let item = self.buffer[self.buffer_index].clone();
+            self.buffer_index += 1;
+            return Some(item);
+        }
+
+        // Clear buffer for next batch
+        self.buffer.clear();
+        self.buffer_index = 0;
+
+        // Collect a batch of files (smaller batch size for memory efficiency)
+        const BATCH_SIZE: usize = 1024; // Process files in batches of 1024
+
+        for _ in 0..BATCH_SIZE {
+            if let Some(entry) = self.inner.next() {
+                self.buffer.push(entry);
+            } else {
+                break; // No more files
+            }
+        }
+
+        if self.buffer.is_empty() {
+            return None; // No more files
+        }
+
+        // Apply multi-rank distribution if needed
+        if self.world_size > 1 {
+            let quorum = self.buffer.len();
+            let (start, end) = get_data_slice_multirank(quorum, self.rank, self.world_size);
+
+            // Only keep the files that belong to this rank
+            let rank_files: Vec<walkdir::DirEntry> = self.buffer.drain(start..end).collect();
+            self.buffer = rank_files;
+
+            if self.buffer.is_empty() {
+                return self.next(); // Try next batch
+            }
+        }
+
+        // Apply shuffling if needed
+        if self.random_sampling && !self.buffer.is_empty() {
+            self.buffer.shuffle(&mut self.rng);
+        }
+
+        // Return first item from processed buffer
+        if !self.buffer.is_empty() {
+            let item = self.buffer[0].clone();
+            self.buffer_index = 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
 }
 
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {

@@ -106,6 +106,7 @@ def benchmark(
 
     # This setting is not exposed in the config, but an env variable can be used instead
     os.environ["DATAGO_MAX_TASKS"] = str(num_workers)
+    os.environ["DATAGO_MAX_TASKS_PER_RING"] = str(num_workers)
 
     client_config = {
         "source_type": "file",

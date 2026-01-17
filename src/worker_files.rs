@@ -144,38 +144,6 @@ async fn io_uring_drain_into_tasks(
     }
 }
 
-#[allow(dead_code)] // we use this for unit tests
-async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
-    // Submit / read cycle with a single file, really not a good idea for perf but good for unit testing
-    let mut ring = IoUring::new(1).unwrap();
-    let mut io_tracker = IoTracker::new();
-
-    // Submit a single read request
-    match io_uring_submit_read(path, &mut ring, io_tracker.next_id).await {
-        Ok(request) => {
-            io_tracker.insert(request);
-        }
-        Err(e) => {
-            return Err(e);
-        }
-    }
-
-    // Give the io_uring operation a chance to complete
-    // This is a workaround for the fact that io_uring operations might not be immediately available
-    tokio::task::yield_now().await;
-
-    // Get the result from the queue
-    match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
-        Ok(mut results) if results.len() == 1 => {
-            let result = results.remove(0);
-            // The buffer should already be properly sized by io_uring_retire_available_reads
-            Ok(result.buffer)
-        }
-        Ok(_) => Err(std::io::Error::other("Failed to read file")),
-        Err(e) => Err(e),
-    }
-}
-
 async fn sample_from_io_uring_read(
     result: IoUringResult,
     samples_tx: kanal::Sender<Option<Sample>>,
@@ -416,7 +384,7 @@ async fn async_pull_samples(
     // Check if io_uring should be used
     let use_io_uring = std::env::var("DATAGO_USE_IO_URING")
         .map(|s| s.to_lowercase() == "true")
-        .unwrap_or(true); // Default to true - memory issues have been fixed
+        .unwrap_or(true);
 
     if use_io_uring {
         // Use the new io_uring implementation
@@ -473,6 +441,7 @@ pub fn pull_samples(
 ) {
     tokio::runtime::Builder::new_multi_thread() // one thread per core by default
         .thread_name("datago")
+        .worker_threads(num_cpus::get())
         .enable_all()
         .build()
         .unwrap()
@@ -567,6 +536,7 @@ async fn async_pull_samples_fallback(
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);
 
+    // Keep the task queue full, but not overboard
     while let Ok(received) = samples_metadata_rx.recv() {
         if received == serde_json::Value::Null {
             debug!("file_worker: end of stream received, stopping there");
@@ -574,22 +544,20 @@ async fn async_pull_samples_fallback(
             break;
         }
 
-        // Check if we have reached the limit (including tasks in flight)
-        if count + tasks.len() >= limit {
-            break;
-        }
-
-        // Check if we have capacity before spawning new tasks
         if tasks.len() >= max_tasks {
-            // Wait for some tasks to complete before adding more
+            // If we're at capacity, wait for a task to complete, then spawn a new one
+            // This ensures we always have max_tasks running when possible
             if let Some(result) = tasks.join_next().await {
                 if result.is_ok() {
                     count += 1;
                 }
+                // Check if we've reached the limit before spawning more tasks
+                if count >= limit {
+                    break;
+                }
             }
         }
-
-        // Append a new task to the queue
+        // Now spawn the new task to replace the completed one
         tasks.spawn(pull_sample(
             received,
             shareable_img_tfm.clone(),
@@ -616,6 +584,37 @@ mod tests {
     use crate::image_processing::ImageTransformConfig;
     use std::fs;
     use tempfile::TempDir;
+
+    async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
+        // Submit / read cycle with a single file, really not a good idea for perf but good for unit testing
+        let mut ring = IoUring::new(1).unwrap();
+        let mut io_tracker = IoTracker::new();
+
+        // Submit a single read request
+        match io_uring_submit_read(path, &mut ring, io_tracker.next_id).await {
+            Ok(request) => {
+                io_tracker.insert(request);
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+
+        // Give the io_uring operation a chance to complete
+        // This is a workaround for the fact that io_uring operations might not be immediately available
+        tokio::task::yield_now().await;
+
+        // Get the result from the queue
+        match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
+            Ok(mut results) if results.len() == 1 => {
+                let result = results.remove(0);
+                // The buffer should already be properly sized by io_uring_retire_available_reads
+                Ok(result.buffer)
+            }
+            Ok(_) => Err(std::io::Error::other("Failed to read file")),
+            Err(e) => Err(e),
+        }
+    }
 
     fn create_test_image(path: &std::path::Path) {
         // Create a simple 24x32 PNG image
