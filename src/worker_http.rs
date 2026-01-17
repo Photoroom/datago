@@ -40,11 +40,8 @@ pub async fn bytes_from_url(
         .timeout(timeout)
         .header(reqwest::header::CONNECTION, "keep-alive");
 
-    if auth_token.is_some() {
-        request = request.header(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", auth_token.unwrap()),
-        );
+    if let Some(token) = auth_token {
+        request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token));
     }
 
     if let Ok(response) = request.send().await {

@@ -17,8 +17,20 @@ classifiers = [
 ]
 dependencies = ["pillow"]
 [dependency-groups]
-test = ["pytest", "typer", "tqdm", "numpy", "webdataset"]
+test = [
+    "pytest",
+    "typer",
+    "tqdm",
+    "numpy",
+    "webdataset",
+    "prek>=0.2.29",
+]
 
+dev = [
+  "matplotlib",
+"pandas",
+"prek>=0.2.29",
+]
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"
 Issues = "https://github.com/photoroom/datago/issues"
@@ -50,4 +62,4 @@ strip = true
 sdist-generator = "cargo"
 
 [tool.ty.rules]
-unresolved-import = "ignore" 
+unresolved-import = "ignore"
