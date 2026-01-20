@@ -1,8 +1,8 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
 use io_uring::{opcode, types, IoUring};
-use log::{debug, error, info};
-use std::collections::HashMap;
+use log::{debug, error, info, warn};
+use std::collections::HashMap; // Still used for Sample fields
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -17,35 +17,46 @@ struct IoUringRequest {
     path: String,
 }
 
-// We'll label all the requests issued over time
-type RequestId = u64;
-
+// Slot-based tracker for O(1) insert/remove without HashMap overhead
+// Uses pre-allocated slots with a free list for slot reuse
 struct IoTracker {
-    in_flight: HashMap<RequestId, IoUringRequest>,
-    next_id: RequestId, // Auto-incrementing ID generator
+    slots: Vec<Option<IoUringRequest>>,
+    free_slots: Vec<usize>,
 }
 
 impl IoTracker {
-    fn new() -> Self {
+    fn new(capacity: usize) -> Self {
         Self {
-            in_flight: HashMap::with_capacity(128),
-            next_id: 1,
+            slots: (0..capacity).map(|_| None).collect(),
+            // Stack of free slot indices (reversed so pop() is efficient)
+            free_slots: (0..capacity).rev().collect(),
         }
     }
 
-    fn insert(&mut self, request: IoUringRequest) -> RequestId {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.in_flight.insert(id, request);
-        id
+    // Allocate a slot and return its ID (to use as user_data)
+    fn allocate_slot(&mut self) -> usize {
+        self.free_slots.pop().expect("No free slots available")
     }
 
-    fn remove(&mut self, id: RequestId) -> Option<IoUringRequest> {
-        self.in_flight.remove(&id)
+    // Store the request in the given slot
+    fn store(&mut self, slot_id: usize, request: IoUringRequest) {
+        debug_assert!(self.slots[slot_id].is_none(), "Slot already occupied");
+        self.slots[slot_id] = Some(request);
+    }
+
+    fn remove(&mut self, slot_id: usize) -> Option<IoUringRequest> {
+        let request = self.slots[slot_id].take()?;
+        self.free_slots.push(slot_id);
+        Some(request)
+    }
+
+    // Free a slot without removing a request (used when allocation fails)
+    fn free_slot(&mut self, slot_id: usize) {
+        self.free_slots.push(slot_id);
     }
 
     fn len(&self) -> usize {
-        self.in_flight.len()
+        self.slots.len() - self.free_slots.len()
     }
 }
 
@@ -54,25 +65,53 @@ struct IoUringResult {
     path: String,
 }
 
+#[allow(clippy::uninit_vec)]
 async fn io_uring_submit_read(
     path: &str,
     ring: &mut IoUring,
-    uid: u64,
+    slot_id: usize,
 ) -> Result<IoUringRequest, std::io::Error> {
     // Open the file
     let file = File::open(path)?;
     let file_fd = file.as_raw_fd();
-    let file_size = file.metadata()?.len() as u32;
 
-    // Prepare the read operation with proper buffer management
-    // Initialize the buffer with zeros to ensure proper alignment and initialization
-    let mut buffer = vec![0u8; file_size as usize];
+    // tentative optimization: use adaptive buffer sizing based on actual file size
+    // First get the file metadata to determine the appropriate buffer size
+    let metadata = std::fs::metadata(path)?;
+    let file_size = metadata.len() as usize;
+
+    // Set reasonable bounds: minimum 4KB, maximum 100MB
+    // This prevents both tiny allocations for small files and huge allocations for corrupted/malformed files
+    // FIXME @blefaudeux IN1k actually has files smaller that that, plus it's not really watertight
+    const MIN_BUFFER_SIZE: usize = 1024; // 4KB
+    const MAX_BUFFER_SIZE: usize = 100 * 1024 * 1024; // 100MB
+
+    let buffer_size = file_size.clamp(MIN_BUFFER_SIZE, MAX_BUFFER_SIZE);
+
+    debug!(
+        "io_uring: Allocating buffer of size {}KB for file {} (actual size: {}KB)",
+        buffer_size / 1024,
+        path,
+        file_size / 1024
+    );
+
+    // TODO: @blefaudeux - use a shared memory buffer for all, remove independent allocations
+
+    // Allocate uninitialized buffer using MaybeUninit semantics
+    let mut buffer = Vec::<u8>::with_capacity(buffer_size);
+    unsafe {
+        // SAFETY: We're setting the length to mark the memory as "initialized"
+        // even though it contains garbage. This is safe because:
+        // 1. io_uring will write to this memory before we read it
+        // 2. we allocated just what we needed, and will check later that the read bytes align with the buffer length
+        buffer.set_len(buffer_size);
+    }
 
     let buffer_ptr = buffer.as_mut_ptr();
 
-    let sqe = opcode::Read::new(types::Fd(file_fd), buffer_ptr, file_size)
+    let sqe = opcode::Read::new(types::Fd(file_fd), buffer_ptr, buffer_size as u32)
         .build()
-        .user_data(uid);
+        .user_data(slot_id as u64);
 
     // Add the read operation to the queue, not submitted yet / will be batched
     unsafe {
@@ -97,11 +136,6 @@ async fn io_uring_drain_into_tasks(
     encode_images: bool,
     img_to_rgb8: bool,
 ) {
-    // We get a handle to the ring + the files which were kept open
-
-    // Not required while polling is used, could be an env variable
-    ring.completion().sync();
-
     while let Some(cqe) = ring.completion().next() {
         // Grab the raw results from the completion queue
         if cqe.result() < 0 {
@@ -110,25 +144,25 @@ async fn io_uring_drain_into_tasks(
             task_queue.spawn(error_closure());
         } else {
             // Take ownership of the request to properly manage buffer lifetime
-            let mut request = io_tracker.remove(cqe.user_data()).unwrap();
-
-            // Get the number of bytes actually read
+            let request = io_tracker.remove(cqe.user_data() as usize).unwrap();
             let bytes_read = cqe.result() as usize;
 
-            // Safe: Truncate the buffer to the actual bytes read
-            // This is safe because io_uring has written exactly 'bytes_read' bytes to our buffer
-            // and we're using Vec's built-in truncate method
-            if bytes_read < request.buffer.len() {
-                request.buffer.truncate(bytes_read);
+            if bytes_read != request.buffer.len() {
+                warn!(
+                    "Read doesn't match the expected buffer size, something is wrong. Read {} bytes, expected {}. Skipping this file",
+                    bytes_read,
+                    request.buffer.len()
+                );
+                continue;
             }
 
+            // Take ownership of the results (buffer and path),implicit move semantics
             let io_uring_result = IoUringResult {
-                buffer: request.buffer, // Take ownership of the buffer
-                path: request.path,     // Take ownership of the path
+                buffer: request.buffer,
+                path: request.path,
             };
 
-            // The File will be dropped here, properly closing the file descriptor
-
+            // The "file" will be dropped here, properly closing the file descriptor
             // Spawn a task to create a full sample from the results
             task_queue.spawn(sample_from_io_uring_read(
                 io_uring_result,
@@ -177,8 +211,8 @@ async fn sample_from_io_uring_read(
                 duplicate_state: 0,
             };
 
-            // Channel is closed, wrapping up
             if samples_tx.send(Some(sample)).is_err() {
+                // Channel is closed, wrapping up, no biggie but flagging it
                 return Err(std::io::Error::other(
                     "file_worker: failed to send sample to channel",
                 ));
@@ -200,11 +234,7 @@ async fn io_uring_retire_available_reads(
     // We get a handle to the ring + the files which were kept open. Handle a batch of completions, if possible
     // NOTE: This is not very efficient, because we retire a bunch of payloads prior to
     // processing them. This should be correct and a good baseline though, used for some tests.
-
     let mut results = Vec::<IoUringResult>::with_capacity(io_tracker.len());
-
-    // Ensure kernel -> userspace sync first
-    ring.completion().sync();
 
     // Now process all available completions
     while let Some(cqe) = ring.completion().next() {
@@ -214,15 +244,20 @@ async fn io_uring_retire_available_reads(
         }
 
         // Take ownership of the request to properly manage buffer lifetime
-        let mut request = io_tracker.remove(cqe.user_data()).unwrap();
-
-        // Get the number of bytes actually read
+        let mut request = io_tracker.remove(cqe.user_data() as usize).unwrap();
         let bytes_read = cqe.result() as usize;
 
-        // Safe: Truncate the buffer to the actual bytes read
-        if bytes_read < request.buffer.len() {
-            request.buffer.truncate(bytes_read);
+        // Warn if we hit the buffer limit - file might be larger than expected
+        if bytes_read == request.buffer.len() {
+            warn!(
+                "io_uring: File {} filled the entire buffer ({}KB). File size may have changed or buffer size may need adjustment.",
+                request.path,
+                request.buffer.len() / 1024
+            );
         }
+
+        // Truncate the buffer to the actual bytes read
+        request.buffer.truncate(bytes_read);
 
         results.push(IoUringResult {
             buffer: request.buffer, // Take ownership of the buffer
@@ -282,17 +317,17 @@ async fn io_uring_pipeline(
         .build(io_depth as u32)
         .expect("Failed to create io_uring"); // Queue depth
 
+    let mut io_tracker = IoTracker::new(io_depth);
+
     // Limit concurrent processing tasks, but make it possible to overlap IO and compute
     // This is only about the tasks in flight in this io_uring submission queue
     let mut main_tasks_queue = tokio::task::JoinSet::new();
-    let max_number_tasks = std::env::var("DATAGO_MAX_TASKS_PER_RING")
+    let max_number_tasks = std::env::var("DATAGO_MAX_TASKS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(num_cpus::get());
 
-    info!("Enabling {max_number_tasks} concurrent compute tasks per io_uring pipeline");
-
-    let mut io_tracker = IoTracker::new();
+    info!("Enabling {max_number_tasks} concurrent compute tasks");
 
     while let Ok(received) = samples_metadata_rx.recv() {
         if received == serde_json::Value::Null {
@@ -302,15 +337,18 @@ async fn io_uring_pipeline(
         }
 
         // Submit a read request, log it being in flight.
-        // Note that we need to index the request, as it may be processed in a different order
+        // Allocate a slot first, then submit with that slot ID
         let path = received.as_str().unwrap();
-        match io_uring_submit_read(path, &mut ring, io_tracker.next_id).await {
+        let slot_id = io_tracker.allocate_slot();
+        match io_uring_submit_read(path, &mut ring, slot_id).await {
             Ok(request) => {
-                io_tracker.insert(request);
+                io_tracker.store(slot_id, request);
                 debug!("file_worker: submitted read request for {path}");
             }
             Err(e) => {
                 error!("file_worker: failed to submit read request for {path}: {e}");
+                // Return the slot since we didn't use it
+                io_tracker.free_slot(slot_id);
                 continue;
             }
         }
@@ -324,8 +362,8 @@ async fn io_uring_pipeline(
         // Retire the done tasks from the main queue
         count += retire_done_tasks_from_set(&mut main_tasks_queue).await;
 
-        // If enough submissions in the queue, opportunistically retire what is already available
-        while io_tracker.len() >= io_depth {
+        // If enough files in flight, opportunistically retire what is already available
+        while io_tracker.free_slots.is_empty() {
             io_uring_drain_into_tasks(
                 &mut ring,
                 &mut io_tracker,
@@ -341,12 +379,13 @@ async fn io_uring_pipeline(
         // If too many in flight tasks, busy loop until some are done
         while main_tasks_queue.len() > max_number_tasks {
             count += retire_done_tasks_from_set(&mut main_tasks_queue).await;
-            // tokio::task::yield_now().await; // Give some time back to the scheduler
+            tokio::task::yield_now().await; // Give some time back to the scheduler
         }
 
         // Check if we have reached the limit
         // Use a simple check to avoid any potential issues with io_tracker access
         if count >= limit {
+            info!("Hitting the requested limit, bailing out");
             break;
         }
     }
@@ -384,43 +423,24 @@ async fn async_pull_samples(
         .map(|s| s.to_lowercase() == "true")
         .unwrap_or(true);
 
+    let shareable_img_tfm = Arc::new(image_transform);
+
     if use_io_uring {
-        // Use the new io_uring implementation
-        let max_pipelines = std::env::var("DATAGO_IO_URING_PIPELINES")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(num_cpus::get() / 2);
-
-        info!("Using {max_pipelines} io_uring pipelines in parallel");
-
-        let shareable_img_tfm = Arc::new(image_transform);
-        let mut pipelines = tokio::task::JoinSet::new();
-
-        while pipelines.len() < max_pipelines {
-            let rx_channel = samples_metadata_rx.clone();
-            let tx_channel = samples_tx.clone();
-            let img_tfm = shareable_img_tfm.clone();
-            pipelines.spawn(io_uring_pipeline(
-                rx_channel,
-                tx_channel,
-                img_tfm,
-                encoding.encode_images,
-                encoding.img_to_rgb8,
-                limit,
-            ));
-        }
-
-        // Wait for all pipelines to complete
-        let _ = pipelines.join_all().await;
-
-        // Signal the end of the stream for io_uring path
-        if samples_tx.send(None).is_ok() {};
+        io_uring_pipeline(
+            samples_metadata_rx,
+            samples_tx,
+            shareable_img_tfm,
+            encoding.encode_images,
+            encoding.img_to_rgb8,
+            limit,
+        )
+        .await;
     } else {
         // Fall back to the original async implementation
         async_pull_samples_fallback(
             samples_metadata_rx,
             samples_tx,
-            image_transform,
+            shareable_img_tfm,
             encoding,
             limit,
         )
@@ -518,7 +538,7 @@ async fn pull_sample(
 async fn async_pull_samples_fallback(
     samples_metadata_rx: kanal::Receiver<serde_json::Value>,
     samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
+    shareable_img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
@@ -532,7 +552,6 @@ async fn async_pull_samples_fallback(
     let max_tasks = std::cmp::min(default_max_tasks, limit);
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
-    let shareable_img_tfm = Arc::new(image_transform);
 
     // Keep the task queue full, but not overboard
     while let Ok(received) = samples_metadata_rx.recv() {
@@ -586,12 +605,13 @@ mod tests {
     async fn io_uring_read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
         // Submit / read cycle with a single file, really not a good idea for perf but good for unit testing
         let mut ring = IoUring::new(1).unwrap();
-        let mut io_tracker = IoTracker::new();
+        let mut io_tracker = IoTracker::new(1);
 
         // Submit a single read request
-        match io_uring_submit_read(path, &mut ring, io_tracker.next_id).await {
+        let slot_id = io_tracker.allocate_slot();
+        match io_uring_submit_read(path, &mut ring, slot_id).await {
             Ok(request) => {
-                io_tracker.insert(request);
+                io_tracker.store(slot_id, request);
             }
             Err(e) => {
                 return Err(e);
@@ -606,7 +626,6 @@ mod tests {
         match io_uring_retire_available_reads(&mut ring, &mut io_tracker).await {
             Ok(mut results) if results.len() == 1 => {
                 let result = results.remove(0);
-                // The buffer should already be properly sized by io_uring_retire_available_reads
                 Ok(result.buffer)
             }
             Ok(_) => Err(std::io::Error::other("Failed to read file")),
