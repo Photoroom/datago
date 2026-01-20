@@ -1,7 +1,7 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
 use io_uring::{opcode, types, IoUring};
-use log::{debug, error};
+use log::{debug, error, info};
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::fd::AsRawFd;
@@ -74,15 +74,12 @@ async fn io_uring_submit_read(
         .build()
         .user_data(uid);
 
-    // Submit the read operation
+    // Add the read operation to the queue, not submitted yet / will be batched
     unsafe {
         ring.submission()
             .push(&sqe)
             .expect("Failed to push to submission queue");
     }
-
-    // Actually submit the operation to the kernel
-    ring.submit()?;
 
     Ok(IoUringRequest {
         file, // Keep the file descriptor open for the duration of the operation
@@ -277,7 +274,7 @@ async fn io_uring_pipeline(
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(256);
 
-    debug!("Using io_uring with batch size {io_batch_size} and depth {io_depth}");
+    info!("Using io_uring with batch size {io_batch_size} and depth {io_depth}");
     let mut ring = IoUring::builder()
         // .setup_sqpoll(100) // Enable kernel-polling mode for the submission queue
         .setup_coop_taskrun() // Don't interrupt user space on completion
@@ -293,7 +290,7 @@ async fn io_uring_pipeline(
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(num_cpus::get());
 
-    debug!("Enabling {max_number_tasks} concurrent compute tasks per io_uring pipeline");
+    info!("Enabling {max_number_tasks} concurrent compute tasks per io_uring pipeline");
 
     let mut io_tracker = IoTracker::new();
 
@@ -321,13 +318,14 @@ async fn io_uring_pipeline(
         // If enough submissions in the queue, submit a batch
         if ring.submission().len() >= io_batch_size {
             ring.submit().expect("Failed to submit batch");
+            debug!("file_worker: submitted batch to ring");
         }
 
         // Retire the done tasks from the main queue
         count += retire_done_tasks_from_set(&mut main_tasks_queue).await;
 
         // If enough submissions in the queue, opportunistically retire what is already available
-        while io_tracker.len() >= (io_depth / 2) {
+        while io_tracker.len() >= io_depth {
             io_uring_drain_into_tasks(
                 &mut ring,
                 &mut io_tracker,
@@ -343,7 +341,7 @@ async fn io_uring_pipeline(
         // If too many in flight tasks, busy loop until some are done
         while main_tasks_queue.len() > max_number_tasks {
             count += retire_done_tasks_from_set(&mut main_tasks_queue).await;
-            tokio::task::yield_now().await; // Give some time back to the scheduler
+            // tokio::task::yield_now().await; // Give some time back to the scheduler
         }
 
         // Check if we have reached the limit
@@ -393,7 +391,7 @@ async fn async_pull_samples(
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(num_cpus::get() / 2);
 
-        debug!("Using {max_pipelines} io_uring pipelines in parallel");
+        info!("Using {max_pipelines} io_uring pipelines in parallel");
 
         let shareable_img_tfm = Arc::new(image_transform);
         let mut pipelines = tokio::task::JoinSet::new();
