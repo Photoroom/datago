@@ -1,20 +1,34 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
-use glommio::LocalExecutorBuilder;
+use glommio::{io::OpenOptions, LocalExecutorBuilder};
 use log::{debug, error, info};
+
 use std::cmp::min;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Use buffered reading instead of loading entire file at once for better memory efficiency
-    let file = std::fs::File::open(path)
-        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
-    let reader = std::io::BufReader::new(file);
+    // Use Glommio's async file operations for better performance
+    let file = OpenOptions::new()
+        .read(true)
+        .dma_open(path)
+        .await
+        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e.to_string())))?;
 
-    image::ImageReader::new(reader)
-        .with_guessed_format()?
-        .decode()
+    // Get file size first to avoid reading with usize::MAX which can cause overflow
+    let file_size = file
+        .file_size()
+        .await
+        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e.to_string())))?;
+
+    // Read the file content into a buffer using Glommio's async read
+    let read_result = file
+        .read_at(0, file_size as usize)
+        .await
+        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e.to_string())))?;
+
+    // Use the buffer with image library - ReadResult derefs to [u8]
+    image::load_from_memory(&read_result)
 }
 
 async fn image_payload_from_path(
@@ -81,7 +95,7 @@ async fn async_pull_samples(
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
-    let default_max_tasks = 16;
+    let default_max_tasks = 64;
 
     let max_tasks = min(default_max_tasks, limit);
     let shareable_img_tfm = Arc::new(image_transform);
@@ -157,13 +171,13 @@ pub fn pull_samples(
 
     info!("Creating {} concurrent tasks", concurrent_tasks);
 
-    // Create a glommio local executor per task
     let mut local_executors = Vec::new();
     for i in 0..concurrent_tasks {
         let metadata_thread_rx = samples_metadata_rx.clone();
         let samples_thread_tx = samples_tx.clone();
         let im_tfm_thread = image_transform.clone();
 
+        // Create a glommio local executor per task
         let local_executor = LocalExecutorBuilder::new(glommio::Placement::Fixed(i))
             .name("datago-file-worker")
             .spawn(move || async move {
@@ -172,7 +186,7 @@ pub fn pull_samples(
                     samples_thread_tx,
                     im_tfm_thread,
                     encoding,
-                    limit,
+                    limit, // (limit as f32 / concurrent_tasks as f32).ceil() as usize,
                 )
                 .await;
             })
