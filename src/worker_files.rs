@@ -1,9 +1,9 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
 use glommio::LocalExecutorBuilder;
-use log::{debug, error};
+use log::{debug, error, info};
 use std::cmp::min;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
@@ -81,18 +81,15 @@ async fn async_pull_samples(
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
-    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(num_cpus::get()); // Number of CPUs is actually a good heuristic for a small machine);
+    let default_max_tasks = 16;
 
     let max_tasks = min(default_max_tasks, limit);
     let shareable_img_tfm = Arc::new(image_transform);
     let mut count = 0;
 
-    // For glommio, we'll use a different approach since it doesn't have JoinSet
-    // We'll use a task queue and manage concurrency manually
-    let mut pending_tasks: Vec<glommio::Task<Result<(), ()>>> = Vec::with_capacity(max_tasks);
+    // Keep ongoing tasks in a double ended queue, we'll wait for the older one
+    let mut pending_tasks: VecDeque<glommio::Task<Result<(), ()>>> =
+        VecDeque::with_capacity(max_tasks);
 
     while let Ok(received) = samples_metadata_rx.recv() {
         if received == serde_json::Value::Null {
@@ -102,9 +99,9 @@ async fn async_pull_samples(
         }
 
         // Check if we have capacity before spawning new tasks
-        if pending_tasks.len() >= max_tasks {
+        while pending_tasks.len() >= max_tasks {
             // Wait for some tasks to complete before adding more
-            if let Some(task) = pending_tasks.pop() {
+            if let Some(task) = pending_tasks.pop_front() {
                 if task.await.is_ok() {
                     count += 1;
                 }
@@ -114,7 +111,7 @@ async fn async_pull_samples(
         // Append a new task to the queue
         let img_tfm_clone = shareable_img_tfm.clone();
         let samples_tx_clone = samples_tx.clone();
-        pending_tasks.push(glommio::spawn_local(async move {
+        pending_tasks.push_back(glommio::spawn_local(async move {
             pull_sample(received, img_tfm_clone.clone(), encoding, samples_tx_clone).await
         }));
 
@@ -150,24 +147,43 @@ pub fn pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
-    // Create a glommio local executor
-    let num_workers = std::cmp::min(num_cpus::get(), 8); // Limit to 8 workers max
-    let local_executor = LocalExecutorBuilder::new(glommio::Placement::Fixed(num_workers))
-        .name("datago-file-worker")
-        .spawn(move || async move {
-            async_pull_samples(
-                samples_metadata_rx,
-                samples_tx,
-                image_transform,
-                encoding,
-                limit,
-            )
-            .await;
-        })
-        .unwrap();
+    let concurrent_tasks = min(
+        std::env::var("DATAGO_MAX_TASKS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(num_cpus::get()),
+        num_cpus::get(),
+    );
 
-    // Wait for the executor to complete
-    local_executor.join().unwrap();
+    info!("Creating {} concurrent tasks", concurrent_tasks);
+
+    // Create a glommio local executor per task
+    let mut local_executors = Vec::new();
+    for i in 0..concurrent_tasks {
+        let metadata_thread_rx = samples_metadata_rx.clone();
+        let samples_thread_tx = samples_tx.clone();
+        let im_tfm_thread = image_transform.clone();
+
+        let local_executor = LocalExecutorBuilder::new(glommio::Placement::Fixed(i))
+            .name("datago-file-worker")
+            .spawn(move || async move {
+                async_pull_samples(
+                    metadata_thread_rx,
+                    samples_thread_tx,
+                    im_tfm_thread,
+                    encoding,
+                    limit,
+                )
+                .await;
+            })
+            .unwrap();
+        local_executors.push(local_executor);
+    }
+
+    // Wait for all executors to complete
+    for local_executor in local_executors {
+        local_executor.join().unwrap();
+    }
 }
 
 #[cfg(test)]
