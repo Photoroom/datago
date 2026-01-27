@@ -4,58 +4,16 @@ use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
-use zune_jpeg::JpegDecoder;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Read the file into memory once
-    let file_data =
-        std::fs::read(path).map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
+    // Use buffered reading instead of loading entire file at once for better memory efficiency
+    let file = std::fs::File::open(path)
+        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
+    let reader = std::io::BufReader::new(file);
 
-    // Check for JPEG magic bytes (SOI marker: 0xFF, 0xD8, followed by another 0xFF)
-    if file_data.len() >= 3 && file_data.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        // This is likely a JPEG file, use zune-jpeg for faster decoding
-        decode_jpeg_with_zune_from_bytes(&file_data).await
-    } else {
-        // Fall back to standard image crate for other formats
-        let cursor = std::io::Cursor::new(file_data);
-        image::ImageReader::new(cursor)
-            .with_guessed_format()?
-            .decode()
-    }
-}
-
-async fn decode_jpeg_with_zune_from_bytes(
-    file_data: &[u8],
-) -> Result<image::DynamicImage, image::ImageError> {
-    let cursor = std::io::Cursor::new(file_data);
-
-    // Use zune-jpeg decoder
-    let mut decoder = JpegDecoder::new(cursor);
-
-    // Decode the image - zune-jpeg returns RGB24 format by default
-    let pixels = decoder.decode().map_err(|e| {
-        image::ImageError::IoError(std::io::Error::other(format!(
-            "zune-jpeg decode error: {}",
-            e
-        )))
-    })?;
-
-    // Get image info after decoding
-    let image_info = decoder.info().ok_or_else(|| {
-        image::ImageError::IoError(std::io::Error::other(
-            "Failed to get image info from zune-jpeg after decoding",
-        ))
-    })?;
-
-    // zune-jpeg always decodes to RGB24 format (3 bytes per pixel)
-    let img = image::RgbImage::from_raw(image_info.width as u32, image_info.height as u32, pixels)
-        .ok_or_else(|| {
-            image::ImageError::IoError(std::io::Error::other(
-                "Failed to create RGB image from zune-jpeg output",
-            ))
-        })?;
-
-    Ok(image::DynamicImage::ImageRgb8(img))
+    image::ImageReader::new(reader)
+        .with_guessed_format()?
+        .decode()
 }
 
 async fn image_payload_from_path(
