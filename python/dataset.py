@@ -13,6 +13,11 @@ class DatagoIterDataset:
         print(self.len)
         print(datago_config)
         self.count = 0
+        self.get_sample_proxy = (
+            self.client.get_sample_auto_convert
+            if return_python_types
+            else self.client.get_sample
+        )
 
     def __iter__(self):
         return self
@@ -47,21 +52,12 @@ class DatagoIterDataset:
             if self.count > self.len:
                 raise StopIteration
 
-            sample = self.client.get_sample()
-            if not sample or sample.id == "":
+            sample = self.get_sample_proxy()
+            if not sample:
                 raise StopIteration
 
-            if self.return_python_types:
-                # Convert the Rust types to Python types
-                python_sample = {}
-                for attr in filter(lambda x: "__" not in x, dir(sample)):
-                    python_sample[attr.lower()] = self.to_python_types(
-                        getattr(sample, attr), attr
-                    )
-
-                return python_sample
-
             return sample
+
         except KeyboardInterrupt:
             self.client.stop()
             raise StopIteration

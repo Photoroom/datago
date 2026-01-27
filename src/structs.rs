@@ -213,6 +213,16 @@ impl PythonImagePayload {
         let pil_image = self.inner.to_pil_image(py)?;
         pil_image.getattr(py, attr)
     }
+
+    /// Convert to PIL image (exposed directly for convenience)
+    pub fn to_pil_image(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.to_pil_image(py)
+    }
+
+    /// Convert to numpy array (exposed directly for convenience)
+    pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.to_numpy_array(py)
+    }
 }
 
 /// Helper function to convert ImagePayload to PythonImagePayload
