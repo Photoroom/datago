@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 image = { version = "0.25.9", features = ["png", "jpeg", "webp", "default-formats"] }
+zune-jpeg = { version = "0.5.11" }
 reqwest = { version = "0.12.15", features = ["blocking", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

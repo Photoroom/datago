@@ -688,6 +688,7 @@ dependencies = [
  "url",
  "walkdir",
  "wiremock",
+ "zune-jpeg 0.5.11",
 ]
 
 [[package]]

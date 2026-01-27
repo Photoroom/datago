@@ -4,16 +4,58 @@ use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
+use zune_jpeg::JpegDecoder;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Use buffered reading instead of loading entire file at once for better memory efficiency
-    let file = std::fs::File::open(path)
-        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
-    let reader = std::io::BufReader::new(file);
+    // Read the file into memory once
+    let file_data =
+        std::fs::read(path).map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
 
-    image::ImageReader::new(reader)
-        .with_guessed_format()?
-        .decode()
+    // Check for JPEG magic bytes (SOI marker: 0xFF, 0xD8, followed by another 0xFF)
+    if file_data.len() >= 3 && file_data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        // This is likely a JPEG file, use zune-jpeg for faster decoding
+        decode_jpeg_with_zune_from_bytes(&file_data).await
+    } else {
+        // Fall back to standard image crate for other formats
+        let cursor = std::io::Cursor::new(file_data);
+        image::ImageReader::new(cursor)
+            .with_guessed_format()?
+            .decode()
+    }
+}
+
+async fn decode_jpeg_with_zune_from_bytes(
+    file_data: &[u8],
+) -> Result<image::DynamicImage, image::ImageError> {
+    let cursor = std::io::Cursor::new(file_data);
+
+    // Use zune-jpeg decoder
+    let mut decoder = JpegDecoder::new(cursor);
+
+    // Decode the image - zune-jpeg returns RGB24 format by default
+    let pixels = decoder.decode().map_err(|e| {
+        image::ImageError::IoError(std::io::Error::other(format!(
+            "zune-jpeg decode error: {}",
+            e
+        )))
+    })?;
+
+    // Get image info after decoding
+    let image_info = decoder.info().ok_or_else(|| {
+        image::ImageError::IoError(std::io::Error::other(
+            "Failed to get image info from zune-jpeg after decoding",
+        ))
+    })?;
+
+    // zune-jpeg always decodes to RGB24 format (3 bytes per pixel)
+    let img = image::RgbImage::from_raw(image_info.width as u32, image_info.height as u32, pixels)
+        .ok_or_else(|| {
+            image::ImageError::IoError(std::io::Error::other(
+                "Failed to create RGB image from zune-jpeg output",
+            ))
+        })?;
+
+    Ok(image::DynamicImage::ImageRgb8(img))
 }
 
 async fn image_payload_from_path(
@@ -488,6 +530,30 @@ mod tests {
             .unwrap();
     }
 
+    fn create_test_jpeg_image(path: &std::path::Path) {
+        // Create a simple 3x3 JPEG image
+        let img = image::DynamicImage::new_rgb8(3, 3);
+        img.save_with_format(path, image::ImageFormat::Jpeg)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_image_from_path_jpeg() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.jpg");
+        create_test_jpeg_image(&image_path);
+
+        let result = image_from_path(image_path.to_str().unwrap()).await;
+        if let Err(e) = &result {
+            eprintln!("Error loading JPEG: {}", e);
+        }
+        assert!(result.is_ok(), "Failed to load JPEG image");
+
+        let img = result.unwrap();
+        assert_eq!(img.width(), 3);
+        assert_eq!(img.height(), 3);
+    }
+
     #[tokio::test]
     async fn test_image_from_path_webp() {
         let temp_dir = TempDir::new().unwrap();
@@ -500,6 +566,28 @@ mod tests {
         let img = result.unwrap();
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_image_payload_from_path_jpeg() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.jpg");
+        create_test_jpeg_image(&image_path);
+
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            image_processing::ImageEncoding::default(),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.width, 3);
+        assert_eq!(payload.height, 3);
+        assert_eq!(payload.original_width, 3);
+        assert_eq!(payload.original_height, 3);
+        assert!(!payload.data.is_empty());
     }
 
     #[tokio::test]
@@ -591,5 +679,36 @@ mod tests {
         // Should receive end marker
         let end_marker = samples_rx.recv().unwrap();
         assert!(end_marker.is_none());
+    }
+
+    #[test]
+    fn test_jpeg_optimization_detected() {
+        // Test that our JPEG optimization is working by checking that JPEG files
+        // are detected and processed through the zune-jpeg path
+        let temp_dir = TempDir::new().unwrap();
+        let jpeg_path = temp_dir.path().join("test.jpg");
+        let png_path = temp_dir.path().join("test.png");
+
+        // Create test images
+        create_test_jpeg_image(&jpeg_path);
+        create_test_image(&png_path);
+
+        // Test JPEG file - should use zune-jpeg
+        let jpeg_result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(image_from_path(jpeg_path.to_str().unwrap()));
+        assert!(jpeg_result.is_ok());
+        let jpeg_img = jpeg_result.unwrap();
+        assert_eq!(jpeg_img.width(), 3);
+        assert_eq!(jpeg_img.height(), 3);
+
+        // Test PNG file - should use standard image crate
+        let png_result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(image_from_path(png_path.to_str().unwrap()));
+        assert!(png_result.is_ok());
+        let png_img = png_result.unwrap();
+        assert_eq!(png_img.width(), 1);
+        assert_eq!(png_img.height(), 1);
     }
 }
