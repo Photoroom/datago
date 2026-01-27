@@ -1,9 +1,9 @@
-// FIXME: to be removed upon migration to a newer version of pyo3
-// https://github.com/PyO3/pyo3/pull/4838 that was release in 0.24
-#![allow(clippy::useless_conversion)]
+// Updated to pyo3 0.27.2 - the PythonImagePayload wrapper is no longer needed
+// but kept for backward compatibility
 
 use crate::image_processing::ImageTransformConfig;
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use serde::{Deserialize, Serialize};
@@ -102,19 +102,19 @@ impl ImagePayload {
 
     /// Convert this ImagePayload to a PIL Image directly in Rust
     /// This avoids the need for Python-side conversion and reduces data copying
-    pub fn to_pil_image(&self, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn to_pil_image(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if self.is_encoded {
             // For encoded images (JPEG, PNG), create PIL image directly from bytes
-            let pil = py.import_bound("PIL.Image")?;
+            let pil = py.import("PIL.Image")?;
             let bytes_io = py
-                .import_bound("io")?
+                .import("io")?
                 .getattr("BytesIO")?
                 .call1((self.data.as_slice(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
-            Ok(image.into_py(py))
+            Ok(image.into())
         } else {
             // For raw images, create numpy array first then convert to PIL
-            let numpy = py.import_bound("numpy")?;
+            let numpy = py.import("numpy")?;
             let shape: (usize, usize, usize) = if self.channels == 1 {
                 (self.height, self.width, 1)
             } else {
@@ -128,7 +128,7 @@ impl ImagePayload {
                 )?
                 .call_method1("reshape", (shape,))?;
 
-            let pil = py.import_bound("PIL.Image")?;
+            let pil = py.import("PIL.Image")?;
             if self.channels == 1 {
                 // Greyscale image - use 2D shape and create directly
                 let shape_2d = (self.height, self.width);
@@ -139,29 +139,29 @@ impl ImagePayload {
                     )?
                     .call_method1("reshape", (shape_2d,))?;
                 let image = pil.call_method1("fromarray", (np_array_2d,))?;
-                Ok(image.call_method1("convert", ("L",))?.into_py(py))
+                Ok(image.call_method1("convert", ("L",))?.into())
             } else if self.channels == 4 {
                 // RGBA image
                 let image = pil.call_method1("fromarray", (np_array,))?;
-                Ok(image.call_method1("convert", ("RGBA",))?.into_py(py))
+                Ok(image.call_method1("convert", ("RGBA",))?.into())
             } else {
                 // RGB image (assuming 3 channels)
                 let image = pil.call_method1("fromarray", (np_array,))?;
-                Ok(image.into_py(py))
+                Ok(image.into())
             }
         }
     }
 
     /// Get the image as a numpy array (zero-copy when possible)
-    pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let numpy = py.import_bound("numpy")?;
+    pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let numpy = py.import("numpy")?;
 
         if self.is_encoded {
             // For encoded images, we need to decode first
             // This is not zero-copy but necessary for encoded data
-            let pil = py.import_bound("PIL.Image")?;
+            let pil = py.import("PIL.Image")?;
             let bytes_io = py
-                .import_bound("io")?
+                .import("io")?
                 .getattr("BytesIO")?
                 .call1((self.data.as_slice(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
@@ -169,7 +169,7 @@ impl ImagePayload {
                 .call_method0("convert")?
                 .call_method1("RGB", ())?
                 .call_method0("to_numpy")?;
-            Ok(np_array.to_object(py))
+            Ok(np_array.into())
         } else {
             // For raw images, create zero-copy numpy array
             let shape: (usize, usize, usize) = if self.channels == 1 {
@@ -185,7 +185,7 @@ impl ImagePayload {
                 )?
                 .call_method1("reshape", (shape,))?;
 
-            Ok(np_array.to_object(py))
+            Ok(np_array.into())
         }
     }
 }
@@ -198,7 +198,7 @@ impl PythonImagePayload {
     }
 
     /// Convert to PIL image (this is the main method that gets called)
-    pub fn __call__(&self, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn __call__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.inner.to_pil_image(py)
     }
 
@@ -208,7 +208,7 @@ impl PythonImagePayload {
     }
 
     /// Make it behave like a PIL image by delegating all attribute access
-    pub fn __getattr__(&self, attr: &str, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn __getattr__(&self, attr: &str, py: Python<'_>) -> PyResult<Py<PyAny>> {
         // Convert to PIL image and delegate all attribute access
         let pil_image = self.inner.to_pil_image(py)?;
         pil_image.getattr(py, attr)

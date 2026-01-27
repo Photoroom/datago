@@ -23,7 +23,7 @@ kanal = "0.1"
 clap = { version = "4.5.27", features = ["derive"] }
 tokio = { version = "1.43.1", features = ["rt-multi-thread", "macros"] }
 prettytable-rs = "0.10.0"
-pyo3 = { version = "0.24.1", features = ["extension-module"] }
+pyo3 = { version = "0.27.2", features = ["extension-module"] }
 threadpool = "1.8.1"
 openssl = { version = "0.10", features = ["vendored"] }
 walkdir = "2.5.0"
