@@ -28,6 +28,8 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
         .map_err(|e| image::ImageError::IoError(std::io::Error::other(e.to_string())))?;
 
     // Use the buffer with image library - ReadResult derefs to [u8]
+    // This now uses the updated zune-jpeg 0.5.11 backend for JPEG decoding
+    // which provides better SIMD optimizations and performance
     image::load_from_memory(&read_result)
 }
 
