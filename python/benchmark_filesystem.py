@@ -22,12 +22,12 @@ def benchmark(
 ):
     if sweep:
         results_sweep = {}
-        for num_workers in range(2, (os.cpu_count() * 2 or 2), 2):
+        num_workers = 1
+        while num_workers <= os.cpu_count():
             results_sweep[num_workers] = benchmark(
                 root_path, limit, crop_and_resize, compare_torch, num_workers, False
             )
-
-        # Save results to a json file
+            num_workers *= 2
 
         with open("benchmark_results_filesystem.json", "w") as f:
             json.dump(results_sweep, f, indent=2)
