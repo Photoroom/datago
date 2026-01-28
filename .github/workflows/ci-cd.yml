@@ -43,8 +43,6 @@ jobs:
 
       - name: "Run prek"
         uses: j178/prek-action@v1
-        with:
-          extra-args: '--all-files'
 
       - name: Install deps
         run: |
