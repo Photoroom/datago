@@ -12,7 +12,7 @@ repos:
       - id: clippy
         args: ["--", "-D", "warnings"]
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: "v0.14.13"
+    rev: "v0.14.14"
     hooks:
       - id: ruff
         name: ruff
@@ -20,6 +20,6 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/NSPBot911/ty-pre-commit
-    rev: v0.0.12
+    rev: v0.0.14
     hooks:
       - id: ty-check
