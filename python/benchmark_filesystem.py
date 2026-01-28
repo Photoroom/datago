@@ -22,12 +22,12 @@ def benchmark(
 ):
     if sweep:
         results_sweep = {}
-        for num_workers in range(2, (os.cpu_count() or 1) * 2, 2):
+        num_workers = 1
+        while num_workers <= (os.cpu_count() or 16):
             results_sweep[num_workers] = benchmark(
                 root_path, limit, crop_and_resize, compare_torch, num_workers, False
             )
-
-        # Save results to a json file
+            num_workers *= 2
 
         with open("benchmark_results_filesystem.json", "w") as f:
             json.dump(results_sweep, f, indent=2)
@@ -87,7 +87,7 @@ def benchmark(
     # Let's compare against a classic pytorch dataloader
     if compare_torch:
         from torch.utils.data import DataLoader
-        from torchvision import datasets, transforms  # type: ignore
+        from torchvision import datasets, transforms
 
         # Define the transformations to apply to each image
         transform = (

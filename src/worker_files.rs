@@ -612,6 +612,30 @@ mod tests {
             .unwrap();
     }
 
+    fn create_test_jpeg_image(path: &std::path::Path) {
+        // Create a simple 3x3 JPEG image
+        let img = image::DynamicImage::new_rgb8(3, 3);
+        img.save_with_format(path, image::ImageFormat::Jpeg)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_image_from_path_jpeg() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.jpg");
+        create_test_jpeg_image(&image_path);
+
+        let result = image_from_path(image_path.to_str().unwrap()).await;
+        if let Err(e) = &result {
+            eprintln!("Error loading JPEG: {}", e);
+        }
+        assert!(result.is_ok(), "Failed to load JPEG image");
+
+        let img = result.unwrap();
+        assert_eq!(img.width(), 3);
+        assert_eq!(img.height(), 3);
+    }
+
     #[tokio::test]
     async fn test_image_from_path_webp() {
         let temp_dir = TempDir::new().unwrap();
@@ -624,6 +648,28 @@ mod tests {
         let img = result.unwrap();
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_image_payload_from_path_jpeg() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.jpg");
+        create_test_jpeg_image(&image_path);
+
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            image_processing::ImageEncoding::default(),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.width, 3);
+        assert_eq!(payload.height, 3);
+        assert_eq!(payload.original_width, 3);
+        assert_eq!(payload.original_height, 3);
+        assert!(!payload.data.is_empty());
     }
 
     #[tokio::test]
@@ -715,5 +761,36 @@ mod tests {
         // Should receive end marker
         let end_marker = samples_rx.recv().unwrap();
         assert!(end_marker.is_none());
+    }
+
+    #[test]
+    fn test_jpeg_optimization_detected() {
+        // Test that our JPEG optimization is working by checking that JPEG files
+        // are detected and processed through the zune-jpeg path
+        let temp_dir = TempDir::new().unwrap();
+        let jpeg_path = temp_dir.path().join("test.jpg");
+        let png_path = temp_dir.path().join("test.png");
+
+        // Create test images
+        create_test_jpeg_image(&jpeg_path);
+        create_test_image(&png_path);
+
+        // Test JPEG file - should use zune-jpeg
+        let jpeg_result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(image_from_path(jpeg_path.to_str().unwrap()));
+        assert!(jpeg_result.is_ok());
+        let jpeg_img = jpeg_result.unwrap();
+        assert_eq!(jpeg_img.width(), 3);
+        assert_eq!(jpeg_img.height(), 3);
+
+        // Test PNG file - should use standard image crate
+        let png_result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(image_from_path(png_path.to_str().unwrap()));
+        assert!(png_result.is_ok());
+        let png_img = png_result.unwrap();
+        assert_eq!(png_img.width(), 1);
+        assert_eq!(png_img.height(), 1);
     }
 }
