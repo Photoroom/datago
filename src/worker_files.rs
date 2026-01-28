@@ -320,6 +320,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rgba_to_rgb8_compositing() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test_rgba_composite.png");
+
+        // Create a 3x1 RGBA image with three different alpha values
+        let mut img = image::RgbaImage::new(3, 1);
+        img.put_pixel(0, 0, image::Rgba([255u8, 100u8, 50u8, 255u8])); // Fully opaque
+        img.put_pixel(1, 0, image::Rgba([200u8, 100u8, 50u8, 128u8])); // Semi-transparent (50%)
+        img.put_pixel(2, 0, image::Rgba([255u8, 0u8, 0u8, 0u8]));       // Fully transparent
+        let dyn_img = image::DynamicImage::ImageRgba8(img);
+        dyn_img.save(&image_path).unwrap();
+
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            image_processing::ImageEncoding {
+                img_to_rgb8: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.channels, 3);
+        assert_eq!(payload.bit_depth, 8);
+        assert_eq!(payload.width, 3);
+        assert_eq!(payload.height, 1);
+
+        // Pixel 0: Fully opaque - should preserve RGB values
+        assert_eq!(payload.data[0], 255, "Pixel 0 R");
+        assert_eq!(payload.data[1], 100, "Pixel 0 G");
+        assert_eq!(payload.data[2], 50, "Pixel 0 B");
+
+        // Pixel 1: Semi-transparent - should be composited with gray background
+        // With alpha=128/255 ≈ 0.502, we expect roughly:
+        // R: 200 * 0.502 + 128 * 0.498 ≈ 164
+        // G: 100 * 0.502 + 128 * 0.498 ≈ 114
+        // B: 50 * 0.502 + 128 * 0.498 ≈ 89
+        assert!((payload.data[3] as i32 - 164).abs() <= 2, "Pixel 1 R mismatch: {}", payload.data[3]);
+        assert!((payload.data[4] as i32 - 114).abs() <= 2, "Pixel 1 G mismatch: {}", payload.data[4]);
+        assert!((payload.data[5] as i32 - 89).abs() <= 2, "Pixel 1 B mismatch: {}", payload.data[5]);
+
+        // Pixel 2: Fully transparent - should result in gray background (128, 128, 128)
+        assert_eq!(payload.data[6], 128, "Pixel 2 R");
+        assert_eq!(payload.data[7], 128, "Pixel 2 G");
+        assert_eq!(payload.data[8], 128, "Pixel 2 B");
+    }
+
+    #[tokio::test]
+    async fn test_grayscale_to_rgb8_default_conversion() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test_gray.png");
+
+        // Create a grayscale image
+        let mut img = image::GrayImage::new(1, 1);
+        img.put_pixel(0, 0, image::Luma([100u8]));
+        let dyn_img = image::DynamicImage::ImageLuma8(img);
+        dyn_img.save(&image_path).unwrap();
+
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            image_processing::ImageEncoding {
+                img_to_rgb8: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.channels, 3);
+
+        // Grayscale should convert to RGB with same value across channels
+        assert_eq!(payload.data[0], 100);
+        assert_eq!(payload.data[1], 100);
+        assert_eq!(payload.data[2], 100);
+    }
+
+    #[tokio::test]
+    async fn test_rgb_to_rgb8_passthrough() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test_rgb.png");
+
+        // Create an RGB image
+        let mut img = image::RgbImage::new(1, 1);
+        img.put_pixel(0, 0, image::Rgb([255u8, 100u8, 50u8]));
+        let dyn_img = image::DynamicImage::ImageRgb8(img);
+        dyn_img.save(&image_path).unwrap();
+
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            image_processing::ImageEncoding {
+                img_to_rgb8: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.channels, 3);
+
+        // RGB should pass through unchanged
+        assert_eq!(payload.data[0], 255);
+        assert_eq!(payload.data[1], 100);
+        assert_eq!(payload.data[2], 50);
+    }
+
+    #[tokio::test]
     async fn test_pull_sample_success() {
         let temp_dir = TempDir::new().unwrap();
         let image_path = temp_dir.path().join("test.png");
