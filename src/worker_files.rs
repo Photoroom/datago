@@ -328,7 +328,7 @@ mod tests {
         let mut img = image::RgbaImage::new(3, 1);
         img.put_pixel(0, 0, image::Rgba([255u8, 100u8, 50u8, 255u8])); // Fully opaque
         img.put_pixel(1, 0, image::Rgba([200u8, 100u8, 50u8, 128u8])); // Semi-transparent (50%)
-        img.put_pixel(2, 0, image::Rgba([255u8, 0u8, 0u8, 0u8]));       // Fully transparent
+        img.put_pixel(2, 0, image::Rgba([255u8, 0u8, 0u8, 0u8])); // Fully transparent
         let dyn_img = image::DynamicImage::ImageRgba8(img);
         dyn_img.save(&image_path).unwrap();
 
@@ -359,9 +359,21 @@ mod tests {
         // R: 200 * 0.502 + 128 * 0.498 ≈ 164
         // G: 100 * 0.502 + 128 * 0.498 ≈ 114
         // B: 50 * 0.502 + 128 * 0.498 ≈ 89
-        assert!((payload.data[3] as i32 - 164).abs() <= 2, "Pixel 1 R mismatch: {}", payload.data[3]);
-        assert!((payload.data[4] as i32 - 114).abs() <= 2, "Pixel 1 G mismatch: {}", payload.data[4]);
-        assert!((payload.data[5] as i32 - 89).abs() <= 2, "Pixel 1 B mismatch: {}", payload.data[5]);
+        assert!(
+            (payload.data[3] as i32 - 164).abs() <= 2,
+            "Pixel 1 R mismatch: {}",
+            payload.data[3]
+        );
+        assert!(
+            (payload.data[4] as i32 - 114).abs() <= 2,
+            "Pixel 1 G mismatch: {}",
+            payload.data[4]
+        );
+        assert!(
+            (payload.data[5] as i32 - 89).abs() <= 2,
+            "Pixel 1 B mismatch: {}",
+            payload.data[5]
+        );
 
         // Pixel 2: Fully transparent - should result in gray background (128, 128, 128)
         assert_eq!(payload.data[6], 128, "Pixel 2 R");

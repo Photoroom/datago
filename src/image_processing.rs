@@ -174,7 +174,7 @@ fn convert_to_rgb8(image: image::DynamicImage) -> image::RgbImage {
             // Composite each pixel onto the gray background
             image::ImageBuffer::from_fn(width, height, |x, y| {
                 let mut pixel = bg_pixel;
-                pixel.blend(&rgba_img.get_pixel(x, y));
+                pixel.blend(rgba_img.get_pixel(x, y));
                 image::Rgb([pixel[0], pixel[1], pixel[2]])
             })
         }
@@ -849,7 +849,7 @@ mod tests {
         let mut rgba_img = image::RgbaImage::new(3, 1);
         rgba_img.put_pixel(0, 0, image::Rgba([255u8, 100u8, 50u8, 255u8])); // Fully opaque
         rgba_img.put_pixel(1, 0, image::Rgba([200u8, 100u8, 50u8, 128u8])); // Semi-transparent
-        rgba_img.put_pixel(2, 0, image::Rgba([255u8, 0u8, 0u8, 0u8]));       // Fully transparent
+        rgba_img.put_pixel(2, 0, image::Rgba([255u8, 0u8, 0u8, 0u8])); // Fully transparent
 
         let dyn_img = image::DynamicImage::ImageRgba8(rgba_img);
         let rgb_img = convert_to_rgb8(dyn_img);
@@ -864,9 +864,21 @@ mod tests {
 
         // Pixel 1: Semi-transparent - should be composited with gray background
         let pixel1 = rgb_img.get_pixel(1, 0);
-        assert!((pixel1[0] as i32 - 164).abs() <= 2, "Pixel 1 R mismatch: {}", pixel1[0]);
-        assert!((pixel1[1] as i32 - 114).abs() <= 2, "Pixel 1 G mismatch: {}", pixel1[1]);
-        assert!((pixel1[2] as i32 - 89).abs() <= 2, "Pixel 1 B mismatch: {}", pixel1[2]);
+        assert!(
+            (pixel1[0] as i32 - 164).abs() <= 2,
+            "Pixel 1 R mismatch: {}",
+            pixel1[0]
+        );
+        assert!(
+            (pixel1[1] as i32 - 114).abs() <= 2,
+            "Pixel 1 G mismatch: {}",
+            pixel1[1]
+        );
+        assert!(
+            (pixel1[2] as i32 - 89).abs() <= 2,
+            "Pixel 1 B mismatch: {}",
+            pixel1[2]
+        );
 
         // Pixel 2: Fully transparent - should result in gray background
         let pixel2 = rgb_img.get_pixel(2, 0);
