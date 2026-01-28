@@ -1,6 +1,3 @@
-// Updated to pyo3 0.27.2 - the PythonImagePayload wrapper is no longer needed
-// but kept for backward compatibility
-
 use crate::image_processing::ImageTransformConfig;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;

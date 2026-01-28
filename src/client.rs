@@ -9,6 +9,8 @@ use log::{debug, error, info, warn};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 #[pyclass]
 pub struct DatagoClient {
     pub is_started: bool,
@@ -173,7 +175,6 @@ impl DatagoClient {
             self.start();
         }
 
-        // If no more samples and workers are closed, then wrap it up
         if let Some(engine) = &self.engine {
             if engine.samples_rx.is_closed() {
                 info!("No more samples to process, stopping the client");
@@ -182,10 +183,7 @@ impl DatagoClient {
             }
 
             // Try to fetch a new sample from the queue
-            // The client will timeout if zero sample is received in 5 minutes
-            // At this point it will stop and wrap everything up
-            const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-
+            // The client will timeout and wrap up if zero sample is received in time
             return match engine.samples_rx.recv_timeout(TIMEOUT) {
                 Ok(sample) => match sample {
                     Some(sample) => Some(sample),
@@ -223,9 +221,18 @@ impl DatagoClient {
             .set_item("duplicate_state", sample.duplicate_state)
             .unwrap();
 
-        // Convert attributes to JSON string
-        let attributes_json = serde_json::to_string(&sample.attributes).unwrap_or("{}".to_string());
-        sample_dict.set_item("attributes", attributes_json).unwrap();
+        // Convert attributes to python dict
+        let attributes_dict = PyDict::new(py);
+        for (key, value) in sample.attributes {
+            // If value is a string it can be passed as is, else we pass the json-encoded version
+            let value_serialized: String = if value.is_string() {
+                value.to_string()
+            } else {
+                serde_json::to_string(&value).unwrap_or("{}".to_string())
+            };
+            attributes_dict.set_item(key, value_serialized).unwrap();
+        }
+        sample_dict.set_item("attributes", attributes_dict).unwrap();
 
         // Convert tags
         let tags_list = PyList::new(py, &sample.tags).unwrap();

@@ -14,9 +14,9 @@ class DatagoIterDataset:
         print(datago_config)
         self.count = 0
         self.get_sample_proxy = (
-            self.client.get_sample_auto_convert
+            self.client.get_sample_auto_convert  # datago will return native python types, like numpy or PIL
             if return_python_types
-            else self.client.get_sample
+            else self.client.get_sample  # raw data pointers, a bit faster
         )
 
     def __iter__(self):
@@ -27,24 +27,6 @@ class DatagoIterDataset:
 
     def __len__(self):
         return self.len
-
-    @staticmethod
-    def to_python_types(item, key):
-        if key == "attributes":
-            return json.loads(item)
-
-        if isinstance(item, dict):
-            # recursively convert the dictionary
-            return {k: DatagoIterDataset.to_python_types(v, k) for k, v in item.items()}
-
-        elif "image" in key:
-            # The Rust-side returns PythonImagePayload objects that are callable
-            # Call them to get the actual PIL image
-            return item()
-        elif "latent" in key:
-            return raw_array_to_numpy(item)
-
-        return item
 
     def __next__(self):
         try:
