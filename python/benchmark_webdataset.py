@@ -37,14 +37,14 @@ def benchmark(
 
     # URL of the test bucket
     # bucket = "https://storage.googleapis.com/webdataset/fake-imagenet"
-    # dataset = "/imagenet-train-{000000..001281}.tar"
+    # tail = "/imagenet-train-{000000..001281}.tar"
     # source = "FakeIN"
 
     bucket = "https://huggingface.co/datasets/sayakpaul/pd12m-full/resolve/"
-    dataset = "main/{00155..02480}.tar"
+    tail = "main/{00155..02480}.tar"
     source = "PD12M"
 
-    url = bucket + dataset
+    url = bucket + tail
 
     print(
         f"Benchmarking Datago WDS path on {url}.\nRunning benchmark for {limit} samples. Source {source}"
@@ -200,7 +200,7 @@ def benchmark(
             # .to_tuple("png", "cls")  # Map keys to output tuple
         )
 
-        dataloader = DataLoader(  #  type:ignore
+        dataloader: DataLoader = DataLoader(
             dataset,
             batch_size=1,
             num_workers=num_workers,

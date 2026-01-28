@@ -1,7 +1,6 @@
 from datago import DatagoClient, initialize_logging
 import json
 from typing import Dict, Any
-from raw_types import raw_array_to_numpy
 
 
 class DatagoIterDataset:
