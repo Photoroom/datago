@@ -30,7 +30,9 @@ def benchmark(
 ):
     results: dict[Any, Any] = {}
     if plot and not sweep:
-        print("Plot option only makes sense if we sweeped results, will not be used since sweep is False")
+        print(
+            "Plot option only makes sense if we sweeped results, will not be used since sweep is False"
+        )
         plot = False
 
     # URL of the test bucket
@@ -179,14 +181,16 @@ def benchmark(
             if crop_and_resize
             else lambda x: x
         )
+        if transform:
 
-        def custom_transform(sample):
-            if "jpg" in sample:
-                sample["jpg"] = transform(sample["jpg"])
-            if "png" in sample:
-                sample["png"] = transform(sample["png"])
-            return sample
-
+            def custom_transform(sample):
+                if "jpg" in sample:
+                    sample["jpg"] = transform(sample["jpg"])
+                if "png" in sample:
+                    sample["png"] = transform(sample["png"])
+                return sample
+        else:
+            custom_transform = lambda x: x  # noqa: E731
         # Create a WebDataset instance
         dataset = (
             wds.WebDataset(url, shardshuffle=False)

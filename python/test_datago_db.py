@@ -3,9 +3,6 @@ import pytest
 import os
 import json
 
-from raw_types import (
-    decode_image_payload,
-)
 from dataset import DatagoIterDataset
 
 
