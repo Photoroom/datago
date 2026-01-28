@@ -44,7 +44,7 @@ jobs:
       - name: "Run prek"
         uses: j178/prek-action@v1
         with:
-          extra-args: '--all-files --show-diff-on-failure --color always'
+          extra-args: '--all-files --color always'
 
       - name: Install deps
         run: |
