@@ -5,9 +5,11 @@ use crate::image_processing::ARAwareTransform;
 use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
 use crate::structs::DatagoEngine;
+use kanal::bounded;
 use log::{debug, error, info, warn};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
+use std::thread;
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -32,6 +34,10 @@ pub struct DatagoClient {
     // Holds all the variables related to a running engine
     engine: Option<DatagoEngine>,
 
+    // Optionally store the decoded samples in a double ended queue, with a limited size
+    converted_samples_tx: kanal::Sender<Option<Py<PyAny>>>,
+    converted_samples_rx: kanal::Receiver<Option<Py<PyAny>>>,
+    converter: Option<thread::JoinHandle<()>>,
     is_valid: bool,
 }
 
@@ -81,6 +87,8 @@ fn check_config(str_config: &str) -> Option<DatagoClientConfig> {
 impl DatagoClient {
     #[new]
     pub fn new(str_config: String) -> Self {
+        let (converted_samples_tx, converted_samples_rx) = bounded(8);
+
         match check_config(&str_config) {
             Some(config) => {
                 let mut image_transform: Option<ARAwareTransform> = None;
@@ -112,6 +120,9 @@ impl DatagoClient {
                     encode_format,
                     jpeg_quality,
                     engine: None,
+                    converted_samples_tx,
+                    converted_samples_rx,
+                    converter: None,
                     is_valid: true,
                 }
             }
@@ -130,6 +141,9 @@ impl DatagoClient {
                     encode_format: crate::image_processing::EncodeFormat::default(),
                     jpeg_quality: 92,
                     engine: None,
+                    converted_samples_tx,
+                    converted_samples_rx,
+                    converter: None,
                     is_valid: false,
                 }
             }
@@ -166,6 +180,7 @@ impl DatagoClient {
         self.is_started = true;
     }
 
+    /// Get a sample with raw data types
     pub fn get_sample(&mut self) -> Option<Sample> {
         if !self.is_valid {
             return None;
@@ -204,13 +219,57 @@ impl DatagoClient {
         None
     }
 
-    /// Get a sample with pythonic types
+    /// Get a sample with pythonic types (PIL, numpy, dict()..)
     pub fn get_sample_auto_convert(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        if self.converter.is_none() {
+            // On the first query, start a front-running decoding thread
+            let py_ref = py.clone();
+            self.converter = Some(thread::spawn(move || {
+                self.sample_conversion_thread(self.converted_samples_tx, py_ref);
+                debug!("Converter thread completed");
+            }))
+        }
         let sample = match self.get_sample() {
             Some(sample) => sample,
             None => return Ok(None),
         };
 
+        match self.convert_sample_to_python_types(sample, py) {
+            Some(sample_dict) => Ok(Some(sample_dict)),
+            None => Ok(None),
+        }
+    }
+
+    // Stop the engine, but don't destroy it
+    pub fn stop(&mut self) {
+        if !self.is_started {
+            return;
+        }
+
+        if let Some(engine) = &mut self.engine {
+            debug!("Stopping the client...");
+
+            let _ = engine.samples_rx.close();
+            debug!("Sample pipe closed...");
+
+            if let Some(feeder) = engine.feeder.take() {
+                match feeder.join() {
+                    Ok(_) => debug!("Feeder thread joined successfully"),
+                    Err(e) => error!("Failed to join feeder thread: {:?}", e),
+                }
+            }
+
+            if let Some(worker) = engine.worker.take() {
+                match worker.join() {
+                    Ok(_) => debug!("Worker thread joined successfully"),
+                    Err(e) => error!("Failed to join worker thread: {:?}", e),
+                }
+            }
+            self.is_started = false;
+        }
+    }
+
+    fn convert_sample_to_python_types(&self, sample: Sample, py: Python<'_>) -> Option<Py<PyAny>> {
         // Convert the sample to a Python dict with PIL images
         let sample_dict = PyDict::new(py);
 
@@ -278,34 +337,26 @@ impl DatagoClient {
             .set_item("additional_images", additional_images_dict)
             .unwrap();
 
-        Ok(Some(sample_dict.into()))
+        Some(sample_dict.into())
     }
 
-    pub fn stop(&mut self) {
-        if !self.is_started {
-            return;
-        }
+    fn sample_conversion_thread(&mut self, channel: Sender<Option<Py<PyAny>>, py: Python<'_>) {
+        while true {
+            let sample = match self.get_sample() {
+                Some(sample) => sample,
+                None => break,
+            };
 
-        if let Some(engine) = &mut self.engine {
-            debug!("Stopping the client...");
+            let converted_sample = match self.convert_sample_to_python_types(sample, py) {
+                Some(converted_sample) => converted_sample,
+                None => break, // Report an issue here, shouldn't happen really
+            };
 
-            let _ = engine.samples_rx.close();
-            debug!("Sample pipe closed...");
-
-            if let Some(feeder) = engine.feeder.take() {
-                match feeder.join() {
-                    Ok(_) => debug!("Feeder thread joined successfully"),
-                    Err(e) => error!("Failed to join feeder thread: {:?}", e),
-                }
+            if channel.send(converted_sample).is_err()
+            {
+                // Channel is closed, we can't send any more samples
+                break;
             }
-
-            if let Some(worker) = engine.worker.take() {
-                match worker.join() {
-                    Ok(_) => debug!("Worker thread joined successfully"),
-                    Err(e) => error!("Failed to join worker thread: {:?}", e),
-                }
-            }
-            self.is_started = false;
         }
     }
 }
