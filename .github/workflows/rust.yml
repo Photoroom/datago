@@ -20,22 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install mold linker
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mold
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Configure mold linker
-        run: |
-          mkdir -p .cargo
-          echo '[target.x86_64-unknown-linux-gnu]' >> .cargo/config.toml
-          echo 'linker = "clang"' >> .cargo/config.toml
-          echo 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> .cargo/config.toml
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -56,4 +44,4 @@ jobs:
           DATAROOM_API_KEY: ${{ secrets.DATAROOM_API_KEY }}
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
-        run: cargo nextest run --no-fail-fast
+        run: cargo nextest run --lib --no-fail-fast
