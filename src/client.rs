@@ -220,23 +220,42 @@ impl DatagoClient {
     }
 
     /// Get a sample with pythonic types (PIL, numpy, dict()..)
-    pub fn get_sample_auto_convert(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+    pub fn get_sample_auto_convert(&mut self, _py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        // Start converter thread on first call if not already started
         if self.converter.is_none() {
-            // On the first query, start a front-running decoding thread
-            let py_ref = py.clone();
-            self.converter = Some(thread::spawn(move || {
-                self.sample_conversion_thread(self.converted_samples_tx, py_ref);
-                debug!("Converter thread completed");
-            }))
-        }
-        let sample = match self.get_sample() {
-            Some(sample) => sample,
-            None => return Ok(None),
-        };
+            let converted_samples_tx = self.converted_samples_tx.clone();
 
-        match self.convert_sample_to_python_types(sample, py) {
-            Some(sample_dict) => Ok(Some(sample_dict)),
-            None => Ok(None),
+            // Get the samples receiver from the engine
+            let samples_rx = match &self.engine {
+                Some(engine) => engine.samples_rx.clone(),
+                None => {
+                    // If no engine, start it first
+                    self.start();
+                    match &self.engine {
+                        Some(engine) => engine.samples_rx.clone(),
+                        None => {
+                            error!("Failed to start engine for conversion thread");
+                            return Ok(None);
+                        }
+                    }
+                }
+            };
+
+            // Start the conversion thread
+            self.converter = Some(thread::spawn(move || {
+                Python::attach(|py| {
+                    sample_conversion_thread(samples_rx, converted_samples_tx, py);
+                });
+            }));
+        }
+
+        // Always wait for buffered samples (already converted to Python types)
+        match self.converted_samples_rx.recv() {
+            Ok(sample) => Ok(sample),
+            Err(e) => {
+                error!("Error receiving buffered sample: {}", e);
+                Ok(None)
+            }
         }
     }
 
@@ -244,6 +263,17 @@ impl DatagoClient {
     pub fn stop(&mut self) {
         if !self.is_started {
             return;
+        }
+
+        // Close the buffer channel first to signal converter to stop
+        let _ = self.converted_samples_tx.close();
+
+        // Join converter thread
+        if let Some(converter) = self.converter.take() {
+            match converter.join() {
+                Ok(_) => debug!("Converter thread joined successfully"),
+                Err(e) => error!("Failed to join converter thread: {:?}", e),
+            }
         }
 
         if let Some(engine) = &mut self.engine {
@@ -268,97 +298,113 @@ impl DatagoClient {
             self.is_started = false;
         }
     }
+}
 
-    fn convert_sample_to_python_types(&self, sample: Sample, py: Python<'_>) -> Option<Py<PyAny>> {
-        // Convert the sample to a Python dict with PIL images
-        let sample_dict = PyDict::new(py);
+fn convert_sample_to_python_types(sample: Sample, py: Python<'_>) -> Option<Py<PyAny>> {
+    // Convert the sample to a Python dict with PIL images
+    let sample_dict = PyDict::new(py);
 
-        // Add basic fields
-        sample_dict.set_item("id", sample.id).unwrap();
-        sample_dict.set_item("source", sample.source).unwrap();
-        sample_dict
-            .set_item("duplicate_state", sample.duplicate_state)
-            .unwrap();
+    // Add basic fields
+    sample_dict.set_item("id", sample.id).unwrap();
+    sample_dict.set_item("source", sample.source).unwrap();
+    sample_dict
+        .set_item("duplicate_state", sample.duplicate_state)
+        .unwrap();
 
-        // Convert attributes to python dict
-        let attributes_dict = PyDict::new(py);
-        for (key, value) in sample.attributes {
-            // If value is a string it can be passed as is, else we pass the json-encoded version
-            let value_serialized: String = if value.is_string() {
-                value.to_string()
-            } else {
-                serde_json::to_string(&value).unwrap_or("{}".to_string())
-            };
-            attributes_dict.set_item(key, value_serialized).unwrap();
-        }
-        sample_dict.set_item("attributes", attributes_dict).unwrap();
-
-        // Convert tags
-        let tags_list = PyList::new(py, &sample.tags).unwrap();
-        sample_dict.set_item("tags", tags_list).unwrap();
-
-        // Convert coca_embedding
-        let coca_array = PyList::new(py, &sample.coca_embedding).unwrap();
-        sample_dict.set_item("coca_embedding", coca_array).unwrap();
-
-        // Convert latents
-        let latents_dict = PyDict::new(py);
-        for (key, latent) in sample.latents {
-            let latent_dict = PyDict::new(py);
-            latent_dict
-                .set_item("data", PyBytes::new(py, &latent.data))
-                .unwrap();
-            latent_dict.set_item("len", latent.len).unwrap();
-            latents_dict.set_item(key, latent_dict).unwrap();
-        }
-        sample_dict.set_item("latents", latents_dict).unwrap();
-
-        // Convert images to PIL images
-        let image_pil = sample.image.to_pil_image(py).unwrap();
-        sample_dict.set_item("image", image_pil).unwrap();
-
-        // Convert masks to PIL images
-        let masks_dict = PyDict::new(py);
-        for (key, mask) in sample.masks {
-            let mask_pil = mask.to_pil_image(py).unwrap();
-            masks_dict.set_item(key, mask_pil).unwrap();
-        }
-        sample_dict.set_item("masks", masks_dict).unwrap();
-
-        // Convert additional images to PIL images
-        let additional_images_dict = PyDict::new(py);
-        for (key, additional_image) in sample.additional_images {
-            let additional_image_pil = additional_image.to_pil_image(py).unwrap();
-            additional_images_dict
-                .set_item(key, additional_image_pil)
-                .unwrap();
-        }
-        sample_dict
-            .set_item("additional_images", additional_images_dict)
-            .unwrap();
-
-        Some(sample_dict.into())
+    // Convert attributes to python dict
+    let attributes_dict = PyDict::new(py);
+    for (key, value) in sample.attributes {
+        // If value is a string it can be passed as is, else we pass the json-encoded version
+        let value_serialized: String = if value.is_string() {
+            value.to_string()
+        } else {
+            serde_json::to_string(&value).unwrap_or("{}".to_string())
+        };
+        attributes_dict.set_item(key, value_serialized).unwrap();
     }
+    sample_dict.set_item("attributes", attributes_dict).unwrap();
 
-    fn sample_conversion_thread(&mut self, channel: Sender<Option<Py<PyAny>>, py: Python<'_>) {
-        while true {
-            let sample = match self.get_sample() {
-                Some(sample) => sample,
-                None => break,
-            };
+    // Convert tags
+    let tags_list = PyList::new(py, &sample.tags).unwrap();
+    sample_dict.set_item("tags", tags_list).unwrap();
 
-            let converted_sample = match self.convert_sample_to_python_types(sample, py) {
-                Some(converted_sample) => converted_sample,
-                None => break, // Report an issue here, shouldn't happen really
-            };
+    // Convert coca_embedding
+    let coca_array = PyList::new(py, &sample.coca_embedding).unwrap();
+    sample_dict.set_item("coca_embedding", coca_array).unwrap();
 
-            if channel.send(converted_sample).is_err()
-            {
-                // Channel is closed, we can't send any more samples
+    // Convert latents
+    let latents_dict = PyDict::new(py);
+    for (key, latent) in sample.latents {
+        let latent_dict = PyDict::new(py);
+        latent_dict
+            .set_item("data", PyBytes::new(py, &latent.data))
+            .unwrap();
+        latent_dict.set_item("len", latent.len).unwrap();
+        latents_dict.set_item(key, latent_dict).unwrap();
+    }
+    sample_dict.set_item("latents", latents_dict).unwrap();
+
+    // Convert images to PIL images
+    let image_pil = sample.image.to_pil_image(py).unwrap();
+    sample_dict.set_item("image", image_pil).unwrap();
+
+    // Convert masks to PIL images
+    let masks_dict = PyDict::new(py);
+    for (key, mask) in sample.masks {
+        let mask_pil = mask.to_pil_image(py).unwrap();
+        masks_dict.set_item(key, mask_pil).unwrap();
+    }
+    sample_dict.set_item("masks", masks_dict).unwrap();
+
+    // Convert additional images to PIL images
+    let additional_images_dict = PyDict::new(py);
+    for (key, additional_image) in sample.additional_images {
+        let additional_image_pil = additional_image.to_pil_image(py).unwrap();
+        additional_images_dict
+            .set_item(key, additional_image_pil)
+            .unwrap();
+    }
+    sample_dict
+        .set_item("additional_images", additional_images_dict)
+        .unwrap();
+
+    Some(sample_dict.into())
+}
+
+/// Conversion thread that processes samples in the background
+fn sample_conversion_thread(
+    samples_rx: kanal::Receiver<Option<Sample>>,
+    converted_samples_tx: kanal::Sender<Option<Py<PyAny>>>,
+    py: Python<'_>,
+) {
+    while let Ok(sample_opt) = samples_rx.recv() {
+        match sample_opt {
+            Some(sample) => {
+                // Convert sample to Python types in the background thread
+                let converted_sample = convert_sample_to_python_types(sample, py);
+
+                // Send converted sample to buffer
+                match converted_sample {
+                    Some(sample) => {
+                        if converted_samples_tx.send(Some(sample)).is_err() {
+                            debug!("Buffer channel closed, stopping conversion thread");
+                            break;
+                        }
+                    }
+                    None => {
+                        // Conversion failed, but continue with next sample
+                        continue;
+                    }
+                }
+            }
+            None => {
+                // End of stream signal - forward it
+                let _ = converted_samples_tx.send(None);
                 break;
             }
         }
     }
+    debug!("Conversion thread completed");
 }
 
 // Ensure cleanup happens even if stop() wasn't called
