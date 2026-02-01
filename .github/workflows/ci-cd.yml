@@ -17,51 +17,44 @@ env:
   UV_SYSTEM_PYTHON: 1
 
 jobs:
-  # Run linting once, not for each Python version
-  lint:
+  prek:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: "3.13"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: "Cache prek"
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/prek
-          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Install ty
+        run: uv tool install ty@latest
 
-      - name: Install ruff and ty
-        run: |
-          uv tool install ruff@latest
-          uv tool install ty@latest
+      - name: Install ruff
+        run: uv tool install ruff@latest
 
-      - name: "Run prek"
-        uses: j178/prek-action@v1
+      - uses: j178/prek-action@v1
         env:
           SKIP: cargo-check,clippy  # Already done in rust.yml
 
   linux:
     runs-on: ${{ matrix.platform.runner }}
-    needs: lint
+    needs: prek
     strategy:
       matrix:
         platform:
           - runner: ubuntu-latest
             target: x86_64
-        python-version: ['3.10', '3.11', '3.12', '3.13']
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     environment:
       name: release
       url: https://pypi.org/p/datago
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -107,13 +100,13 @@ jobs:
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
         run: |
-            if [ "${{ matrix.python-version }}" == "3.11" ]; then
-            uv pip install dist/*.whl
-            cd python
-            uv run --group test pytest -v .
-            else
-            echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
-            fi
+          if [ "${{ matrix.python-version }}" == "3.11" ]; then
+          uv pip install dist/*.whl
+          cd python
+          uv run --group test pytest -v .
+          else
+          echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
+          fi
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
