@@ -26,14 +26,11 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install uv
+      - name: Install uv and tools
         uses: astral-sh/setup-uv@v7
 
-      - name: Install ty
-        run: uv tool install ty@latest
-
-      - name: Install ruff
-        run: uv tool install ruff@latest
+      - name: Install linters
+        run: uv tool install ty@latest ruff@latest
 
       - uses: j178/prek-action@v1
         env:
@@ -50,16 +47,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -69,31 +56,14 @@ jobs:
           shared-key: datago-linux-build
           cache-all-crates: true
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Configure sccache
-        run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-
-      - name: Install zig
-        uses: mlugg/setup-zig@v2
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
         with:
-          version: 0.13.0
-
-      - name: Install maturin
-        run: uv tool install maturin
-
-      - name: Build the package
-        run: |
-          # Use CI profile for faster builds on PRs/main, full release profile for tags
-          # ABI3 builds one wheel for all Python 3.10+
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            maturin build --release --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
-          else
-            maturin build --profile ci --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
-          fi
+          target: x86_64
+          # Use container only for releases (manylinux compat), native build for PRs (faster)
+          manylinux: ${{ startsWith(github.ref, 'refs/tags/') && '2_31' || 'auto' }}
+          container: ${{ startsWith(github.ref, 'refs/tags/') && 'auto' || 'off' }}
+          args: --profile ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'ci' }} --out dist
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4

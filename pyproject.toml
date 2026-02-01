@@ -61,5 +61,11 @@ strip = true
 # supports cargo (default) and git.
 sdist-generator = "cargo"
 
+[tool.pytest.ini_options]
+# Speed up test discovery - only look in python/ directory
+testpaths = ["python"]
+# Minimal output during collection
+addopts = "-q"
+
 [tool.ty.rules]
 unresolved-import = "ignore"
