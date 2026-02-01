@@ -17,8 +17,38 @@ env:
   UV_SYSTEM_PYTHON: 1
 
 jobs:
+  # Run linting once, not for each Python version
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: "Cache prek"
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prek
+          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install ruff and ty
+        run: |
+          uv tool install ruff@latest
+          uv tool install ty@latest
+
+      - name: "Run prek"
+        uses: j178/prek-action@v1
+        env:
+          SKIP: cargo-check,clippy  # Already done in rust.yml
+
   linux:
     runs-on: ${{ matrix.platform.runner }}
+    needs: lint
     strategy:
       matrix:
         platform:
@@ -48,20 +78,6 @@ jobs:
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: "Cache prek"
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/prek
-          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
-
-      - name: Install ruff and ty
-        run: |
-          uv tool install ruff@latest
-          uv tool install ty@latest
-
-      - name: "Run prek"
-        uses: j178/prek-action@v1
 
       - name: Install zig
         uses: mlugg/setup-zig@v2
