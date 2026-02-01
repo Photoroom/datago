@@ -30,7 +30,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install linters
-        run: uv tool install ty@latest ruff@latest
+        run: |
+          uv tool install ty@latest
+          uv tool install ruff@latest
 
       - uses: j178/prek-action@v1
         env:
