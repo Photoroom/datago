@@ -32,7 +32,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - run: git fetch --prune --unshallow
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-python@v5
         with:
@@ -41,26 +43,35 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: "Cache prek"
-        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache@v4
         with:
           path: ~/.cache/prek
           key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
+
       - name: "Run prek"
         run: |
           echo '```console' > "$GITHUB_STEP_SUMMARY"
-          # Enable color output for prek and remove it for the summary
-          # Use --hook-stage=manual to enable slower hooks that are skipped by default
-          uvx prek run --all-files --show-diff-on-failure --color always --hook-stage manual | \
+          # Skip Rust checks (already run in rust.yml) for faster CI
+          SKIP=cargo-check,clippy,fmt uvx prek run --all-files --show-diff-on-failure --color always --hook-stage manual | \
             tee >(sed -E 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})*)?[mGK]//g' >> "$GITHUB_STEP_SUMMARY") >&1
           exit_code="${PIPESTATUS[0]}"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           exit "$exit_code"
 
-      - name: Install deps
-        run: |
-          uv tool install maturin
-          sudo snap install zig --classic --beta
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install maturin
+        run: uv tool install maturin
 
       # Gather the name of the latest tag on the current main branch
       - name: Get the latest tag
@@ -69,7 +80,12 @@ jobs:
 
       - name: Build the package
         run: |
-          maturin build -i python${{ matrix.python-version }} --release --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
+          # Use CI profile for faster builds on PRs/main, full release profile for tags
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            maturin build -i python${{ matrix.python-version }} --release --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
+          else
+            maturin build -i python${{ matrix.python-version }} --profile ci --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
+          fi
 
       - name: Test package
         env:

@@ -18,37 +18,27 @@ jobs:
         rust: [stable]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: ${{ matrix.rust }}
-          override: true
-          components: rustfmt, clippy # , cargo-llvm-cov
+          components: rustfmt, clippy
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          cache-on-failure: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --profile ci
 
       - name: Run tests
         env:
           DATAROOM_API_KEY: ${{ secrets.DATAROOM_API_KEY }}
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
-
-        run: RUST_BACKTRACE=1 cargo test --verbose
+        run: RUST_BACKTRACE=1 cargo test
