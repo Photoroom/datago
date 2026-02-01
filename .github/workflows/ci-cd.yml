@@ -69,6 +69,14 @@ jobs:
           add-job-id-key: false
           cache-all-crates: true
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Configure sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+
       - name: Install zig
         uses: mlugg/setup-zig@v2
         with:
