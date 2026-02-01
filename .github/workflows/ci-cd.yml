@@ -42,7 +42,7 @@ jobs:
   # Build ONE wheel for all Python 3.10+ using ABI3 (stable ABI)
   linux:
     runs-on: ubuntu-latest
-    needs: prek
+    # Run in parallel with prek - no dependency needed
 
     environment:
       name: release
@@ -66,6 +66,8 @@ jobs:
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          add-job-id-key: false
+          cache-all-crates: true
 
       - name: Install zig
         uses: mlugg/setup-zig@v2
@@ -120,9 +122,11 @@ jobs:
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
         run: |
+          # Install wheel and test dependencies directly (no venv/rebuild)
           uv pip install dist/*.whl
+          uv pip install pytest typer tqdm numpy webdataset "prek>=0.2.29"
           cd python
-          uv run --group test pytest -v .
+          pytest -v .
 
   sdist:
     runs-on: ubuntu-latest
