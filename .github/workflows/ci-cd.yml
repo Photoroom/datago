@@ -65,8 +65,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          add-job-id-key: false
+          save-if: true
+          shared-key: datago-linux-build
           cache-all-crates: true
 
       - name: Setup sccache
