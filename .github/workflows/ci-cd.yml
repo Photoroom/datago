@@ -55,6 +55,10 @@ jobs:
           path: ~/.cache/prek
           key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
 
+      - name: Install ruff and ty
+        run: |
+          uv tool install ruff@latest
+          uv tool install ty@latest
 
       - name: "Run prek"
         uses: j178/prek-action@v1
