@@ -53,15 +53,15 @@ jobs:
         with:
           cache-on-failure: true
           save-if: true
-          shared-key: datago-linux-build
+          shared-key: datago-native
           cache-all-crates: true
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          # Use container only for releases (manylinux compat), native build for PRs (faster)
-          manylinux: ${{ startsWith(github.ref, 'refs/tags/') && '2_31' || 'auto' }}
+          # Native build for PRs (faster), manylinux container for releases
+          manylinux: ${{ startsWith(github.ref, 'refs/tags/') && '2_31' || 'off' }}
           container: ${{ startsWith(github.ref, 'refs/tags/') && 'auto' || 'off' }}
           args: --profile ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'ci' }} --out dist
 
@@ -77,7 +77,8 @@ jobs:
     needs: linux
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # Test min and max supported versions (ABI3 covers all between)
+        python-version: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v6
 
@@ -100,11 +101,8 @@ jobs:
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
         run: |
-          # Install wheel and test dependencies directly (no venv/rebuild)
-          uv pip install dist/*.whl
-          uv pip install pytest pytest-xdist typer tqdm numpy webdataset "prek>=0.2.29"
-          cd python
-          pytest -v -n auto .
+          uv pip install dist/*.whl pytest pytest-xdist typer tqdm numpy webdataset "prek>=0.2.29"
+          cd python && pytest -q -n auto .
 
   sdist:
     runs-on: ubuntu-latest
