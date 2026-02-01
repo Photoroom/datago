@@ -132,9 +132,9 @@ jobs:
         run: |
           # Install wheel and test dependencies directly (no venv/rebuild)
           uv pip install dist/*.whl
-          uv pip install pytest typer tqdm numpy webdataset "prek>=0.2.29"
+          uv pip install pytest pytest-xdist typer tqdm numpy webdataset "prek>=0.2.29"
           cd python
-          pytest -v .
+          pytest -v -n auto .
 
   sdist:
     runs-on: ubuntu-latest
