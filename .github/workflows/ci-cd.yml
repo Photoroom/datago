@@ -17,6 +17,26 @@ env:
   UV_SYSTEM_PYTHON: 1
 
 jobs:
+  prek:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install ty
+        run: uv tool install ty@latest
+
+      - name: Install ruff
+        run: uv tool install ruff@latest
+
+      - uses: j178/prek-action@v1
+
   linux:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
@@ -24,26 +44,26 @@ jobs:
         platform:
           - runner: ubuntu-latest
             target: x86_64
-        python-version: ['3.10', '3.11', '3.12', '3.13']
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     environment:
       name: release
       url: https://pypi.org/p/datago
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: git fetch --prune --unshallow
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
       - name: Install deps
         run: |
-          uv pip install maturin twine
+          uv tool install maturin
           sudo snap install zig --classic --beta
 
       # Gather the name of the latest tag on the current main branch
@@ -61,13 +81,13 @@ jobs:
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
         run: |
-            if [ "${{ matrix.python-version }}" == "3.11" ]; then
-            uv pip install dist/*.whl
-            cd python
-            uv run --group test pytest -v .
-            else
-            echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
-            fi
+          if [ "${{ matrix.python-version }}" == "3.11" ]; then
+          uv pip install dist/*.whl
+          cd python
+          uv run --group test pytest -v .
+          else
+          echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
+          fi
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
