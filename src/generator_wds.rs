@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::thread;
 
 use bracoxide::explode;
-use futures::AsyncReadExt;
-use futures::StreamExt;
+use futures_util::AsyncReadExt;
+use futures_util::StreamExt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use tokio::io::BufReader;
