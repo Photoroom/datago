@@ -3,6 +3,7 @@ use fast_image_resize as fr;
 use fast_image_resize::images::Image;
 use fast_image_resize::{IntoImageView, ResizeOptions, Resizer};
 use image::ImageEncoder;
+use image::Pixel;
 use log::debug;
 use serde::Deserialize;
 use serde::Serialize;
@@ -153,6 +154,34 @@ fn image_to_dyn_image(dst_image: &Image) -> image::DynamicImage {
         }
 
         _ => panic!("Unsupported pixel type: {:?}", dst_image.pixel_type()),
+    }
+}
+
+/// Converts a DynamicImage to RGB8 format.
+/// For RGBA images, composites onto a gray (128, 128, 128) background.
+/// For other formats (grayscale, etc.), uses default conversion.
+fn convert_to_rgb8(image: image::DynamicImage) -> image::RgbImage {
+    match image.color() {
+        image::ColorType::Rgb8 => image.to_rgb8(),
+        image::ColorType::Rgba8 => {
+            // Composite RGBA onto gray background
+            let rgba_img = image.to_rgba8();
+            let (width, height) = rgba_img.dimensions();
+
+            // Create gray background pixel (fully opaque)
+            let bg_pixel = image::Rgba([128u8, 128u8, 128u8, 255u8]);
+
+            // Composite each pixel onto the gray background
+            image::ImageBuffer::from_fn(width, height, |x, y| {
+                let mut pixel = bg_pixel;
+                pixel.blend(rgba_img.get_pixel(x, y));
+                image::Rgb([pixel[0], pixel[1], pixel[2]])
+            })
+        }
+        _ => {
+            // For grayscale and other formats, use default conversion
+            image.to_rgb8()
+        }
     }
 }
 
@@ -336,7 +365,7 @@ pub async fn image_to_payload(
 
     // Image to RGB8 if requested
     if encoding.img_to_rgb8 && image.color() != image::ColorType::Rgb8 {
-        image = image::DynamicImage::ImageRgb8(image.to_rgb8());
+        image = image::DynamicImage::ImageRgb8(convert_to_rgb8(image));
         bit_depth = 8;
         channels = 3;
         assert!((image.color().bits_per_pixel() / image.color().channel_count() as u16) == 8);
@@ -812,5 +841,81 @@ mod tests {
     fn test_image_to_dyn_image_unsupported() {
         let img = Image::new(1, 1, fr::PixelType::U16);
         image_to_dyn_image(&img);
+    }
+
+    #[test]
+    fn test_convert_to_rgb8_rgba_compositing() {
+        // Create a 3x1 RGBA image with different alpha values
+        let mut rgba_img = image::RgbaImage::new(3, 1);
+        rgba_img.put_pixel(0, 0, image::Rgba([255u8, 100u8, 50u8, 255u8])); // Fully opaque
+        rgba_img.put_pixel(1, 0, image::Rgba([200u8, 100u8, 50u8, 128u8])); // Semi-transparent
+        rgba_img.put_pixel(2, 0, image::Rgba([255u8, 0u8, 0u8, 0u8])); // Fully transparent
+
+        let dyn_img = image::DynamicImage::ImageRgba8(rgba_img);
+        let rgb_img = convert_to_rgb8(dyn_img);
+
+        assert_eq!(rgb_img.dimensions(), (3, 1));
+
+        // Pixel 0: Fully opaque - should preserve RGB values
+        let pixel0 = rgb_img.get_pixel(0, 0);
+        assert_eq!(pixel0[0], 255, "Pixel 0 R");
+        assert_eq!(pixel0[1], 100, "Pixel 0 G");
+        assert_eq!(pixel0[2], 50, "Pixel 0 B");
+
+        // Pixel 1: Semi-transparent - should be composited with gray background
+        let pixel1 = rgb_img.get_pixel(1, 0);
+        assert!(
+            (pixel1[0] as i32 - 164).abs() <= 2,
+            "Pixel 1 R mismatch: {}",
+            pixel1[0]
+        );
+        assert!(
+            (pixel1[1] as i32 - 114).abs() <= 2,
+            "Pixel 1 G mismatch: {}",
+            pixel1[1]
+        );
+        assert!(
+            (pixel1[2] as i32 - 89).abs() <= 2,
+            "Pixel 1 B mismatch: {}",
+            pixel1[2]
+        );
+
+        // Pixel 2: Fully transparent - should result in gray background
+        let pixel2 = rgb_img.get_pixel(2, 0);
+        assert_eq!(pixel2[0], 128, "Pixel 2 R");
+        assert_eq!(pixel2[1], 128, "Pixel 2 G");
+        assert_eq!(pixel2[2], 128, "Pixel 2 B");
+    }
+
+    #[test]
+    fn test_convert_to_rgb8_grayscale() {
+        // Create a grayscale image
+        let mut gray_img = image::GrayImage::new(1, 1);
+        gray_img.put_pixel(0, 0, image::Luma([100u8]));
+
+        let dyn_img = image::DynamicImage::ImageLuma8(gray_img);
+        let rgb_img = convert_to_rgb8(dyn_img);
+
+        // Grayscale should convert to RGB with same value across channels
+        let pixel = rgb_img.get_pixel(0, 0);
+        assert_eq!(pixel[0], 100);
+        assert_eq!(pixel[1], 100);
+        assert_eq!(pixel[2], 100);
+    }
+
+    #[test]
+    fn test_convert_to_rgb8_rgb_passthrough() {
+        // Create an RGB image
+        let mut rgb_img = image::RgbImage::new(1, 1);
+        rgb_img.put_pixel(0, 0, image::Rgb([255u8, 100u8, 50u8]));
+
+        let dyn_img = image::DynamicImage::ImageRgb8(rgb_img);
+        let result = convert_to_rgb8(dyn_img);
+
+        // RGB should pass through unchanged
+        let pixel = result.get_pixel(0, 0);
+        assert_eq!(pixel[0], 255);
+        assert_eq!(pixel[1], 100);
+        assert_eq!(pixel[2], 50);
     }
 }

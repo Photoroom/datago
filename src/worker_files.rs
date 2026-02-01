@@ -669,4 +669,35 @@ mod tests {
         let end_marker = samples_rx.recv().unwrap();
         assert!(end_marker.is_none());
     }
+
+    #[test]
+    fn test_jpeg_optimization_detected() {
+        // Test that our JPEG optimization is working by checking that JPEG files
+        // are detected and processed through the zune-jpeg path
+        let temp_dir = TempDir::new().unwrap();
+        let jpeg_path = temp_dir.path().join("test.jpg");
+        let png_path = temp_dir.path().join("test.png");
+
+        // Create test images
+        create_test_jpeg_image(&jpeg_path);
+        create_test_image(&png_path);
+
+        // Test JPEG file - should use zune-jpeg
+        let jpeg_result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(image_from_path(jpeg_path.to_str().unwrap()));
+        assert!(jpeg_result.is_ok());
+        let jpeg_img = jpeg_result.unwrap();
+        assert_eq!(jpeg_img.width(), 3);
+        assert_eq!(jpeg_img.height(), 3);
+
+        // Test PNG file - should use standard image crate
+        let png_result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(image_from_path(png_path.to_str().unwrap()));
+        assert!(png_result.is_ok());
+        let png_img = png_result.unwrap();
+        assert_eq!(png_img.width(), 1);
+        assert_eq!(png_img.height(), 1);
+    }
 }

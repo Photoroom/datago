@@ -2,7 +2,7 @@
 name = "datago"
 dynamic = ["version"]
 authors = [
-  { name = "Benjamin Lefaudeux, Roman Frigg" },
+  { name = "Benjamin Lefaudeux, Roman Frigg, Tarek Ayed, Marco Forte, Photoroom ML team" },
   { name = "Photoroom", email = "team@photoroom.com" }
 ]
 description = "A high performance dataloader for Python, written in Rust"
@@ -17,8 +17,20 @@ classifiers = [
 ]
 dependencies = ["pillow"]
 [dependency-groups]
-test = ["pytest", "typer", "tqdm", "numpy", "webdataset"]
+test = [
+    "pytest",
+    "typer",
+    "tqdm",
+    "numpy",
+    "webdataset",
+    "prek>=0.2.29",
+]
 
+dev = [
+  "matplotlib",
+"pandas",
+"prek>=0.2.29",
+]
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"
 Issues = "https://github.com/photoroom/datago/issues"
@@ -48,3 +60,6 @@ strip = true
 # Source distribution generator,
 # supports cargo (default) and git.
 sdist-generator = "cargo"
+
+[tool.ty.rules]
+unresolved-import = "ignore"

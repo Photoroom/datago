@@ -67,10 +67,14 @@ def test_wds_basic_functionality():
 
         # Check for attributes if present
         if "attributes" in sample:
-            assert isinstance(sample["attributes"], dict), "Attributes should be a dictionary"
+            assert isinstance(sample["attributes"], dict), (
+                "Attributes should be a dictionary"
+            )
             # Attributes should be non-empty if present
             if sample["attributes"]:
-                assert len(sample["attributes"]) > 0, "Attributes dictionary should not be empty"
+                assert len(sample["attributes"]) > 0, (
+                    "Attributes dictionary should not be empty"
+                )
 
         # We should get at least the basic fields
         assert len(sample) >= 2, "Sample should contain at least id and image"
@@ -118,7 +122,9 @@ def test_wds_image_properties():
                 # Test that we can get thumbnail
                 thumbnail = image.copy()
                 thumbnail.thumbnail((100, 100))
-                assert thumbnail.size[0] <= 100 and thumbnail.size[1] <= 100, "Thumbnail should be resized"
+                assert thumbnail.size[0] <= 100 and thumbnail.size[1] <= 100, (
+                    "Thumbnail should be resized"
+                )
 
                 # Test that image data is valid by trying to get pixel data
                 pixels = image.get_flattened_data()
@@ -162,10 +168,14 @@ def test_wds_with_image_processing():
             if isinstance(image, Image.Image):
                 # With crop_and_resize=True, images should be processed
                 width, height = image.size
-                assert width > 0 and height > 0, "Processed image should have valid dimensions"
+                assert width > 0 and height > 0, (
+                    "Processed image should have valid dimensions"
+                )
 
                 # The processed image should be in RGB mode
-                assert image.mode == "RGB", f"Processed image should be RGB, got {image.mode}"
+                assert image.mode == "RGB", (
+                    f"Processed image should be RGB, got {image.mode}"
+                )
 
                 break  # Just test one image
 
@@ -242,8 +252,9 @@ def test_wds_sample_consistency():
         else:
             # All samples should have at least the core fields (id, image)
             required_keys = {"id", "image"}
-            assert required_keys.issubset(current_keys), \
+            assert required_keys.issubset(current_keys), (
                 f"Sample missing required keys. Expected at least {required_keys}, got {current_keys}"
+            )
 
         # Check that we don't have any unexpected None values for core fields
         assert sample.get("id") != "", "Sample ID should not be empty"

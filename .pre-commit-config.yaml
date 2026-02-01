@@ -1,6 +1,5 @@
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.3.0
+  - repo: builtin
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -12,3 +11,15 @@ repos:
       - id: cargo-check
       - id: clippy
         args: ["--", "-D", "warnings"]
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: "v0.14.14"
+    hooks:
+      - id: ruff
+        name: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/NSPBot911/ty-pre-commit
+    rev: v0.0.14
+    hooks:
+      - id: ty-check
