@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 image = { version = "0.25.6", features = ["png", "jpeg", "webp", "default-formats"] }
-reqwest = { version = "0.12.15", features = ["blocking", "stream"] }
+reqwest = { version = "0.12.15", default-features = false, features = ["blocking", "stream", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 url = "2.5.4"
@@ -25,7 +25,6 @@ tokio = { version = "1.43.1", features = ["rt-multi-thread", "macros"] }
 prettytable-rs = "0.10.0"
 pyo3 = { version = "0.22", features = ["extension-module"] }
 threadpool = "1.8.1"
-openssl = { version = "0.10", features = ["vendored"] }
 walkdir = "2.5.0"
 num_cpus = "1.16.0"
 reqwest-middleware = "0.4.1"
