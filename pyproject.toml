@@ -7,7 +7,7 @@ authors = [
 ]
 description = "A high performance dataloader for Python, written in Rust"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
   "Programming Language :: Rust",
   "Programming Language :: Python :: Implementation :: CPython",

@@ -39,15 +39,10 @@ jobs:
         env:
           SKIP: cargo-check,clippy  # Already done in rust.yml
 
+  # Build ONE wheel for all Python 3.10+ using ABI3 (stable ABI)
   linux:
-    runs-on: ${{ matrix.platform.runner }}
+    runs-on: ubuntu-latest
     needs: prek
-    strategy:
-      matrix:
-        platform:
-          - runner: ubuntu-latest
-            target: x86_64
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     environment:
       name: release
@@ -61,7 +56,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.10"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -80,19 +75,44 @@ jobs:
       - name: Install maturin
         run: uv tool install maturin
 
-      # Gather the name of the latest tag on the current main branch
-      - name: Get the latest tag
-        id: get_tag
-        run: echo "tag=$(git describe --tags --abbrev=0)" >> $GITHUB_OUTPUT
-
       - name: Build the package
         run: |
           # Use CI profile for faster builds on PRs/main, full release profile for tags
+          # ABI3 builds one wheel for all Python 3.10+
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            maturin build -i python${{ matrix.python-version }} --release --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
+            maturin build --release --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
           else
-            maturin build -i python${{ matrix.python-version }} --profile ci --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
+            maturin build --profile ci --out dist --target "x86_64-unknown-linux-gnu" --manylinux 2_31 --zig
           fi
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+          path: dist
+
+  # Test the ABI3 wheel on multiple Python versions
+  test:
+    runs-on: ubuntu-latest
+    needs: linux
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+          path: dist
 
       - name: Test package
         env:
@@ -100,19 +120,9 @@ jobs:
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
         run: |
-          if [ "${{ matrix.python-version }}" == "3.11" ]; then
           uv pip install dist/*.whl
           cd python
           uv run --group test pytest -v .
-          else
-          echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
-          fi
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-${{ matrix.platform.target }}-py${{ matrix.python-version }}
-          path: dist
 
   sdist:
     runs-on: ubuntu-latest
@@ -133,7 +143,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
-    needs: [linux, sdist]
+    needs: [linux, test, sdist]
     permissions:
       # Use to sign the release artifacts
       id-token: write
