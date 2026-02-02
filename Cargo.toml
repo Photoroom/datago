@@ -18,8 +18,8 @@ default = ["cli"]
 cli = ["dep:clap", "dep:prettytable-rs"]
 
 [dependencies]
-# Image: only enable formats we actually use (removes rav1e/AVIF which is slow to compile)
-image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+# Image: only enable formats we actually use
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "webp"] }
 reqwest = { version = "0.12.15", default-features = false, features = ["stream", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
