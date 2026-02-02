@@ -67,7 +67,8 @@ jobs:
           # Native build for PRs (faster), manylinux container for releases
           manylinux: ${{ startsWith(github.ref, 'refs/tags/') && '2_31' || 'off' }}
           container: ${{ startsWith(github.ref, 'refs/tags/') && 'auto' || 'off' }}
-          args: --profile ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'ci' }} --out dist
+          # --no-default-features skips CLI (clap) - saves ~11s compile time
+          args: --profile ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'ci' }} --out dist --no-default-features
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4

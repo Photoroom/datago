@@ -12,6 +12,7 @@ crate-type = ["cdylib", "lib"]
 [[bin]]
 name = "datago"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [features]
 default = ["cli"]
