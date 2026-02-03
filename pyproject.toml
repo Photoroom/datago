@@ -7,7 +7,7 @@ authors = [
 ]
 description = "A high performance dataloader for Python, written in Rust"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
   "Programming Language :: Rust",
   "Programming Language :: Python :: Implementation :: CPython",
@@ -60,6 +60,12 @@ strip = true
 # Source distribution generator,
 # supports cargo (default) and git.
 sdist-generator = "cargo"
+
+[tool.pytest.ini_options]
+# Speed up test discovery - only look in python/ directory
+testpaths = ["python"]
+# Minimal output during collection
+addopts = "-q"
 
 [tool.ty.rules]
 unresolved-import = "ignore"

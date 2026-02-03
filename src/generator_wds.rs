@@ -2,7 +2,6 @@ use crate::client::DatagoClient;
 use crate::structs::{new_shared_client, BinaryFile, DatagoEngine, SharedClient, TarballSample};
 use crate::worker_wds;
 
-use async_tar::Archive;
 use kanal::bounded;
 use log::{debug, error, info, warn};
 use rand::seq::SliceRandom;
@@ -10,14 +9,14 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::thread;
+use tokio_tar::Archive;
 
 use bracoxide::explode;
-use futures::AsyncReadExt;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
+use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
-use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::StreamReader; // For grouping, if more complex grouping is needed
 
 fn default_reference_image_type() -> String {
@@ -111,7 +110,7 @@ async fn pull_tarballs(
     let buf_reader = BufReader::new(stream_reader);
 
     // Create a tar archive reader from the decompressed stream
-    let archive = Archive::new(buf_reader.compat());
+    let mut archive = Archive::new(buf_reader);
 
     let mut entries = archive
         .entries()
