@@ -2,7 +2,10 @@
 name = "datago"
 dynamic = ["version"]
 authors = [
-  { name = "Benjamin Lefaudeux, Roman Frigg, Tarek Ayed, Marco Forte, Photoroom ML team" },
+  { name = "Benjamin Lefaudeux"},
+  { name = "Roman Frigg"},
+  { name = "Tarek Ayed"},
+  { name = "Marco Forte"},
   { name = "Photoroom", email = "team@photoroom.com" }
 ]
 description = "A high performance dataloader for Python, written in Rust"
