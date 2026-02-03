@@ -1,9 +1,7 @@
-// FIXME: to be removed upon migration to a newer version of pyo3
-// https://github.com/PyO3/pyo3/pull/4838 that was release in 0.24
-#![allow(clippy::useless_conversion)]
-
 use crate::image_processing::ImageTransformConfig;
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
+use pyo3::types::{PyBytes, PyDict, PyList};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use serde::{Deserialize, Serialize};
@@ -102,19 +100,19 @@ impl ImagePayload {
 
     /// Convert this ImagePayload to a PIL Image directly in Rust
     /// This avoids the need for Python-side conversion and reduces data copying
-    pub fn to_pil_image(&self, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn to_pil_image(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if self.is_encoded {
             // For encoded images (JPEG, PNG), create PIL image directly from bytes
-            let pil = py.import_bound("PIL.Image")?;
+            let pil = py.import("PIL.Image")?;
             let bytes_io = py
-                .import_bound("io")?
+                .import("io")?
                 .getattr("BytesIO")?
                 .call1((self.data.as_slice(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
-            Ok(image.into_py(py))
+            Ok(image.into())
         } else {
             // For raw images, create numpy array first then convert to PIL
-            let numpy = py.import_bound("numpy")?;
+            let numpy = py.import("numpy")?;
             let shape: (usize, usize, usize) = if self.channels == 1 {
                 (self.height, self.width, 1)
             } else {
@@ -128,7 +126,7 @@ impl ImagePayload {
                 )?
                 .call_method1("reshape", (shape,))?;
 
-            let pil = py.import_bound("PIL.Image")?;
+            let pil = py.import("PIL.Image")?;
             if self.channels == 1 {
                 // Greyscale image - use 2D shape and create directly
                 let shape_2d = (self.height, self.width);
@@ -139,29 +137,29 @@ impl ImagePayload {
                     )?
                     .call_method1("reshape", (shape_2d,))?;
                 let image = pil.call_method1("fromarray", (np_array_2d,))?;
-                Ok(image.call_method1("convert", ("L",))?.into_py(py))
+                Ok(image.call_method1("convert", ("L",))?.into())
             } else if self.channels == 4 {
                 // RGBA image
                 let image = pil.call_method1("fromarray", (np_array,))?;
-                Ok(image.call_method1("convert", ("RGBA",))?.into_py(py))
+                Ok(image.call_method1("convert", ("RGBA",))?.into())
             } else {
                 // RGB image (assuming 3 channels)
                 let image = pil.call_method1("fromarray", (np_array,))?;
-                Ok(image.into_py(py))
+                Ok(image.into())
             }
         }
     }
 
     /// Get the image as a numpy array (zero-copy when possible)
-    pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let numpy = py.import_bound("numpy")?;
+    pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let numpy = py.import("numpy")?;
 
         if self.is_encoded {
             // For encoded images, we need to decode first
             // This is not zero-copy but necessary for encoded data
-            let pil = py.import_bound("PIL.Image")?;
+            let pil = py.import("PIL.Image")?;
             let bytes_io = py
-                .import_bound("io")?
+                .import("io")?
                 .getattr("BytesIO")?
                 .call1((self.data.as_slice(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
@@ -169,7 +167,7 @@ impl ImagePayload {
                 .call_method0("convert")?
                 .call_method1("RGB", ())?
                 .call_method0("to_numpy")?;
-            Ok(np_array.to_object(py))
+            Ok(np_array.into())
         } else {
             // For raw images, create zero-copy numpy array
             let shape: (usize, usize, usize) = if self.channels == 1 {
@@ -185,7 +183,7 @@ impl ImagePayload {
                 )?
                 .call_method1("reshape", (shape,))?;
 
-            Ok(np_array.to_object(py))
+            Ok(np_array.into())
         }
     }
 }
@@ -198,7 +196,7 @@ impl PythonImagePayload {
     }
 
     /// Convert to PIL image (this is the main method that gets called)
-    pub fn __call__(&self, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn __call__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.inner.to_pil_image(py)
     }
 
@@ -208,10 +206,20 @@ impl PythonImagePayload {
     }
 
     /// Make it behave like a PIL image by delegating all attribute access
-    pub fn __getattr__(&self, attr: &str, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn __getattr__(&self, attr: &str, py: Python<'_>) -> PyResult<Py<PyAny>> {
         // Convert to PIL image and delegate all attribute access
         let pil_image = self.inner.to_pil_image(py)?;
         pil_image.getattr(py, attr)
+    }
+
+    /// Convert to PIL image (exposed directly for convenience)
+    pub fn to_pil_image(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.to_pil_image(py)
+    }
+
+    /// Convert to numpy array (exposed directly for convenience)
+    pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.to_numpy_array(py)
     }
 }
 
@@ -269,6 +277,77 @@ impl Sample {
     pub fn attributes(&self) -> String {
         serde_json::to_string(&self.attributes).unwrap_or("".to_string())
     }
+}
+
+pub fn sample_to_python_types(sample: Sample, py: Python<'_>) -> Option<Py<PyAny>> {
+    // Convert the sample to a Python dict with PIL images
+    let sample_dict = PyDict::new(py);
+
+    // Add basic fields
+    sample_dict.set_item("id", sample.id).unwrap();
+    sample_dict.set_item("source", sample.source).unwrap();
+    sample_dict
+        .set_item("duplicate_state", sample.duplicate_state)
+        .unwrap();
+
+    // Convert attributes to python dict
+    let attributes_dict = PyDict::new(py);
+    for (key, value) in sample.attributes {
+        // If value is a string it can be passed as is, else we pass the json-encoded version
+        let value_serialized: String = if value.is_string() {
+            value.to_string()
+        } else {
+            serde_json::to_string(&value).unwrap_or("{}".to_string())
+        };
+        attributes_dict.set_item(key, value_serialized).unwrap();
+    }
+    sample_dict.set_item("attributes", attributes_dict).unwrap();
+
+    // Convert tags
+    let tags_list = PyList::new(py, &sample.tags).unwrap();
+    sample_dict.set_item("tags", tags_list).unwrap();
+
+    // Convert coca_embedding
+    let coca_array = PyList::new(py, &sample.coca_embedding).unwrap();
+    sample_dict.set_item("coca_embedding", coca_array).unwrap();
+
+    // Convert latents
+    let latents_dict = PyDict::new(py);
+    for (key, latent) in sample.latents {
+        let latent_dict = PyDict::new(py);
+        latent_dict
+            .set_item("data", PyBytes::new(py, &latent.data))
+            .unwrap();
+        latent_dict.set_item("len", latent.len).unwrap();
+        latents_dict.set_item(key, latent_dict).unwrap();
+    }
+    sample_dict.set_item("latents", latents_dict).unwrap();
+
+    // Convert images to PIL images
+    let image_pil = sample.image.to_pil_image(py).unwrap();
+    sample_dict.set_item("image", image_pil).unwrap();
+
+    // Convert masks to PIL images
+    let masks_dict = PyDict::new(py);
+    for (key, mask) in sample.masks {
+        let mask_pil = mask.to_pil_image(py).unwrap();
+        masks_dict.set_item(key, mask_pil).unwrap();
+    }
+    sample_dict.set_item("masks", masks_dict).unwrap();
+
+    // Convert additional images to PIL images
+    let additional_images_dict = PyDict::new(py);
+    for (key, additional_image) in sample.additional_images {
+        let additional_image_pil = additional_image.to_pil_image(py).unwrap();
+        additional_images_dict
+            .set_item(key, additional_image_pil)
+            .unwrap();
+    }
+    sample_dict
+        .set_item("additional_images", additional_images_dict)
+        .unwrap();
+
+    Some(sample_dict.into())
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

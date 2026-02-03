@@ -4,9 +4,12 @@ use crate::generator_wds;
 use crate::image_processing::ARAwareTransform;
 use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
+use crate::structs::sample_to_python_types;
 use crate::structs::DatagoEngine;
 use log::{debug, error, info, warn};
 use pyo3::prelude::*;
+
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[pyclass]
 pub struct DatagoClient {
@@ -172,7 +175,6 @@ impl DatagoClient {
             self.start();
         }
 
-        // If no more samples and workers are closed, then wrap it up
         if let Some(engine) = &self.engine {
             if engine.samples_rx.is_closed() {
                 info!("No more samples to process, stopping the client");
@@ -181,10 +183,7 @@ impl DatagoClient {
             }
 
             // Try to fetch a new sample from the queue
-            // The client will timeout if zero sample is received in 5 minutes
-            // At this point it will stop and wrap everything up
-            const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-
+            // The client will timeout and wrap up if zero sample is received in time
             return match engine.samples_rx.recv_timeout(TIMEOUT) {
                 Ok(sample) => match sample {
                     Some(sample) => Some(sample),
@@ -203,6 +202,16 @@ impl DatagoClient {
         }
 
         None
+    }
+
+    /// Get a sample with pythonic types
+    pub fn get_sample_auto_convert(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let sample = match self.get_sample() {
+            Some(sample) => sample,
+            None => return Ok(None),
+        };
+
+        Ok(sample_to_python_types(sample, py))
     }
 
     pub fn stop(&mut self) {

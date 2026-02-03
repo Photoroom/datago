@@ -612,6 +612,30 @@ mod tests {
             .unwrap();
     }
 
+    fn create_test_jpeg_image(path: &std::path::Path) {
+        // Create a simple 3x3 JPEG image
+        let img = image::DynamicImage::new_rgb8(3, 3);
+        img.save_with_format(path, image::ImageFormat::Jpeg)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_image_from_path_jpeg() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.jpg");
+        create_test_jpeg_image(&image_path);
+
+        let result = image_from_path(image_path.to_str().unwrap()).await;
+        if let Err(e) = &result {
+            eprintln!("Error loading JPEG: {}", e);
+        }
+        assert!(result.is_ok(), "Failed to load JPEG image");
+
+        let img = result.unwrap();
+        assert_eq!(img.width(), 3);
+        assert_eq!(img.height(), 3);
+    }
+
     #[tokio::test]
     async fn test_image_from_path_webp() {
         let temp_dir = TempDir::new().unwrap();
@@ -624,6 +648,28 @@ mod tests {
         let img = result.unwrap();
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_image_payload_from_path_jpeg() {
+        let temp_dir = TempDir::new().unwrap();
+        let image_path = temp_dir.path().join("test.jpg");
+        create_test_jpeg_image(&image_path);
+
+        let result = image_payload_from_path(
+            image_path.to_str().unwrap(),
+            &None,
+            image_processing::ImageEncoding::default(),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let payload = result.unwrap();
+        assert_eq!(payload.width, 3);
+        assert_eq!(payload.height, 3);
+        assert_eq!(payload.original_width, 3);
+        assert_eq!(payload.original_height, 3);
+        assert!(!payload.data.is_empty());
     }
 
     #[tokio::test]
