@@ -18,7 +18,10 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
 ]
-dependencies = ["pillow"]
+dependencies = [
+    "fonttools>=4.57.0",
+    "pillow",
+]
 [dependency-groups]
 test = [
     "pytest",
