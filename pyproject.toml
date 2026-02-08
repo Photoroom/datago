@@ -19,7 +19,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
-    "fonttools>=4.57.0",
+    "fonttools>=4.60.2",
     "pillow",
 ]
 [dependency-groups]
@@ -34,8 +34,8 @@ test = [
 
 dev = [
   "matplotlib",
-"pandas",
-"prek>=0.2.29",
+  "pandas",
+  "prek>=0.2.29",
 ]
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"
