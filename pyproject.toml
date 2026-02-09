@@ -10,7 +10,7 @@ authors = [
 ]
 description = "A high performance dataloader for Python, written in Rust"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 classifiers = [
   "Programming Language :: Rust",
   "Programming Language :: Python :: Implementation :: CPython",
@@ -19,7 +19,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
-    "fonttools>=4.57.0",
+    "fonttools>=4.60.2",
     "pillow",
 ]
 [dependency-groups]
@@ -34,8 +34,8 @@ test = [
 
 dev = [
   "matplotlib",
-"pandas",
-"prek>=0.2.29",
+  "pandas",
+  "prek>=0.2.29",
 ]
 [project.urls]
 Homepage = "https://github.com/photoroom/datago"
