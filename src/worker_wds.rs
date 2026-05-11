@@ -44,9 +44,11 @@ async fn process_sample(
                         // Use spawn_blocking for CPU-bound image decoding
                         // This allows other async tasks (like network I/O) to make progress
                         // while the CPU-intensive decoding happens on a blocking thread pool
-                        let buffer_clone = item.buffer.clone();
+                        // Note: We clone the buffer here to avoid lifetime issues with spawn_blocking.
+                        // The clone cost is offset by the performance gain from parallel processing.
+                        let buffer = item.buffer.clone();
                         let decoded_result = tokio::task::spawn_blocking(move || {
-                            image::load_from_memory(&buffer_clone)
+                            image::load_from_memory(&buffer)
                         })
                         .await;
                         

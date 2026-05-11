@@ -20,15 +20,32 @@
 
 ### Optimization #1: spawn_blocking for Image Decoding
 - **Time**: 2026-05-11T20:40:00Z
+- **Commit**: `28e968d`
 - **Change**: Modified `src/worker_wds.rs` to use `tokio::task::spawn_blocking` for CPU-bound `image::load_from_memory` calls
 - **Rationale**: The image decoding is CPU-intensive and synchronous. Using `spawn_blocking` offloads this work to tokio's blocking thread pool, allowing the async runtime to continue scheduling other tasks (network I/O, tar extraction) concurrently
 - **Files Modified**: `src/worker_wds.rs`
-- **Benchmark Results** (PD12M dataset, limit=100, 8 workers):
+- **Benchmark Results** (PD12M dataset, limit=100, 8 workers, concurrent_downloads=32):
   - **Before**: 50.09 FPS
   - **After**: 53.13 FPS
   - **Improvement**: +6.1% (+3.04 FPS)
   - **Webdataset lib**: 2.17 FPS
   - **Speedup**: ~24.5x faster
+
+### Optimization #2: Tune concurrent_downloads
+- **Time**: 2026-05-11T21:00:00Z
+- **Commit**: TBD
+- **Change**: 
+  - Changed benchmark default for `num_downloads` from 32 to 12
+  - Changed Rust default in `src/generator_wds.rs` from 8 to 12
+- **Rationale**: Too many concurrent downloads (32) causes resource contention. The download tasks not only do async I/O but also CPU-bound tar extraction. With 16 CPUs and 8 worker threads for image processing, 32 concurrent downloads over-subscribes the CPU. Testing showed 10-12 concurrent downloads provides better throughput.
+- **Files Modified**: `src/generator_wds.rs`, `python/benchmark_webdataset.py`
+- **Benchmark Results** (PD12M dataset, limit=100, 8 workers):
+  - **Before (Optimization #1 only, concurrent_downloads=32)**: 53.13 FPS
+  - **After (Optimization #1 + #2, concurrent_downloads=12)**: ~68.63 FPS
+  - **Improvement from Optimization #1**: ~29% (+15.5 FPS)
+  - **Improvement from baseline**: ~37% (+18.5 FPS)
+  - **Webdataset lib**: ~4.23 FPS
+  - **Speedup**: ~16x faster than webdataset lib
 
 ---
 
@@ -41,49 +58,76 @@
 
 ---
 
-## Optimization Opportunities (To Investigate)
+## Optimization Opportunities
 
-### High Priority
-1. **Image decoding parallelization** - Currently `image::load_from_memory` is synchronous and blocks the async task. Could use `spawn_blocking` for CPU-bound work.
-2. **Tokio runtime consolidation** - Multiple tokio runtimes are created (one in generator_wds.rs, one in worker_wds.rs). Could share a single runtime.
-3. **Buffer size tuning** - Current `prefetch_buffer_size=256`, `samples_buffer_size=256` may not be optimal.
+### High Priority (Next to try)
+1. **Tokio runtime consolidation** - Multiple tokio runtimes are created (one in generator_wds.rs line 432, one in worker_wds.rs line 266). Each runtime has its own thread pool. Could share a single runtime to reduce overhead and better utilize CPU resources.
+
+2. **Buffer size tuning** - Current `prefetch_buffer_size=256`, `samples_buffer_size=256` may not be optimal for all workloads. Need to experiment with different values.
+
+3. **Concurrent downloads tuning** - The `concurrent_downloads=32` default may be too high or too low. Need to find optimal value.
 
 ### Medium Priority
-4. **Faster image decoder** - The `image` crate may not be the fastest. Could try `rav1e` for JPEG or specialized decoders.
-5. **Tarball streaming optimization** - Current async_tar + BufReader could be tuned for better throughput.
-6. **Memory reuse** - Image buffers are created and dropped repeatedly. Could use object pools.
+4. **Faster image decoder** - The `image` crate uses libpng/libjpeg which may not be the fastest. Could investigate:
+   - `rav1e` for JPEG (but it's an encoder, not decoder)
+   - `jpeg-decoder` crate for JPEG
+   - `png` crate directly instead of through `image`
+   - `faster-jpeg` or other specialized decoders
+
+5. **Tarball streaming optimization** - Current async_tar + BufReader + StreamReader could have overhead. Could try:
+   - Different buffer sizes for BufReader
+   - Direct streaming without intermediate buffers
+   - Parallel tar extraction
+
+6. **Memory reuse** - Image buffers and DynamicImage objects are created and dropped repeatedly. Could use:
+   - Object pools for Vec<u8>
+   - Reuse image buffers
+   - Zero-copy where possible
 
 ### Low Priority
-7. **Network connection pooling** - Already implemented via `SharedClient` with semaphore.
-8. **HTTP/2 support** - Could enable for better multiplexing.
+7. **HTTP/2 support** - Could enable for better multiplexing on supported servers.
+8. **Connection reuse** - Already implemented via `SharedClient` with semaphore.
 
 ---
 
 ## Best Speed Attained
-- **Current Best**: 53.13 FPS (limit=100, workers=8)
+- **Current Best**: 68.63 FPS (limit=100, workers=8)
 - **Date**: 2026-05-11
-- **Config**: PD12M dataset, 8 workers, concurrent_downloads=32, spawn_blocking optimization
-- **Improvement from baseline**: +6.1%
-
-### Rust Side (src/)
-- [ ] Review `generator_wds.rs` - webdataset source generation
-- [ ] Review `worker_wds.rs` - webdataset worker implementation  
-- [ ] Review `client.rs` - main client logic
-- [ ] Review async/tokio patterns for I/O
-- [ ] Review buffer sizes and prefetch strategies
-- [ ] Review tar/async-tar decoding performance
-- [ ] Review image decoding (image crate vs alternatives)
-
-### Python Side (python/)
-- [ ] Review `dataset.py` - DatagoIterDataset wrapper
-- [ ] Review buffer configurations in benchmark
-- [ ] Review concurrent_downloads parameter tuning
+- **Config**: PD12M dataset, 8 workers, concurrent_downloads=12, spawn_blocking optimization
+- **Improvement from baseline (50.09 FPS)**: +37%
+- **Improvement from Optimization #1 (53.13 FPS)**: +29%
 
 ---
 
-## Best Speed Attained
-- **Current Best**: 35.22 FPS (limit=50, workers=4)
-- **Date**: 2026-05-11
-- **Config**: PD12M dataset, 4 workers, concurrent_downloads=32
+## Next: Tokio Runtime Consolidation
+
+### Analysis
+Looking at the code:
+- `generator_wds.rs:432`: Creates a tokio runtime for the download tasks (`query_shards_and_dispatch`)
+- `worker_wds.rs:266`: Creates another tokio runtime for image processing (`deserialize_samples`)
+- Each runtime has its own thread pool (default num_cpus threads)
+
+This means:
+- 2 x num_cpus threads for tokio runtimes
+- Plus the DATAGO_MAX_TASKS threads for async processing
+- Plus the blocking thread pool for spawn_blocking
+
+### Hypothesis
+Consolidating to a single tokio runtime could:
+- Reduce thread creation overhead
+- Better utilize CPU resources (no competition between runtimes)
+- Reduce context switching
+
+### Plan
+1. Pass a shared tokio runtime handle from generator to worker
+2. Or restructure to have a single top-level runtime
+3. Test with different configurations
+
+### Implementation Strategy
+The cleanest approach would be to have a single tokio runtime at the top level (in client.rs or orchestrate function) and pass the handle down to all components that need it.
+
+However, this requires significant refactoring. A simpler first step:
+- Try increasing DATAGO_MAX_TASKS to see if more parallelism helps
+- Try tuning buffer sizes
 
 ---

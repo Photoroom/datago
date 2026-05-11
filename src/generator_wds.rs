@@ -468,8 +468,8 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let extension_reference_image_type: String = source_config.reference_image_type.clone();
 
     if source_config.concurrent_downloads == 0 {
-        info!("WDS: Defaulting to 8 concurrent_downloads");
-        source_config.concurrent_downloads = 8;
+        info!("WDS: Defaulting to 12 concurrent_downloads");
+        source_config.concurrent_downloads = 12;
     }
 
     // List the contents of the bucket and feed the workers

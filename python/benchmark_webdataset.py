@@ -23,7 +23,7 @@ def benchmark(
     ),
     compare_wds: bool = typer.Option(True, help="Compare against torch dataloader"),
     num_downloads: int = typer.Option(
-        32,
+        12,
         help="Number of concurrent downloads",
     ),
     num_workers: int = typer.Option(
