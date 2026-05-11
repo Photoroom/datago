@@ -41,11 +41,12 @@
 - **Files Modified**: `src/generator_wds.rs`, `python/benchmark_webdataset.py`
 - **Benchmark Results** (PD12M dataset, limit=100, 8 workers):
   - **Before (Optimization #1 only, concurrent_downloads=32)**: 53.13 FPS
-  - **After (Optimization #1 + #2, concurrent_downloads=12)**: ~68.63 FPS
-  - **Improvement from Optimization #1**: ~29% (+15.5 FPS)
-  - **Improvement from baseline**: ~37% (+18.5 FPS)
-  - **Webdataset lib**: ~4.23 FPS
-  - **Speedup**: ~16x faster than webdataset lib
+  - **After (Optimization #1 + #2, concurrent_downloads=12)**: ~65-68 FPS
+  - **Improvement from Optimization #1**: ~25-28% (+13-15 FPS)
+  - **Improvement from baseline (50.09 FPS)**: ~30-36% (+15-18 FPS)
+  - **Webdataset lib**: ~4 FPS
+  - **Speedup**: ~16-17x faster than webdataset lib
+  - **Note**: High variance due to network conditions
 
 ---
 
@@ -91,11 +92,22 @@
 ---
 
 ## Best Speed Attained
-- **Current Best**: 68.63 FPS (limit=100, workers=8)
+- **Current Best**: ~65-68 FPS (limit=100, workers=8)
 - **Date**: 2026-05-11
 - **Config**: PD12M dataset, 8 workers, concurrent_downloads=12, spawn_blocking optimization
-- **Improvement from baseline (50.09 FPS)**: +37%
-- **Improvement from Optimization #1 (53.13 FPS)**: +29%
+- **Improvement from baseline (50.09 FPS)**: +30-36%
+- **Improvement from Optimization #1 (53.13 FPS)**: +25-28%
+
+---
+
+## Current Status
+- **Latest Commit**: `701d5de` (perf(wds): tune concurrent_downloads default to 12)
+- **All tests passing**: 5 WDS tests + 34 non-DB tests = 39 tests pass
+- **Next optimization to try**: 
+  1. Move `image.into_bytes()` into spawn_blocking (requires restructuring)
+  2. Use spawn_blocking for tar extraction in download tasks
+  3. Try faster image decoder (jpeg-decoder crate)
+  4. Consolidate tokio runtimes (complex refactoring)
 
 ---
 
