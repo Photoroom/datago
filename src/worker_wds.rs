@@ -41,9 +41,17 @@ async fn process_sample(
                     if !is_supported_type(ext) {
                         debug!("wds_worker: unsupported file type: {}", item.filename);
                     } else if IMG_TYPES.contains(&ext) {
-                        // Load the image in to a buffer
-                        match image::load_from_memory(&item.buffer) {
-                            Ok(raw_image) => {
+                        // Use spawn_blocking for CPU-bound image decoding
+                        // This allows other async tasks (like network I/O) to make progress
+                        // while the CPU-intensive decoding happens on a blocking thread pool
+                        let buffer_clone = item.buffer.clone();
+                        let decoded_result = tokio::task::spawn_blocking(move || {
+                            image::load_from_memory(&buffer_clone)
+                        })
+                        .await;
+                        
+                        match decoded_result {
+                            Ok(Ok(raw_image)) => {
                                 let image = image_processing::image_to_payload(
                                     raw_image,
                                     &img_tfm,
@@ -131,8 +139,12 @@ async fn process_sample(
                                 }
                                 debug!("wds_worker: unpacked {}", item.filename);
                             }
+                            Ok(Err(e)) => {
+                                debug!("wds_worker: error loading image: {}", e);
+                                continue;
+                            }
                             Err(e) => {
-                                debug!("wds_worker: error loading image: {e}");
+                                debug!("wds_worker: spawn_blocking failed: {}", e);
                                 continue;
                             }
                         }

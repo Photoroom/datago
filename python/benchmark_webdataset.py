@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import time
 from typing import Any
@@ -7,6 +8,12 @@ import typer
 from benchmark_defaults import IMAGE_CONFIG
 from dataset import DatagoIterDataset
 from tqdm import tqdm
+
+# Set multiprocessing start method to 'fork' for Python 3.14+ compatibility
+try:
+    multiprocessing.set_start_method('fork', force=True)
+except RuntimeError:
+    pass  # Already set
 
 
 def benchmark(
