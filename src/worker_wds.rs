@@ -41,113 +41,194 @@ async fn process_sample(
                     if !is_supported_type(ext) {
                         debug!("wds_worker: unsupported file type: {}", item.filename);
                     } else if IMG_TYPES.contains(&ext) {
-                        // Use spawn_blocking for CPU-bound image decoding
+                        // Use spawn_blocking for CPU-bound image decoding and into_bytes()
                         // This allows other async tasks (like network I/O) to make progress
-                        // while the CPU-intensive decoding happens on a blocking thread pool
-                        // Note: We clone the buffer here to avoid lifetime issues with spawn_blocking.
-                        // The clone cost is offset by the performance gain from parallel processing.
+                        // while the CPU-intensive decoding + pixel data extraction happens on a blocking thread pool
                         let buffer = item.buffer.clone();
-                        let decoded_result = tokio::task::spawn_blocking(move || {
-                            image::load_from_memory(&buffer)
-                        })
-                        .await;
+                        let has_transform = img_tfm.is_some();
+                        let needs_encoding = encoding.encode_images || encoding.img_to_rgb8;
                         
-                        match decoded_result {
-                            Ok(Ok(raw_image)) => {
-                                let image = image_processing::image_to_payload(
-                                    raw_image,
-                                    &img_tfm,
-                                    &sample_aspect_ratio,
-                                    encoding,
-                                )
-                                .await
-                                .map(to_python_image_payload)
-                                .unwrap_or_else(|_| {
-                                    to_python_image_payload(ImagePayload {
-                                        data: vec![],
-                                        width: 0,
-                                        height: 0,
-                                        original_height: 0,
-                                        original_width: 0,
-                                        bit_depth: 0,
-                                        channels: 0,
-                                        is_encoded: false,
-                                    })
-                                });
-
-                                if sample_aspect_ratio.is_empty() {
-                                    // If we don't have an aspect ratio yet, we set it
-                                    // We need to get the payload from the PythonImagePayload to access width/height
-                                    let payload = image.get_payload();
-                                    sample_aspect_ratio = image_processing::aspect_ratio_to_str((
-                                        payload.width as u32,
-                                        payload.height as u32,
-                                    ));
-                                }
-
-                                if ext == extension_reference_image {
-                                    // If this is the reference image, we store it in the main image field
-                                    if let Some(mut_final_sample) = &mut final_sample {
-                                        mut_final_sample.image = image;
-                                    } else {
-                                        // Init the sample
-                                        final_sample = Some(Sample {
-                                            id: String::from(
-                                                sample_id.to_str().unwrap_or("unknown"),
-                                            ),
-                                            source: sample.name.clone(),
-                                            image,
-                                            attributes: HashMap::new(),
-                                            coca_embedding: vec![],
-                                            tags: vec![],
-                                            masks: HashMap::new(),
-                                            latents: HashMap::new(),
-                                            additional_images: HashMap::new(),
-                                            duplicate_state: 0,
-                                        });
+                        if !has_transform && !needs_encoding {
+                            // Fast path: no transform, no encoding - do decode + into_bytes sync
+                            let payload_result = tokio::task::spawn_blocking(move || {
+                                let raw_image = image::load_from_memory(&buffer)?;
+                                let height = raw_image.height() as usize;
+                                let width = raw_image.width() as usize;
+                                let channels = raw_image.color().channel_count() as i8;
+                                let bit_depth = (raw_image.color().bits_per_pixel() / raw_image.color().channel_count() as u16) as usize;
+                                let image_bytes = raw_image.into_bytes();
+                                Ok::<_, image::ImageError>(ImagePayload {
+                                    data: image_bytes,
+                                    original_height: height,
+                                    original_width: width,
+                                    height,
+                                    width,
+                                    channels,
+                                    bit_depth,
+                                    is_encoded: false,
+                                })
+                            })
+                            .await;
+                            
+                            match payload_result {
+                                Ok(Ok(payload)) => {
+                                    let image = to_python_image_payload(payload);
+                                    
+                                    if sample_aspect_ratio.is_empty() {
+                                        let pl = image.get_payload();
+                                        sample_aspect_ratio = image_processing::aspect_ratio_to_str((
+                                            pl.width as u32,
+                                            pl.height as u32,
+                                        ));
                                     }
-                                } else {
-                                    // Otherwise, we store it in the additional images
-                                    if let Some(mut_final_sample) = &mut final_sample {
-                                        mut_final_sample
-                                            .additional_images
-                                            .insert(item.filename.clone(), image);
+
+                                    if ext == extension_reference_image {
+                                        if let Some(ref mut fs) = final_sample {
+                                            fs.image = image;
+                                        } else {
+                                            final_sample = Some(Sample {
+                                                id: String::from(sample_id.to_str().unwrap_or("unknown")),
+                                                source: sample.name.clone(),
+                                                image,
+                                                attributes: HashMap::new(),
+                                                coca_embedding: vec![],
+                                                tags: vec![],
+                                                masks: HashMap::new(),
+                                                latents: HashMap::new(),
+                                                additional_images: HashMap::new(),
+                                                duplicate_state: 0,
+                                            });
+                                        }
                                     } else {
-                                        // Init the sample
-                                        final_sample = Some(Sample {
-                                            id: String::from(
-                                                sample_id.to_str().unwrap_or("unknown"),
-                                            ),
-                                            source: sample.name.clone(),
-                                            image: to_python_image_payload(ImagePayload {
-                                                data: vec![],
-                                                width: 0,
-                                                height: 0,
-                                                original_height: 0,
-                                                original_width: 0,
-                                                bit_depth: 0,
-                                                channels: 0,
-                                                is_encoded: false,
-                                            }),
-                                            attributes: HashMap::new(),
-                                            coca_embedding: vec![],
-                                            tags: vec![],
-                                            masks: HashMap::new(),
-                                            latents: HashMap::new(),
-                                            additional_images: HashMap::new(),
-                                            duplicate_state: 0,
-                                        });
+                                        if let Some(ref mut fs) = final_sample {
+                                            fs.additional_images.insert(item.filename.clone(), image);
+                                        } else {
+                                            final_sample = Some(Sample {
+                                                id: String::from(sample_id.to_str().unwrap_or("unknown")),
+                                                source: sample.name.clone(),
+                                                image: to_python_image_payload(ImagePayload {
+                                                    data: vec![],
+                                                    width: 0,
+                                                    height: 0,
+                                                    original_height: 0,
+                                                    original_width: 0,
+                                                    bit_depth: 0,
+                                                    channels: 0,
+                                                    is_encoded: false,
+                                                }),
+                                                attributes: HashMap::new(),
+                                                coca_embedding: vec![],
+                                                tags: vec![],
+                                                masks: HashMap::new(),
+                                                latents: HashMap::new(),
+                                                additional_images: HashMap::new(),
+                                                duplicate_state: 0,
+                                            });
+                                        }
                                     }
+                                    debug!("wds_worker: unpacked {}", item.filename);
                                 }
-                                debug!("wds_worker: unpacked {}", item.filename);
+                                Ok(Err(e)) => {
+                                    debug!("wds_worker: error in fast path: {}", e);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    debug!("wds_worker: spawn_blocking failed: {}", e);
+                                    continue;
+                                }
                             }
-                            Ok(Err(e)) => {
-                                debug!("wds_worker: error loading image: {}", e);
-                                continue;
-                            }
-                            Err(e) => {
-                                debug!("wds_worker: spawn_blocking failed: {}", e);
-                                continue;
+                        } else {
+                            // Slow path: has transform or needs encoding - use original async code
+                            let decoded_result = tokio::task::spawn_blocking(move || {
+                                image::load_from_memory(&buffer)
+                            })
+                            .await;
+                            
+                            match decoded_result {
+                                Ok(Ok(raw_image)) => {
+                                    let image = image_processing::image_to_payload(
+                                        raw_image,
+                                        &img_tfm,
+                                        &sample_aspect_ratio,
+                                        encoding,
+                                    )
+                                    .await
+                                    .map(to_python_image_payload)
+                                    .unwrap_or_else(|_| {
+                                        to_python_image_payload(ImagePayload {
+                                            data: vec![],
+                                            width: 0,
+                                            height: 0,
+                                            original_height: 0,
+                                            original_width: 0,
+                                            bit_depth: 0,
+                                            channels: 0,
+                                            is_encoded: false,
+                                        })
+                                    });
+
+                                    if sample_aspect_ratio.is_empty() {
+                                        let payload = image.get_payload();
+                                        sample_aspect_ratio = image_processing::aspect_ratio_to_str((
+                                            payload.width as u32,
+                                            payload.height as u32,
+                                        ));
+                                    }
+
+                                    if ext == extension_reference_image {
+                                        if let Some(ref mut fs) = final_sample {
+                                            fs.image = image;
+                                        } else {
+                                            final_sample = Some(Sample {
+                                                id: String::from(sample_id.to_str().unwrap_or("unknown")),
+                                                source: sample.name.clone(),
+                                                image,
+                                                attributes: HashMap::new(),
+                                                coca_embedding: vec![],
+                                                tags: vec![],
+                                                masks: HashMap::new(),
+                                                latents: HashMap::new(),
+                                                additional_images: HashMap::new(),
+                                                duplicate_state: 0,
+                                            });
+                                        }
+                                    } else {
+                                        if let Some(ref mut fs) = final_sample {
+                                            fs.additional_images.insert(item.filename.clone(), image);
+                                        } else {
+                                            final_sample = Some(Sample {
+                                                id: String::from(sample_id.to_str().unwrap_or("unknown")),
+                                                source: sample.name.clone(),
+                                                image: to_python_image_payload(ImagePayload {
+                                                    data: vec![],
+                                                    width: 0,
+                                                    height: 0,
+                                                    original_height: 0,
+                                                    original_width: 0,
+                                                    bit_depth: 0,
+                                                    channels: 0,
+                                                    is_encoded: false,
+                                                }),
+                                                attributes: HashMap::new(),
+                                                coca_embedding: vec![],
+                                                tags: vec![],
+                                                masks: HashMap::new(),
+                                                latents: HashMap::new(),
+                                                additional_images: HashMap::new(),
+                                                duplicate_state: 0,
+                                            });
+                                        }
+                                    }
+                                    debug!("wds_worker: unpacked {}", item.filename);
+                                }
+                                Ok(Err(e)) => {
+                                    debug!("wds_worker: error loading image: {}", e);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    debug!("wds_worker: spawn_blocking failed: {}", e);
+                                    continue;
+                                }
                             }
                         }
                     } else if TEXT_TYPES.contains(&ext) {
