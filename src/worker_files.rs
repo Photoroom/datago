@@ -6,14 +6,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Use buffered reading instead of loading entire file at once for better memory efficiency
-    let file = std::fs::File::open(path)
+    // Use async file I/O to allow the tokio runtime to schedule other tasks while reading
+    // This is especially beneficial with io_uring backend or when files are not in cache
+    let bytes = tokio::fs::read(path)
+        .await
         .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
-    let reader = std::io::BufReader::new(file);
-
-    image::ImageReader::new(reader)
-        .with_guessed_format()?
-        .decode()
+    
+    image::load_from_memory(&bytes)
+        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))
 }
 
 async fn image_payload_from_path(
