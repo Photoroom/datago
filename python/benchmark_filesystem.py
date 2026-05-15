@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import time
 
@@ -6,6 +7,17 @@ import typer
 from benchmark_defaults import IMAGE_CONFIG
 from dataset import DatagoIterDataset
 from tqdm import tqdm
+
+# Set multiprocessing start method to 'fork' for Python 3.14+ compatibility
+try:
+    multiprocessing.set_start_method('fork', force=True)
+except RuntimeError:
+    pass  # Already set
+
+
+def identity_collate(x):
+    """Identity collate function for DataLoader."""
+    return x
 
 
 def benchmark(
@@ -19,18 +31,63 @@ def benchmark(
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
     num_workers: int = typer.Option(os.cpu_count(), help="Number of workers to use"),
     sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
+    plot: bool = typer.Option(
+        False, help="Whether to save a plot at the end of the run"
+    ),
 ):
     if sweep:
         results_sweep = {}
-        num_workers = 1
-        while num_workers <= (os.cpu_count() or 16):
+        num_workers_list = [1] + [2*i for i in range(1, os.cpu_count() // 2+1)]  # Sweep over 1, 2, 4, 8, 16 workers
+        for num_workers in num_workers_list:
             results_sweep[num_workers] = benchmark(
-                root_path, limit, crop_and_resize, compare_torch, num_workers, False
+                root_path, limit, crop_and_resize, compare_torch, num_workers, False, False
             )
-            num_workers *= 2
 
         with open("benchmark_results_filesystem.json", "w") as f:
             json.dump(results_sweep, f, indent=2)
+
+        if plot:
+            import matplotlib
+            matplotlib.use('Agg')  # Use non-interactive backend
+            import matplotlib.pyplot as plt
+
+            # Convert to a DataFrame for plotting
+            worker_counts = [int(k) for k in results_sweep.keys()]
+            datago_fps = [results_sweep[k]["datago"]["fps"] for k in results_sweep.keys()]
+            torch_fps = [results_sweep[k]["torch"]["fps"] for k in results_sweep.keys()] if compare_torch else None
+
+            plt.figure(figsize=(10, 6))
+            plt.plot(
+                worker_counts,
+                datago_fps,
+                marker="o",
+                label="Datago",
+            )
+            if compare_torch:
+                plt.plot(
+                    worker_counts,
+                    torch_fps,
+                    marker="o",
+                    label="Torch",
+                )
+            plt.xlabel("Number of Workers")
+            plt.ylabel("Frames Per Second (FPS)")
+            plt.title("Throughput: Datago vs Torch Filesystem")
+            plt.ylim(
+                0,
+                max(datago_fps + (torch_fps if torch_fps else [])) + 20,
+            )
+            plt.legend()
+            plt.grid(True)
+            plt.xticks(worker_counts)
+            plt.tight_layout()
+            plt.savefig(
+                "assets/zen3_ssd.png",
+                format="PNG",
+                dpi=200,
+                bbox_inches="tight",
+            )
+            plt.close()
 
         return results_sweep
 
@@ -114,7 +171,7 @@ def benchmark(
             batch_size=1,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=lambda x: x,
+            collate_fn=identity_collate,
         )
 
         # Iterate over the DataLoader
