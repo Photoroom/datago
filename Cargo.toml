@@ -51,7 +51,6 @@ wiremock = "0.6.0"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
 
 [target.x86_64-apple-darwin]
 rustflags = [

@@ -140,20 +140,16 @@ async fn async_pull_samples(
         tasks.abort_all();
     }
 
-    // Make sure to wait for all the remaining tasks
-    let _ = tasks.join_all().await.iter().map(|result| {
-        if let Ok(()) = result {
-            count += 1;
-        } else {
-            // Task failed or was cancelled
-            debug!("file_worker: task failed or was cancelled");
-
-            // Could be because the channel was closed, so we should stop
-            if samples_tx.is_closed() {
-                debug!("file_worker: channel closed, stopping there");
-            }
+    // Make sure to wait for all the remaining tasks. Tasks aborted above come
+    // back from join_next() as a cancelled JoinError, which join_all() would
+    // panic on — so drain with join_next() instead.
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(_) => count += 1, // task completed: same counting rule as the main loop
+            Err(e) if e.is_cancelled() => {} // expected after abort_all(), not an error
+            Err(e) => error!("file_worker: task failed: {e}"), // task panicked
         }
-    });
+    }
     debug!("file_worker: total samples sent: {count}\n");
 
     // Signal the end of the stream
