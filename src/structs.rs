@@ -34,8 +34,28 @@ pub struct DatagoClientConfig {
 }
 
 #[derive(Debug)]
+pub enum MetadataReceiver {
+    Json(kanal::Receiver<serde_json::Value>),
+    Tarball(kanal::Receiver<TarballSample>),
+}
+
+impl MetadataReceiver {
+    pub fn close(&self) {
+        match self {
+            Self::Json(receiver) => {
+                let _ = receiver.close();
+            }
+            Self::Tarball(receiver) => {
+                let _ = receiver.close();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct DatagoEngine {
     pub samples_rx: kanal::Receiver<Option<Sample>>,
+    pub metadata_rx: MetadataReceiver,
     pub feeder: Option<thread::JoinHandle<()>>,
     pub worker: Option<thread::JoinHandle<()>>,
 }

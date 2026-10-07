@@ -546,6 +546,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     DatagoEngine {
         samples_rx,
+        metadata_rx: crate::structs::MetadataReceiver::Json(samples_metadata_rx),
         feeder,
         worker,
     }

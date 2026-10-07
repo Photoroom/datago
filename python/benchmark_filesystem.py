@@ -8,6 +8,10 @@ from dataset import DatagoIterDataset
 from tqdm import tqdm
 
 
+def _passthrough(x):
+    return x
+
+
 def benchmark(
     root_path: str = typer.Option(
         os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"
@@ -114,7 +118,8 @@ def benchmark(
             batch_size=1,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=lambda x: x,
+            collate_fn=_passthrough,
+            prefetch_factor=2,
         )
 
         # Iterate over the DataLoader

@@ -489,9 +489,10 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     };
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
+    let samples_metadata_rx_worker = samples_metadata_rx.clone();
     let worker = Some(thread::spawn(move || {
         worker_wds::deserialize_samples(
-            samples_metadata_rx,
+            samples_metadata_rx_worker,
             samples_tx_worker,
             image_transform,
             encoding,
@@ -502,6 +503,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     DatagoEngine {
         samples_rx,
+        metadata_rx: crate::structs::MetadataReceiver::Tarball(samples_metadata_rx),
         feeder,
         worker,
     }

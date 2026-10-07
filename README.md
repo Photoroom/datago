@@ -31,6 +31,14 @@ datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
 
 `return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
 
+Python sample reads release the GIL while waiting and check Python signals every
+100 ms, so Ctrl-C can interrupt a stalled reader (including readers in background
+prefetch threads). `stop()` closes both pipeline queues before joining threads,
+releases the GIL during shutdown, and is also interruptible. Prefer `try/finally`
+with `client.stop()` for explicit cleanup. On interruption, queued work is cancelled;
+already-running native filesystem/network operations may finish later rather than
+delaying `KeyboardInterrupt`. The native Rust client retains its blocking API.
+
 <details> <summary><strong>Dataroom</strong></summary>
 
 ```python
@@ -261,6 +269,11 @@ The following benchmarks are using ImageNet 1k, which is very low resolution and
 
 ### AMD EPYC 9454 - IN1k - disk - no processing
 ![AMD EPYC 9454](assets/epyc_vast.png)
+
+One liner to repro locally (rebuilding the package):
+```bash
+ DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --python 3.14 --group dev  python/benchmark_filesystem.py --sweep  --limit 500
+```
 
 ## Webdataset: FakeIN
 

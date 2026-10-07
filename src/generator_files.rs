@@ -1,5 +1,5 @@
 use crate::client::DatagoClient;
-use crate::structs::DatagoEngine;
+use crate::structs::{DatagoEngine, MetadataReceiver};
 use crate::worker_files;
 use kanal::bounded;
 use log::{debug, info};
@@ -69,7 +69,10 @@ fn enumerate_files(
         });
 
     // Collect some of the files, over sample to increase randomness or allow for faulty files
-    let mut files_list: Vec<walkdir::DirEntry> = walker.take(limit * 2).collect();
+    let mut files_list: Vec<walkdir::DirEntry> = walker
+        .take_while(|_| !samples_metadata_tx.is_closed())
+        .take(limit * 2)
+        .collect();
 
     // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
     if source_config.world_size > 1 {
@@ -175,6 +178,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     DatagoEngine {
         samples_rx,
+        metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
         feeder,
         worker,
     }
