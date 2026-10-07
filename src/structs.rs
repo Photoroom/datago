@@ -1,4 +1,6 @@
 use crate::image_processing::ImageTransformConfig;
+use pyo3::exceptions::PyBufferError;
+use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pyo3::types::{PyBytes, PyDict, PyList};
@@ -6,6 +8,8 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::{c_int, c_void, CString};
+use std::ptr;
 use std::sync::Arc;
 use std::thread;
 
@@ -72,8 +76,8 @@ pub struct LatentPayload {
 #[pyclass]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImagePayload {
-    #[pyo3(get, set)]
-    pub data: Vec<u8>,
+    #[serde(with = "shared_bytes")]
+    pub data: Arc<[u8]>,
     #[pyo3(get, set)]
     pub original_height: usize, // Good indicator of the image frequency dbResponse at the current resolution
     #[pyo3(get, set)]
@@ -88,6 +92,25 @@ pub struct ImagePayload {
     pub bit_depth: usize,
     #[pyo3(get, set)]
     pub is_encoded: bool, // Indicates if image is already encoded (JPEG/PNG)
+}
+
+mod shared_bytes {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::Arc;
+
+    pub fn serialize<S>(data: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        data.as_ref().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Arc<[u8]>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<u8>::deserialize(deserializer).map(Arc::from)
+    }
 }
 
 #[pyclass(name = "ImagePayload")]
@@ -107,7 +130,7 @@ impl ImagePayload {
     #[new]
     pub fn new() -> Self {
         ImagePayload {
-            data: Vec::new(),
+            data: Arc::from(Vec::<u8>::new()),
             original_height: 0,
             original_width: 0,
             height: 0,
@@ -116,6 +139,18 @@ impl ImagePayload {
             bit_depth: 0,
             is_encoded: false,
         }
+    }
+
+    /// Explicit access to bytes returns an owned Python copy. Cloning the
+    /// ImagePayload wrapper itself shares the underlying Rust allocation.
+    #[getter]
+    pub fn data(&self) -> Vec<u8> {
+        self.data.as_ref().to_vec()
+    }
+
+    #[setter]
+    pub fn set_data(&mut self, data: Vec<u8>) {
+        self.data = Arc::from(data);
     }
 
     /// Convert this ImagePayload to a PIL Image directly in Rust
@@ -127,7 +162,7 @@ impl ImagePayload {
             let bytes_io = py
                 .import("io")?
                 .getattr("BytesIO")?
-                .call1((self.data.as_slice(),))?;
+                .call1((self.data.as_ref(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
             Ok(image.into())
         } else {
@@ -140,10 +175,7 @@ impl ImagePayload {
             };
 
             let np_array = numpy
-                .call_method1(
-                    "frombuffer",
-                    (self.data.as_slice(), numpy.getattr("uint8")?),
-                )?
+                .call_method1("frombuffer", (self.data.as_ref(), numpy.getattr("uint8")?))?
                 .call_method1("reshape", (shape,))?;
 
             let pil = py.import("PIL.Image")?;
@@ -151,10 +183,7 @@ impl ImagePayload {
                 // Greyscale image - use 2D shape and create directly
                 let shape_2d = (self.height, self.width);
                 let np_array_2d = numpy
-                    .call_method1(
-                        "frombuffer",
-                        (self.data.as_slice(), numpy.getattr("uint8")?),
-                    )?
+                    .call_method1("frombuffer", (self.data.as_ref(), numpy.getattr("uint8")?))?
                     .call_method1("reshape", (shape_2d,))?;
                 let image = pil.call_method1("fromarray", (np_array_2d,))?;
                 Ok(image.call_method1("convert", ("L",))?.into())
@@ -172,8 +201,6 @@ impl ImagePayload {
 
     /// Get the image as a numpy array (zero-copy when possible)
     pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let numpy = py.import("numpy")?;
-
         if self.is_encoded {
             // For encoded images, we need to decode first
             // This is not zero-copy but necessary for encoded data
@@ -181,7 +208,7 @@ impl ImagePayload {
             let bytes_io = py
                 .import("io")?
                 .getattr("BytesIO")?
-                .call1((self.data.as_slice(),))?;
+                .call1((self.data.as_ref(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
             let np_array = image
                 .call_method0("convert")?
@@ -189,22 +216,27 @@ impl ImagePayload {
                 .call_method0("to_numpy")?;
             Ok(np_array.into())
         } else {
-            // For raw images, create zero-copy numpy array
-            let shape: (usize, usize, usize) = if self.channels == 1 {
-                (self.height, self.width, 1)
-            } else {
-                (self.height, self.width, self.channels as usize)
-            };
-
-            let np_array = numpy
-                .call_method1(
-                    "frombuffer",
-                    (self.data.as_slice(), numpy.getattr("uint8")?),
-                )?
-                .call_method1("reshape", (shape,))?;
-
-            Ok(np_array.into())
+            let owner = Py::new(
+                py,
+                SharedImageBuffer {
+                    data: self.data.clone(),
+                },
+            )?;
+            numpy_from_buffer(py, owner.bind(py).as_any(), self)
         }
+    }
+
+    unsafe fn __getbuffer__(
+        slf: Bound<'_, Self>,
+        view: *mut ffi::Py_buffer,
+        flags: c_int,
+    ) -> PyResult<()> {
+        let payload = slf.borrow();
+        unsafe { fill_readonly_buffer(view, flags, payload.data.as_ref(), slf.into_any()) }
+    }
+
+    unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
+        unsafe { release_buffer_format(view) };
     }
 }
 
@@ -218,6 +250,48 @@ impl PythonImagePayload {
     /// Convert to PIL image (this is the main method that gets called)
     pub fn __call__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.inner.to_pil_image(py)
+    }
+
+    #[getter]
+    pub fn width(&self) -> usize {
+        self.inner.width
+    }
+
+    #[getter]
+    pub fn height(&self) -> usize {
+        self.inner.height
+    }
+
+    #[getter]
+    pub fn size(&self) -> (usize, usize) {
+        (self.inner.width, self.inner.height)
+    }
+
+    #[getter]
+    pub fn mode(&self, py: Python<'_>) -> PyResult<String> {
+        if self.inner.channels == -1 {
+            return self
+                .inner
+                .to_pil_image(py)?
+                .bind(py)
+                .getattr("mode")?
+                .extract();
+        }
+        Ok(image_mode(self.inner.channels, self.inner.bit_depth).to_owned())
+    }
+
+    /// DynamicImage expands palette formats to pixel channels when decoding.
+    /// Encoded images are rare here; consult PIL for their exact palette state.
+    #[getter]
+    pub fn palette(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        if self.inner.channels == -1 {
+            let image = self.inner.to_pil_image(py)?;
+            let palette = image.bind(py).getattr("palette")?;
+            if !palette.is_none() {
+                return Ok(Some(palette.unbind()));
+            }
+        }
+        Ok(None)
     }
 
     /// Get the underlying ImagePayload data
@@ -238,8 +312,130 @@ impl PythonImagePayload {
     }
 
     /// Convert to numpy array (exposed directly for convenience)
-    pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.inner.to_numpy_array(py)
+    pub fn to_numpy_array(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        let payload = &slf.borrow().inner;
+        if payload.is_encoded {
+            return payload.to_numpy_array(py);
+        }
+        numpy_from_buffer(py, slf.as_any(), payload)
+    }
+
+    /// NumPy's frombuffer retains a memoryview of this object as its base,
+    /// keeping the immutable Arc-backed allocation alive after the sample drops.
+    unsafe fn __getbuffer__(
+        slf: Bound<'_, Self>,
+        view: *mut ffi::Py_buffer,
+        flags: c_int,
+    ) -> PyResult<()> {
+        let payload = slf.borrow();
+        unsafe { fill_readonly_buffer(view, flags, payload.inner.data.as_ref(), slf.into_any()) }
+    }
+
+    unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
+        unsafe { release_buffer_format(view) };
+    }
+}
+
+/// Internal buffer owner used when callers start from the Rust ImagePayload
+/// pyclass instead of PythonImagePayload. Its Arc is retained by NumPy's base.
+#[pyclass]
+struct SharedImageBuffer {
+    data: Arc<[u8]>,
+}
+
+#[pymethods]
+impl SharedImageBuffer {
+    unsafe fn __getbuffer__(
+        slf: Bound<'_, Self>,
+        view: *mut ffi::Py_buffer,
+        flags: c_int,
+    ) -> PyResult<()> {
+        let owner = slf.borrow();
+        unsafe { fill_readonly_buffer(view, flags, owner.data.as_ref(), slf.into_any()) }
+    }
+
+    unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
+        unsafe { release_buffer_format(view) };
+    }
+}
+
+fn image_mode(channels: i8, bit_depth: usize) -> &'static str {
+    match (channels, bit_depth) {
+        (1, depth) if depth > 8 => "I;16",
+        (1, _) => "L",
+        (3, _) => "RGB",
+        (4, _) => "RGBA",
+        _ => "RGB",
+    }
+}
+
+fn numpy_from_buffer(
+    py: Python<'_>,
+    owner: &Bound<'_, PyAny>,
+    payload: &ImagePayload,
+) -> PyResult<Py<PyAny>> {
+    let numpy = py.import("numpy")?;
+    let shape = (
+        payload.height,
+        payload.width,
+        payload.channels.max(0) as usize,
+    );
+    let array = numpy
+        .call_method1("frombuffer", (owner, numpy.getattr("uint8")?))?
+        .call_method1("reshape", (shape,))?;
+    Ok(array.into())
+}
+
+/// Export a read-only one-dimensional byte buffer. The Python owner is retained
+/// in Py_buffer.obj, so its Arc-backed data stays alive for every outstanding view.
+unsafe fn fill_readonly_buffer(
+    view: *mut ffi::Py_buffer,
+    flags: c_int,
+    data: &[u8],
+    owner: Bound<'_, PyAny>,
+) -> PyResult<()> {
+    if view.is_null() {
+        return Err(PyBufferError::new_err("buffer view is null"));
+    }
+    if flags & ffi::PyBUF_WRITABLE == ffi::PyBUF_WRITABLE {
+        return Err(PyBufferError::new_err("image payload buffer is read-only"));
+    }
+    unsafe {
+        let buffer = &mut *view;
+        buffer.obj = owner.into_ptr();
+        buffer.buf = data.as_ptr() as *mut c_void;
+        buffer.len = data.len() as isize;
+        buffer.readonly = 1;
+        buffer.itemsize = 1;
+        buffer.format = if flags & ffi::PyBUF_FORMAT == ffi::PyBUF_FORMAT {
+            CString::new("B").unwrap().into_raw()
+        } else {
+            ptr::null_mut()
+        };
+        buffer.ndim = 1;
+        buffer.shape = if flags & ffi::PyBUF_ND == ffi::PyBUF_ND {
+            ptr::addr_of_mut!((*view).len)
+        } else {
+            ptr::null_mut()
+        };
+        buffer.strides = if flags & ffi::PyBUF_STRIDES == ffi::PyBUF_STRIDES {
+            ptr::addr_of_mut!((*view).itemsize)
+        } else {
+            ptr::null_mut()
+        };
+        buffer.suboffsets = ptr::null_mut();
+        buffer.internal = ptr::null_mut();
+    }
+    Ok(())
+}
+
+unsafe fn release_buffer_format(view: *mut ffi::Py_buffer) {
+    if !view.is_null() {
+        let format = unsafe { (*view).format };
+        if !format.is_null() {
+            drop(unsafe { CString::from_raw(format) });
+        }
     }
 }
 
@@ -464,7 +660,7 @@ mod tests {
     #[test]
     fn test_image_payload_creation() {
         let payload = ImagePayload {
-            data: vec![255, 0, 128],
+            data: Arc::from(vec![255, 0, 128]),
             original_height: 100,
             original_width: 100,
             height: 50,
@@ -485,6 +681,28 @@ mod tests {
     }
 
     #[test]
+    fn test_image_payload_clones_share_pixels_and_serde_keeps_byte_array_format() {
+        let payload = ImagePayload {
+            data: Arc::from(vec![1, 2, 3]),
+            original_height: 1,
+            original_width: 1,
+            height: 1,
+            width: 1,
+            channels: 3,
+            bit_depth: 8,
+            is_encoded: false,
+        };
+        let clone = payload.clone();
+        assert!(Arc::ptr_eq(&payload.data, &clone.data));
+
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["data"], serde_json::json!([1, 2, 3]));
+        let restored: ImagePayload = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.data.as_ref(), &[1, 2, 3]);
+        assert!(!Arc::ptr_eq(&payload.data, &restored.data));
+    }
+
+    #[test]
     fn test_sample_attributes_json() {
         let mut attributes = HashMap::new();
         attributes.insert(
@@ -502,7 +720,7 @@ mod tests {
             attributes,
             duplicate_state: 0,
             image: to_python_image_payload(ImagePayload {
-                data: vec![],
+                data: Arc::from(Vec::<u8>::new()),
                 original_height: 100,
                 original_width: 100,
                 height: 100,
@@ -533,7 +751,7 @@ mod tests {
             attributes: HashMap::new(),
             duplicate_state: 0,
             image: to_python_image_payload(ImagePayload {
-                data: vec![],
+                data: Arc::from(Vec::<u8>::new()),
                 original_height: 100,
                 original_width: 100,
                 height: 100,

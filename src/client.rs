@@ -187,6 +187,23 @@ impl DatagoClient {
         }
         let deadline = Instant::now() + TIMEOUT;
         loop {
+            // The common streaming case already has a sample queued. Avoid a GIL
+            // detach/reattach and signal poll for each ready item; CPython checks
+            // pending signals as this method returns to Python. Only leave Python
+            // when the producer is behind and this call would otherwise block.
+            match self.receive_sample_nowait() {
+                Ok(Some(Some(sample))) => return Ok(Some(sample)),
+                Ok(None) => {} // Queue is currently empty; fall through to interruptible wait.
+                Ok(Some(None)) => {
+                    self.stop_python(py)?;
+                    return Ok(None);
+                }
+                Err(_) => {
+                    self.stop_python(py)?;
+                    return Ok(None);
+                }
+            }
+
             // Reattach between short waits so main-thread calls can deliver SIGINT.
             // Background calls must also release the GIL: Python processes signals
             // on the main thread, even when the reader lives in a prefetch thread.
@@ -294,6 +311,14 @@ impl DatagoClient {
         match &self.engine {
             Some(engine) => engine.samples_rx.recv_timeout(timeout),
             None => Ok(None),
+        }
+    }
+
+    /// Outer None means no queued item; inner None is the stream-end sentinel.
+    fn receive_sample_nowait(&self) -> Result<Option<Option<Sample>>, kanal::ReceiveError> {
+        match &self.engine {
+            Some(engine) => engine.samples_rx.try_recv(),
+            None => Err(kanal::ReceiveError::Closed),
         }
     }
 

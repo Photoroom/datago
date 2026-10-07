@@ -54,7 +54,7 @@ async fn process_sample(
                                 .map(to_python_image_payload)
                                 .unwrap_or_else(|_| {
                                     to_python_image_payload(ImagePayload {
-                                        data: vec![],
+                                        data: std::sync::Arc::from(Vec::<u8>::new()),
                                         width: 0,
                                         height: 0,
                                         original_height: 0,
@@ -110,7 +110,7 @@ async fn process_sample(
                                             ),
                                             source: sample.name.clone(),
                                             image: to_python_image_payload(ImagePayload {
-                                                data: vec![],
+                                                data: std::sync::Arc::from(Vec::<u8>::new()),
                                                 width: 0,
                                                 height: 0,
                                                 original_height: 0,

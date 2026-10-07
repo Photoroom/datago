@@ -12,6 +12,20 @@ Datago handles, outside of the Python GIL
 - some optional vision processing (aligning different image payloads)
 - optional serialization
 
+Raw image payloads share immutable pixel storage between Rust sample/image
+wrappers. Accessing `get_payload()` or cloning a sample no longer copies all
+pixels. Explicitly reading `payload.data` still returns owned Python bytes; assigning
+to it replaces the storage on that payload wrapper without mutating existing views.
+
+For raw images, `sample.image.to_numpy_array()` and
+`sample.image.get_payload().to_numpy_array()` expose read-only NumPy views directly
+over the Rust-owned pixels (no intermediate Python `bytes` copy). The ndarray keeps
+the exporter and pixels alive after the sample is dropped. Since the storage is
+shared and immutable, use `array.copy()` when a writable array is needed. The image
+wrapper also exposes `width`, `height`, `size`, `mode`, and `palette` as native
+metadata properties; these avoid constructing a PIL image for common metadata
+lookups. Encoded image payloads still need decoding and are not zero-copy arrays.
+
 Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types. Speed will be network dependent, but GB/s is typical. Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
 
 ![Datago organization](assets/447175851-2277afcb-8abf-4d17-b2db-dae27c6056d0.png)

@@ -240,7 +240,7 @@ async fn pull_sample(
         attributes: sample.attributes,
         duplicate_state: sample.duplicate_state.unwrap_or(-1),
         image: to_python_image_payload(image_payload.unwrap_or(ImagePayload {
-            data: Vec::new(),
+            data: Arc::from(Vec::<u8>::new()),
             original_height: 0,
             original_width: 0,
             height: 0,
