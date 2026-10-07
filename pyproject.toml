@@ -10,7 +10,7 @@ authors = [
 ]
 description = "A high performance dataloader for Python, written in Rust"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
   "Programming Language :: Rust",
   "Programming Language :: Python :: Implementation :: CPython",
@@ -50,6 +50,8 @@ build-backend = "maturin"
 target = "x86_64-unknown-linux-gnu"
 
 [tool.maturin]
+# Track cargo release builds
+profile = "release"
 # Include additional files
 include = ["LICENCE", "README.md"]
 # Exclude files
