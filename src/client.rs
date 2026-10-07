@@ -6,12 +6,18 @@ use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
 use crate::structs::sample_to_python_types;
 use crate::structs::DatagoEngine;
-use log::{debug, error, warn};
+use log::{error, warn};
 use pyo3::prelude::*;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 const SIGNAL_INTERVAL: Duration = Duration::from_millis(100);
+
+enum ReceiveFailure {
+    Timeout,
+    Closed,
+    Python(PyErr),
+}
 
 #[pyclass]
 pub struct DatagoClient {
@@ -31,8 +37,10 @@ pub struct DatagoClient {
     pub encode_format: crate::image_processing::EncodeFormat,
     pub jpeg_quality: u8,
 
-    // Holds all the variables related to a running engine
     engine: Option<DatagoEngine>,
+    // After EOS/stop, reads return None rather than implicitly starting a new pass.
+    stopped: bool,
+    generation: u64,
 
     is_valid: bool,
 }
@@ -114,6 +122,8 @@ impl DatagoClient {
                     encode_format,
                     jpeg_quality,
                     engine: None,
+                    stopped: false,
+                    generation: 0,
                     is_valid: true,
                 }
             }
@@ -132,6 +142,8 @@ impl DatagoClient {
                     encode_format: crate::image_processing::EncodeFormat::default(),
                     jpeg_quality: 92,
                     engine: None,
+                    stopped: false,
+                    generation: 0,
                     is_valid: false,
                 }
             }
@@ -140,199 +152,272 @@ impl DatagoClient {
 
     #[pyo3(name = "start")]
     fn py_start(slf: &Bound<'_, Self>) -> PyResult<()> {
-        let mut client = Self::borrow_client(slf)?;
-        let state = &mut *client;
-        slf.py().detach(|| state.start());
+        slf.try_borrow_mut()?.start();
         Ok(())
     }
 
     #[pyo3(name = "get_sample")]
-    fn py_get_sample(slf: &Bound<'_, Self>) -> PyResult<Option<Sample>> {
-        Self::borrow_client(slf)?.get_sample_python(slf.py())
+    fn py_get_sample(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Option<Sample>> {
+        get_sample_python(slf, py)
     }
 
     #[pyo3(name = "get_sample_auto_convert")]
-    fn py_get_sample_auto_convert(slf: &Bound<'_, Self>) -> PyResult<Option<Py<PyAny>>> {
-        Self::borrow_client(slf)?.get_sample_auto_convert(slf.py())
-    }
-
-    #[pyo3(name = "stop")]
-    fn py_stop(slf: &Bound<'_, Self>) -> PyResult<()> {
-        Self::borrow_client(slf)?.stop_python(slf.py())
-    }
-}
-
-// Native callers keep the blocking Rust API; Python bindings release the GIL
-// and check signals. Drop must not call back into the Python interpreter.
-impl DatagoClient {
-    fn borrow_client<'py>(slf: &Bound<'py, Self>) -> PyResult<PyRefMut<'py, Self>> {
-        loop {
-            if let Ok(client) = slf.try_borrow_mut() {
-                return Ok(client);
-            }
-            // Reads used to serialize implicitly through the GIL. Preserve that
-            // contract without holding the GIL while another reader needs it.
-            slf.py().check_signals()?;
-            slf.py()
-                .detach(|| std::thread::sleep(Duration::from_millis(1)));
-        }
-    }
-
-    fn get_sample_python(&mut self, py: Python<'_>) -> PyResult<Option<Sample>> {
-        if !self.is_valid {
-            return Ok(None);
-        }
-        if !self.is_started {
-            py.detach(|| self.start());
-        }
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            // Reattach between short waits so main-thread calls can deliver SIGINT.
-            // Background calls must also release the GIL: Python processes signals
-            // on the main thread, even when the reader lives in a prefetch thread.
-            if let Err(error) = py.check_signals() {
-                // Cancel channels without joining potentially stalled native IO.
-                // Otherwise Drop would turn KeyboardInterrupt into another wait.
-                self.close_engine();
-                return Err(error);
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let result = py.detach(|| self.receive_sample(remaining.min(SIGNAL_INTERVAL)));
-            match result {
-                Ok(Some(sample)) => return Ok(Some(sample)),
-                Err(kanal::ReceiveErrorTimeout::Timeout) if Instant::now() < deadline => continue,
-                _ => {
-                    self.stop_python(py)?;
-                    return Ok(None);
-                }
-            }
-        }
-    }
-
-    /// Get a sample with pythonic types, using the same interruptible receive path.
-    pub fn get_sample_auto_convert(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let sample = match self.get_sample_python(py)? {
+    fn py_get_sample_auto_convert(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        let sample = match get_sample_python(slf, py)? {
             Some(sample) => sample,
             None => return Ok(None),
         };
         Ok(sample_to_python_types(sample, py))
     }
 
-    fn stop_python(&mut self, py: Python<'_>) -> PyResult<()> {
-        if let Some(mut engine) = self.close_engine() {
-            for thread in [&mut engine.feeder, &mut engine.worker] {
-                if let Some(handle) = thread.take() {
-                    // Thread::join has no timeout. Poll completion without the GIL
-                    // rather than making shutdown itself immune to KeyboardInterrupt.
-                    while !handle.is_finished() {
-                        py.check_signals()?;
-                        py.detach(|| std::thread::sleep(SIGNAL_INTERVAL));
-                    }
-                    if let Err(error) = py.detach(|| handle.join()) {
-                        error!("Failed to join datago thread: {:?}", error);
-                    }
-                }
-            }
-        }
-        Ok(())
+    #[pyo3(name = "stop")]
+    fn py_stop(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<()> {
+        stop_python(slf, py)
     }
+}
+
+impl DatagoClient {
+    /// Explicit start permits an intentional restart after stop/EOS.
     pub fn start(&mut self) {
         if self.is_started {
             return;
         }
-
-        // In Python, by default the log level is set to "warn", so we do the same here
-        // This has no effect, in case the user has previously called initialize_logging().
+        self.stopped = false;
+        if !self.is_valid {
+            return;
+        }
         initialize_logging(Some("warn".to_string()));
-
-        match self.source_type {
-            SourceType::Db => {
-                // convert the source_config to a SourceDBConfig
-                self.engine = Some(generator_http::orchestrate(self));
-            }
-            SourceType::File => {
-                self.engine = Some(generator_files::orchestrate(self));
-            }
+        self.engine = match &self.source_type {
+            SourceType::Db => Some(generator_http::orchestrate(self)),
+            SourceType::File => Some(generator_files::orchestrate(self)),
             SourceType::WebDataset => {
                 warn!("WebDataset source type is new and experimental, use with caution!\nPlease report any issues you encounter to https://github.com/Photoroom/datago/issues.");
-                self.engine = Some(generator_wds::orchestrate(self));
+                Some(generator_wds::orchestrate(self))
             }
             SourceType::Invalid => {
                 error!("Client ill-defined, probably a config error. Cannot start");
-                return;
+                None
             }
+        };
+        self.is_started = self.engine.is_some();
+        if self.is_started {
+            self.generation = self.generation.wrapping_add(1);
         }
-
-        self.is_started = true;
     }
 
-    pub fn get_sample(&mut self) -> Option<Sample> {
-        if !self.is_valid {
+    /// Clone the channel under a short PyCell borrow. The receiver is shared;
+    /// stop() can close it while Python or Rust waits without this borrow held.
+    fn sample_receiver(&mut self) -> Option<(kanal::Receiver<Option<Sample>>, u64)> {
+        if self.stopped {
             return None;
         }
-
         if !self.is_started {
             self.start();
         }
-
-        match self.receive_sample(TIMEOUT) {
-            Ok(Some(sample)) => Some(sample),
-            result => {
-                if let Err(error) = result {
-                    warn!("Failed waiting for sample, stopping the client. {error}");
-                }
-                self.stop();
-                None
-            }
-        }
+        self.engine
+            .as_ref()
+            .map(|engine| (engine.samples_rx.clone(), self.generation))
     }
 
-    fn receive_sample(
-        &self,
-        timeout: Duration,
-    ) -> Result<Option<Sample>, kanal::ReceiveErrorTimeout> {
-        match &self.engine {
-            Some(engine) => engine.samples_rx.recv_timeout(timeout),
-            None => Ok(None),
-        }
-    }
-
-    fn close_engine(&mut self) -> Option<DatagoEngine> {
+    fn take_engine(&mut self) -> Option<DatagoEngine> {
         self.is_started = false;
+        self.stopped = true;
         let engine = self.engine.take();
         if let Some(engine) = &engine {
-            // Wake both blocked producers and consumers before joining either
-            // thread. Closing only the ready-sample pipe leaves metadata sends
-            // or receives blocked while stop waits for the feeder to finish.
             let _ = engine.samples_rx.close();
             engine.metadata_rx.close();
         }
         engine
     }
 
-    pub fn stop(&mut self) {
-        if let Some(mut engine) = self.close_engine() {
-            if let Some(feeder) = engine.feeder.take() {
-                match feeder.join() {
-                    Ok(_) => debug!("Feeder thread joined successfully"),
-                    Err(e) => error!("Failed to join feeder thread: {:?}", e),
-                }
-            }
+    fn take_engine_for(&mut self, generation: u64) -> Option<DatagoEngine> {
+        if self.generation != generation {
+            return None;
+        }
+        self.take_engine()
+    }
 
-            if let Some(worker) = engine.worker.take() {
-                match worker.join() {
-                    Ok(_) => debug!("Worker thread joined successfully"),
-                    Err(e) => error!("Failed to join worker thread: {:?}", e),
+    pub fn get_sample(&mut self) -> Option<Sample> {
+        let (samples_rx, generation) = self.sample_receiver()?;
+        match receive_until(&samples_rx, Instant::now() + TIMEOUT, |timeout| {
+            samples_rx
+                .recv_timeout(timeout)
+                .map_err(|error| match error {
+                    kanal::ReceiveErrorTimeout::Timeout => ReceiveFailure::Timeout,
+                    _ => ReceiveFailure::Closed,
+                })
+        }) {
+            Ok(Some(sample)) => Some(sample),
+            Ok(None) | Err(ReceiveFailure::Closed) => {
+                if let Some(engine) = self.take_engine_for(generation) {
+                    join_engine(engine);
                 }
+                None
+            }
+            Err(ReceiveFailure::Timeout) => {
+                if let Some(engine) = self.take_engine_for(generation) {
+                    join_engine(engine);
+                }
+                None
+            }
+            Err(ReceiveFailure::Python(_)) => unreachable!("native wait has no Python callback"),
+        }
+    }
+
+    pub fn get_sample_auto_convert(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let sample = match self.get_sample() {
+            Some(sample) => sample,
+            None => return Ok(None),
+        };
+        Ok(sample_to_python_types(sample, py))
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(engine) = self.take_engine() {
+            join_engine(engine);
+        }
+    }
+}
+
+fn receive_until(
+    samples_rx: &kanal::Receiver<Option<Sample>>,
+    deadline: Instant,
+    mut wait: impl FnMut(Duration) -> Result<Option<Sample>, ReceiveFailure>,
+) -> Result<Option<Sample>, ReceiveFailure> {
+    loop {
+        match samples_rx.try_recv() {
+            Ok(Some(Some(sample))) => return Ok(Some(sample)),
+            Ok(None) => {}
+            Ok(Some(None)) | Err(_) => return Ok(None),
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match wait(remaining.min(SIGNAL_INTERVAL)) {
+            Ok(Some(sample)) => return Ok(Some(sample)),
+            Ok(None) => return Ok(None),
+            Err(ReceiveFailure::Timeout) if Instant::now() < deadline => continue,
+            Err(ReceiveFailure::Timeout) => {
+                warn!("Timeout waiting for sample after {TIMEOUT:?}");
+                return Err(ReceiveFailure::Timeout);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn get_sample_python(slf: &Bound<'_, DatagoClient>, py: Python<'_>) -> PyResult<Option<Sample>> {
+    let reader = {
+        let mut client = slf.try_borrow_mut()?;
+        client.sample_receiver()
+    };
+    let Some((samples_rx, generation)) = reader else {
+        return Ok(None);
+    };
+    let result = receive_until(&samples_rx, Instant::now() + TIMEOUT, |timeout| {
+        if let Err(error) = py.check_signals() {
+            return Err(ReceiveFailure::Python(error));
+        }
+        py.detach(|| samples_rx.recv_timeout(timeout))
+            .map_err(|error| match error {
+                kanal::ReceiveErrorTimeout::Timeout => ReceiveFailure::Timeout,
+                _ => ReceiveFailure::Closed,
+            })
+    });
+    match result {
+        Ok(Some(sample)) => Ok(Some(sample)),
+        Ok(None) | Err(ReceiveFailure::Closed | ReceiveFailure::Timeout) => {
+            stop_python_for(slf, py, generation)?;
+            Ok(None)
+        }
+        Err(ReceiveFailure::Python(error)) => {
+            cancel_and_reap_for(slf, generation)?;
+            Err(error)
+        }
+    }
+}
+
+fn cancel_and_reap_for(slf: &Bound<'_, DatagoClient>, generation: u64) -> PyResult<()> {
+    let engine = slf.try_borrow_mut()?.take_engine_for(generation);
+    if let Some(engine) = engine {
+        reap_engine(engine);
+    }
+    Ok(())
+}
+
+fn stop_python_for(slf: &Bound<'_, DatagoClient>, py: Python<'_>, generation: u64) -> PyResult<()> {
+    let engine = slf.try_borrow_mut()?.take_engine_for(generation);
+    let Some(engine) = engine else {
+        return Ok(());
+    };
+    wait_or_reap_engine(py, engine);
+    Ok(())
+}
+
+fn stop_python(slf: &Bound<'_, DatagoClient>, py: Python<'_>) -> PyResult<()> {
+    let engine = slf.try_borrow_mut()?.take_engine();
+    let Some(engine) = engine else {
+        return Ok(());
+    };
+    wait_or_reap_engine(py, engine);
+    Ok(())
+}
+
+fn wait_or_reap_engine(py: Python<'_>, engine: DatagoEngine) {
+    let deadline = Instant::now() + Duration::from_millis(100);
+    while !engine_finished(&engine) && Instant::now() < deadline {
+        py.detach(|| std::thread::sleep(Duration::from_millis(2)));
+    }
+    if engine_finished(&engine) {
+        py.detach(|| join_engine(engine));
+    } else {
+        reap_engine(engine);
+    }
+}
+
+fn join_engine(mut engine: DatagoEngine) {
+    for thread in [&mut engine.feeder, &mut engine.worker] {
+        if let Some(handle) = thread.take() {
+            if let Err(error) = handle.join() {
+                error!("Failed to join datago thread: {:?}", error);
             }
         }
     }
 }
 
+fn reap_engine(engine: DatagoEngine) {
+    if let Err(error) = std::thread::Builder::new()
+        .name("datago-cleanup".to_string())
+        .spawn(move || join_engine(engine))
+    {
+        // If the OS refuses another thread, dropping JoinHandles detaches them;
+        // do not block Python object destruction as a fallback.
+        error!("Failed to start datago cleanup reaper: {error}");
+    }
+}
+
+fn engine_finished(engine: &DatagoEngine) -> bool {
+    let feeder_finished = match &engine.feeder {
+        Some(thread) => thread.is_finished(),
+        None => true,
+    };
+    let worker_finished = match &engine.worker {
+        Some(thread) => thread.is_finished(),
+        None => true,
+    };
+    feeder_finished && worker_finished
+}
+
 // Ensure cleanup happens even if stop() wasn't called
 impl Drop for DatagoClient {
     fn drop(&mut self) {
-        self.stop();
+        // PyO3 may destroy the object while holding the GIL. Cancel immediately
+        // and let an owned reaper join workers without blocking object teardown.
+        if let Some(engine) = self.take_engine() {
+            reap_engine(engine);
+        }
     }
 }
 
@@ -355,6 +440,9 @@ mod tests {
     use crate::client::DatagoClient;
 
     #[cfg(test)]
+    use crate::structs::DatagoEngine;
+
+    #[cfg(test)]
     use std::collections::HashSet;
 
     #[cfg(test)]
@@ -365,6 +453,27 @@ mod tests {
 
     #[cfg(test)]
     use crate::structs::PythonImagePayload;
+
+    #[test]
+    fn stale_reader_cleanup_cannot_take_a_restarted_engine() {
+        let mut client = DatagoClient::new("{}".to_string());
+        let (_samples_tx, samples_rx) = kanal::bounded(1);
+        let (_metadata_tx, metadata_rx) = kanal::bounded(1);
+        client.engine = Some(DatagoEngine {
+            samples_rx,
+            metadata_rx: crate::structs::MetadataReceiver::Json(metadata_rx),
+            feeder: None,
+            worker: None,
+        });
+        client.generation = 2;
+        client.is_started = true;
+        client.stopped = false;
+
+        assert!(client.take_engine_for(1).is_none());
+        assert!(client.is_started);
+        assert!(client.take_engine_for(2).is_some());
+        assert!(!client.is_started);
+    }
 
     #[cfg(test)]
     fn get_test_source() -> String {

@@ -50,6 +50,8 @@ build-backend = "maturin"
 target = "x86_64-unknown-linux-gnu"
 
 [tool.maturin]
+# Track cargo release builds
+profile = "release"
 # Include additional files
 include = ["LICENCE", "README.md"]
 # Exclude files

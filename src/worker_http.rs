@@ -3,6 +3,7 @@ use crate::structs::{
     to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
     LatentPayload, Sample, SharedClient, UrlLatent,
 };
+use crate::worker_utils::{join_next_or_output_closed, NextTask};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
@@ -291,7 +292,7 @@ async fn async_pull_samples(
     let shareable_img_tfm = Arc::new(image_transform);
     let mut join_error: Option<JoinError> = None;
 
-    while let Ok(received) = samples_meta_rx.recv() {
+    'samples: while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
             debug!("http_worker: end of stream received, stopping there");
             let _ = samples_meta_rx.close();
@@ -310,25 +311,33 @@ async fn async_pull_samples(
 
         // If we have enough tasks, we'll wait for the older one to finish
         if tasks.len() >= max_tasks {
-            match tasks.join_next().await {
-                Some(Ok(_)) => {
+            match join_next_or_output_closed(&mut tasks, &shareable_channel_tx).await {
+                NextTask::Completed(Some(Ok(_))) => {
                     count += 1;
                 }
-                Some(Err(e)) => {
+                NextTask::Completed(Some(Err(e))) => {
                     // Task failed, log the error
                     error!("file_worker: task failed with error: {e}");
                     join_error = Some(e);
-                    break;
+                    break 'samples;
                 }
-                None => {
+                NextTask::Completed(None) => {
                     // Task was cancelled or panicked
                     error!("file_worker: task was cancelled or panicked");
                 }
+                NextTask::OutputClosed => break 'samples,
             }
         }
         if count >= limit {
             break;
         }
+    }
+
+    // Release the page feeder on early limit/error exits as well as EOS.
+    let _ = samples_meta_rx.close();
+
+    if shareable_channel_tx.is_closed() {
+        tasks.abort_all();
     }
 
     // Make sure to wait for all the remaining tasks
@@ -367,30 +376,31 @@ pub fn pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            match async_pull_samples(
-                client,
-                samples_meta_rx,
-                samples_tx,
-                image_transform,
-                encoding,
-                limit,
-            )
-            .await
-            {
-                Ok(_) => {
-                    debug!("http_worker: all samples pulled successfully");
-                }
-                Err(e) => {
-                    error!("http_worker: error pulling samples: {e}");
-                }
+        .unwrap();
+    runtime.block_on(async {
+        match async_pull_samples(
+            client,
+            samples_meta_rx,
+            samples_tx,
+            image_transform,
+            encoding,
+            limit,
+        )
+        .await
+        {
+            Ok(_) => {
+                debug!("http_worker: all samples pulled successfully");
             }
-        });
+            Err(e) => {
+                error!("http_worker: error pulling samples: {e}");
+            }
+        }
+    });
+    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
 }
 
 #[cfg(test)]

@@ -1,19 +1,25 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
+use crate::worker_utils::{join_next_or_output_closed, NextTask};
 use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Use buffered reading instead of loading entire file at once for better memory efficiency
-    let file = std::fs::File::open(path)
-        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
-    let reader = std::io::BufReader::new(file);
-
-    image::ImageReader::new(reader)
-        .with_guessed_format()?
-        .decode()
+    // The image decoder and std file reads are blocking. Keep them off Tokio's
+    // async worker threads so cancellation/channel handling can still progress.
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(path)
+            .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?;
+        let reader = std::io::BufReader::new(file);
+        image::ImageReader::new(reader)
+            .with_guessed_format()?
+            .decode()
+    })
+    .await
+    .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?
 }
 
 async fn image_payload_from_path(
@@ -100,10 +106,14 @@ async fn async_pull_samples(
         // Check if we have capacity before spawning new tasks
         if tasks.len() >= max_tasks {
             // Wait for some tasks to complete before adding more
-            if let Some(result) = tasks.join_next().await {
-                if result.is_ok() {
-                    count += 1;
+            match join_next_or_output_closed(&mut tasks, &samples_tx).await {
+                NextTask::OutputClosed => break,
+                NextTask::Completed(Some(result)) => {
+                    if result.is_ok() {
+                        count += 1;
+                    }
                 }
+                NextTask::Completed(None) => {}
             }
         }
 
@@ -118,6 +128,16 @@ async fn async_pull_samples(
         if count >= limit {
             break;
         }
+    }
+
+    // Early limit exit must release the feeder even though DatagoEngine retains
+    // its own receiver clone for explicit shutdown.
+    let _ = samples_metadata_rx.close();
+
+    // A client stop closes the output receiver. Cancel queued async work rather
+    // than waiting for its result to be sent into a closed channel.
+    if samples_tx.is_closed() {
+        tasks.abort_all();
     }
 
     // Make sure to wait for all the remaining tasks
@@ -147,21 +167,24 @@ pub fn pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
 ) {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            async_pull_samples(
-                samples_metadata_rx,
-                samples_tx,
-                image_transform,
-                encoding,
-                limit,
-            )
-            .await;
-        });
+        .unwrap();
+    runtime.block_on(async {
+        async_pull_samples(
+            samples_metadata_rx,
+            samples_tx,
+            image_transform,
+            encoding,
+            limit,
+        )
+        .await;
+    });
+    // A blocking filesystem syscall already in progress is not cancellable.
+    // Do not make this worker's join wait indefinitely for Tokio's blocking pool.
+    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
 }
 
 #[cfg(test)]

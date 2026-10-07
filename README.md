@@ -31,13 +31,17 @@ datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
 
 `return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
 
-Python sample reads release the GIL while waiting and check Python signals every
-100 ms, so Ctrl-C can interrupt a stalled reader (including readers in background
-prefetch threads). `stop()` closes both pipeline queues before joining threads,
-releases the GIL during shutdown, and is also interruptible. Prefer `try/finally`
-with `client.stop()` for explicit cleanup. On interruption, queued work is cancelled;
-already-running native filesystem/network operations may finish later rather than
-delaying `KeyboardInterrupt`. The native Rust client retains its blocking API.
+Python sample reads try the ready queue without releasing the GIL, then release it
+while waiting and poll Python signals every 100 ms. Python delivers SIGINT handlers
+on the main thread only. If a reader runs in a background thread, handle Ctrl-C on
+the main thread by calling `client.stop()`; that cancellation is safe while the
+reader is waiting. `stop()` closes both pipeline queues, releases the GIL while
+joining, and returns after a short grace period if native work is still in flight.
+Remaining thread handles are retained by a cleanup reaper rather than detached.
+Prefer `try/finally` with `client.stop()` for explicit cleanup. Queued async work is
+cancelled; a filesystem/network syscall already executing cannot be forcibly stopped
+and may continue in the background until the OS call returns. The native Rust client
+retains its blocking API.
 
 <details> <summary><strong>Dataroom</strong></summary>
 
@@ -201,7 +205,7 @@ Just install the rust toolchain via rustup
 
 ## [Apple Silicon MacOS only]
 
-If you are using an Apple Silicon Mac OS machine, create a `.cargo/config` file and paste the following:
+If you are using an Apple Silicon Mac OS machine, create a `.cargo/config.toml` file and paste the following:
 
 ``` cfg
 [target.x86_64-apple-darwin]
@@ -219,7 +223,7 @@ rustflags = [
 
 ## Build a benchmark CLI
 
-`Cargo run --release --  -h` to get all the information, should be fairly straightforward
+`cargo run --release --  -h` to get all the information, should be fairly straightforward
 
 ## Run the rust test suite
 

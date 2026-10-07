@@ -7,6 +7,7 @@ pub mod image_processing;
 pub mod structs;
 pub mod worker_files;
 pub mod worker_http;
+mod worker_utils;
 pub mod worker_wds;
 
 pub use client::{initialize_logging, DatagoClient};

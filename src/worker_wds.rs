@@ -1,5 +1,6 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
+use crate::worker_utils::{join_next_or_output_closed, NextTask};
 use log::{debug, error, info};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -193,7 +194,7 @@ async fn async_deserialize_samples(
     let shareable_img_tfm = Arc::new(image_transform);
     let mut join_error: Option<String> = None;
 
-    while let Ok(sample) = samples_metadata_rx.recv() {
+    'samples: while let Ok(sample) = samples_metadata_rx.recv() {
         if sample.is_empty() {
             info!("wds_worker: end of stream received, stopping there");
             let _ = samples_metadata_rx.close();
@@ -211,20 +212,27 @@ async fn async_deserialize_samples(
 
         // If we have enough tasks, we'll wait for the older one to finish
         if tasks.len() >= max_tasks {
-            if let Some(result) = tasks.join_next().await {
-                match result {
-                    Ok(_) => count += 1,
-                    Err(e) => {
-                        join_error = Some(format!("Task failed: {e}"));
-                        break;
-                    }
+            match join_next_or_output_closed(&mut tasks, &shareable_channel_tx).await {
+                NextTask::Completed(Some(Ok(_))) => count += 1,
+                NextTask::Completed(Some(Err(e))) => {
+                    join_error = Some(format!("Task failed: {e}"));
+                    break 'samples;
                 }
+                NextTask::Completed(None) => {}
+                NextTask::OutputClosed => break 'samples,
             }
 
             if count >= limit {
                 break;
             }
         }
+    }
+
+    // Close even on early limit/error exits so the shard feeder observes cancel.
+    let _ = samples_metadata_rx.close();
+
+    if shareable_channel_tx.is_closed() {
+        tasks.abort_all();
     }
 
     // Make sure to wait for all the remaining tasks
@@ -263,24 +271,25 @@ pub fn deserialize_samples(
     limit: usize,
     extension_reference_image: String,
 ) {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get()) // Tasks in flight are limited by DATAGO_MAX_TASKS env
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            match async_deserialize_samples(
-                samples_metadata_rx,
-                samples_tx,
-                image_transform,
-                encoding,
-                limit,
-                extension_reference_image,
-            )
-            .await
-            {
-                Ok(_) => debug!("wds_worker: all samples processed successfully"),
-                Err(e) => error!("wds_worker: error processing samples : {e}"),
-            }
-        });
+        .unwrap();
+    runtime.block_on(async {
+        match async_deserialize_samples(
+            samples_metadata_rx,
+            samples_tx,
+            image_transform,
+            encoding,
+            limit,
+            extension_reference_image,
+        )
+        .await
+        {
+            Ok(_) => debug!("wds_worker: all samples processed successfully"),
+            Err(e) => error!("wds_worker: error processing samples : {e}"),
+        }
+    });
+    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
 }

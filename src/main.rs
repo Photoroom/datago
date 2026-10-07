@@ -12,6 +12,7 @@ mod image_processing;
 mod structs;
 mod worker_files;
 mod worker_http;
+mod worker_utils;
 mod worker_wds;
 
 fn main() {
