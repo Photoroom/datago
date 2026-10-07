@@ -193,7 +193,7 @@ Just install the rust toolchain via rustup
 
 ## [Apple Silicon MacOS only]
 
-If you are using an Apple Silicon Mac OS machine, create a `.cargo/config` file and paste the following:
+If you are using an Apple Silicon Mac OS machine, create a `.cargo/config.toml` file and paste the following:
 
 ``` cfg
 [target.x86_64-apple-darwin]
@@ -211,7 +211,7 @@ rustflags = [
 
 ## Build a benchmark CLI
 
-`Cargo run --release --  -h` to get all the information, should be fairly straightforward
+`cargo run --release --  -h` to get all the information, should be fairly straightforward
 
 ## Run the rust test suite
 
