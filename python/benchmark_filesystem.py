@@ -18,6 +18,17 @@ def _to_numpy(image):
     return np.asarray(image)
 
 
+def _image_nbytes(image) -> int:
+    """Raw pixel payload size in bytes (metadata excluded)."""
+    # ImageFolder yields (image, target) tuples; unwrap if needed.
+    if isinstance(image, (tuple, list)):
+        image = image[0]
+    if isinstance(image, np.ndarray):
+        return int(image.nbytes)
+    # PIL.Image: 1 byte per band for the 8-bit modes datago produces.
+    return image.width * image.height * len(image.getbands())
+
+
 def benchmark(
     root_path: str = typer.Option(
         os.getenv("DATAGO_TEST_FILESYSTEM", ""), help="The source to test out"
@@ -90,11 +101,13 @@ def benchmark(
 
     img = None
     count = 0
+    total_bytes = 0
     for sample in tqdm(
         datago_dataset, desc=f"Datago ({image_format})", dynamic_ncols=True
     ):
         assert sample["id"] != ""
         img = sample["image"]
+        total_bytes += _image_nbytes(img)
 
         if count < limit - 1:
             del img
@@ -103,10 +116,21 @@ def benchmark(
         count += 1
 
     assert count == limit, f"Expected {limit} samples, got {count}"
-    fps = limit / (time.time() - start)
-    results = {"datago": {"fps": fps, "count": count, "image_format": image_format}}
+    elapsed = time.time() - start
+    fps = limit / elapsed
+    bandwidth_mbps = total_bytes / elapsed / 1e6
+    results = {
+        "datago": {
+            "fps": fps,
+            "count": count,
+            "bytes": total_bytes,
+            "bandwidth_mbps": bandwidth_mbps,
+            "image_format": image_format,
+        }
+    }
     print(
-        f"Datago - FPS {fps:.2f} - workers {num_workers} - image_format {image_format}"
+        f"Datago - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
+        f"workers {num_workers} - image_format {image_format}"
     )
     del datago_dataset
 
@@ -156,22 +180,30 @@ def benchmark(
         # Iterate over the DataLoader
         start = time.time()
         n_images = 0
+        total_bytes = 0
         for batch in tqdm(
             dataloader, desc=f"Torch ({image_format})", dynamic_ncols=True
         ):
             n_images += len(batch)
+            for item in batch:
+                total_bytes += _image_nbytes(item)
             if n_images > limit:
                 break
 
             del batch  # Help with memory pressure, same as above
-        fps = n_images / (time.time() - start)
+        elapsed = time.time() - start
+        fps = n_images / elapsed
+        bandwidth_mbps = total_bytes / elapsed / 1e6
         results["torch"] = {
             "fps": fps,
             "count": n_images,
+            "bytes": total_bytes,
+            "bandwidth_mbps": bandwidth_mbps,
             "image_format": image_format,
         }
         print(
-            f"Torch - FPS {fps:.2f} - workers {num_workers} - image_format {image_format}"
+            f"Torch - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
+            f"workers {num_workers} - image_format {image_format}"
         )
 
     return results
