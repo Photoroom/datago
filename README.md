@@ -12,6 +12,32 @@ Datago handles, outside of the Python GIL
 - some optional vision processing (aligning different image payloads)
 - optional serialization
 
+Raw image payloads share immutable pixel storage between Rust sample/image
+wrappers. Accessing `get_payload()` or cloning a sample no longer copies all
+pixels. Explicitly reading `payload.data` still returns owned Python bytes; assigning
+to it replaces the storage on that payload wrapper without mutating existing views.
+
+For raw images, `sample.image.to_numpy_array()` and
+`sample.image.get_payload().to_numpy_array()` expose read-only NumPy views directly
+over the Rust-owned pixels (no intermediate Python `bytes` copy). The ndarray keeps
+the exporter and pixels alive after the sample is dropped. Since the storage is
+shared and immutable, use `array.copy()` when a writable array is needed. The image
+wrapper also exposes `width`, `height`, `size`, `mode`, and `palette` as native
+metadata properties; these avoid constructing a PIL image for common metadata
+lookups. Set `"image_format": "numpy"` in the client config to have
+`get_sample_auto_convert()` return read-only, zero-copy ndarrays for `image`,
+`masks`, and `additional_images` instead of PIL images (the default is `"pil"`).
+Single-channel images are shaped `(H, W)` and multi-channel `(H, W, C)`, and the
+dtype follows the source (`uint8`, `uint16`, or `float32`), matching PIL /
+torchvision. PIL output cannot represent multi-channel images wider than 8 bits and
+raises in that case; use `"image_format": "numpy"` to keep their full depth.
+
+Encoded payloads (`pre_encode_images=True`) behave differently: the buffer protocol
+(`memoryview(payload)`, `numpy.frombuffer(payload, ...)`, `numpy.asarray(payload)`)
+exposes the *compressed* bytes rather than decoded pixels, and `payload.data` is the
+encoded byte string. Use `to_numpy_array()` or `to_pil_image()` to decode those
+payloads; unlike the raw path, decoding is not zero-copy.
+
 Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types. Speed will be network dependent, but GB/s is typical. Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
 
 ![Datago organization](assets/447175851-2277afcb-8abf-4d17-b2db-dae27c6056d0.png)
