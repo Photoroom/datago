@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -34,8 +35,31 @@ pub struct DatagoClientConfig {
 }
 
 #[derive(Debug)]
+pub enum MetadataReceiver {
+    Json(kanal::Receiver<serde_json::Value>),
+    Tarball(kanal::Receiver<TarballSample>),
+}
+
+impl MetadataReceiver {
+    pub fn close(&self) {
+        match self {
+            Self::Json(receiver) => {
+                let _ = receiver.close();
+            }
+            Self::Tarball(receiver) => {
+                let _ = receiver.close();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct DatagoEngine {
     pub samples_rx: kanal::Receiver<Option<Sample>>,
+    pub metadata_rx: MetadataReceiver,
+    /// Flipped when the engine is torn down (stop, end-of-stream, or interrupt)
+    /// so workers can abort in-flight tasks promptly.
+    pub cancel: CancellationToken,
     pub feeder: Option<thread::JoinHandle<()>>,
     pub worker: Option<thread::JoinHandle<()>>,
 }

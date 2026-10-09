@@ -8,10 +8,11 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::structs::{new_shared_client, DatagoEngine, SharedClient};
+use crate::structs::{new_shared_client, DatagoEngine, MetadataReceiver, SharedClient};
 use kanal::bounded;
 use kanal::Sender;
 use std::thread;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDBConfig {
@@ -532,6 +533,8 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
+    let cancel = CancellationToken::new();
+    let cancel_worker = cancel.clone();
 
     let worker = Some(thread::spawn(move || {
         worker_http::pull_samples(
@@ -541,11 +544,14 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             image_transform,
             encoding,
             limit,
+            cancel_worker,
         );
     }));
 
     DatagoEngine {
         samples_rx,
+        metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
+        cancel,
         feeder,
         worker,
     }

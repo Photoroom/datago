@@ -12,6 +12,7 @@ mod image_processing;
 mod structs;
 mod worker_files;
 mod worker_http;
+mod worker_utils;
 mod worker_wds;
 
 fn main() {
@@ -123,7 +124,7 @@ fn main() {
 
     info!("{config}");
 
-    let mut client = client::DatagoClient::new(config.to_string());
+    let client = client::DatagoClient::new(config.to_string());
 
     // -----------------------------------------------------------------
     let mut size_buckets: HashMap<String, i32> = HashMap::new();

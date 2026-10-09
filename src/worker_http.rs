@@ -3,12 +3,14 @@ use crate::structs::{
     to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
     LatentPayload, Sample, SharedClient, UrlLatent,
 };
+use crate::worker_utils::{join_next_or_cancelled, max_tasks_from_env, NextTask};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::task::JoinError;
+use tokio_util::sync::CancellationToken;
 // ------------------------------------------------------------------
 #[derive(Debug, Serialize, Deserialize)]
 struct SampleMetadata {
@@ -270,20 +272,17 @@ async fn async_pull_samples(
     image_transform: Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
+    cancel: CancellationToken,
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
-    // We'll keep a pool of N async tasks in parallel
-    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .unwrap_or_else(|_| "0".to_string())
-        .parse::<usize>()
-        .unwrap_or(num_cpus::get() * 4);
-
+    // We'll keep a pool of N async tasks in parallel. DB downloads are IO-bound,
+    // so default to 4x CPUs; DATAGO_MAX_TASKS overrides it.
     let max_retries = std::env::var("DATAGO_MAX_RETRIES")
         .ok()
         .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(3);
 
-    let max_tasks = min(default_max_tasks, limit);
+    let max_tasks = min(max_tasks_from_env(num_cpus::get() * 4), limit);
     debug!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
@@ -291,7 +290,7 @@ async fn async_pull_samples(
     let shareable_img_tfm = Arc::new(image_transform);
     let mut join_error: Option<JoinError> = None;
 
-    while let Ok(received) = samples_meta_rx.recv() {
+    'samples: while let Ok(received) = samples_meta_rx.recv() {
         if received == serde_json::Value::Null {
             debug!("http_worker: end of stream received, stopping there");
             let _ = samples_meta_rx.close();
@@ -310,25 +309,35 @@ async fn async_pull_samples(
 
         // If we have enough tasks, we'll wait for the older one to finish
         if tasks.len() >= max_tasks {
-            match tasks.join_next().await {
-                Some(Ok(_)) => {
+            match join_next_or_cancelled(&mut tasks, &cancel).await {
+                NextTask::Completed(Some(Ok(_))) => {
                     count += 1;
                 }
-                Some(Err(e)) => {
+                NextTask::Completed(Some(Err(e))) => {
                     // Task failed, log the error
-                    error!("file_worker: task failed with error: {e}");
+                    error!("http_worker: task failed with error: {e}");
                     join_error = Some(e);
-                    break;
+                    break 'samples;
                 }
-                None => {
+                NextTask::Completed(None) => {
                     // Task was cancelled or panicked
-                    error!("file_worker: task was cancelled or panicked");
+                    error!("http_worker: task was cancelled or panicked");
                 }
+                NextTask::Cancelled => break 'samples,
             }
         }
         if count >= limit {
             break;
         }
+    }
+
+    // Release the page feeder on early limit/error exits as well as EOS.
+    let _ = samples_meta_rx.close();
+
+    // A client stop flips the cancel token. Abort queued async work rather than
+    // waiting for a stalled download to finish.
+    if cancel.is_cancelled() {
+        tasks.abort_all();
     }
 
     // Make sure to wait for all the remaining tasks
@@ -338,6 +347,7 @@ async fn async_pull_samples(
                 debug!("dispatch_shards: task completed successfully");
                 count += 1;
             }
+            Err(e) if e.is_cancelled() => {} // expected after abort_all() on stop
             Err(e) => {
                 error!("dispatch_shards: task failed with error: {e}");
                 if join_error.is_none() {
@@ -366,31 +376,34 @@ pub fn pull_samples(
     image_transform: Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
+    cancel: CancellationToken,
 ) {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            match async_pull_samples(
-                client,
-                samples_meta_rx,
-                samples_tx,
-                image_transform,
-                encoding,
-                limit,
-            )
-            .await
-            {
-                Ok(_) => {
-                    debug!("http_worker: all samples pulled successfully");
-                }
-                Err(e) => {
-                    error!("http_worker: error pulling samples: {e}");
-                }
+        .unwrap();
+    runtime.block_on(async {
+        match async_pull_samples(
+            client,
+            samples_meta_rx,
+            samples_tx,
+            image_transform,
+            encoding,
+            limit,
+            cancel,
+        )
+        .await
+        {
+            Ok(_) => {
+                debug!("http_worker: all samples pulled successfully");
             }
-        });
+            Err(e) => {
+                error!("http_worker: error pulling samples: {e}");
+            }
+        }
+    });
+    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
 }
 
 #[cfg(test)]
