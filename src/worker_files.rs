@@ -1,6 +1,6 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
-use crate::worker_utils::{join_next_or_cancelled, NextTask};
+use crate::worker_utils::{join_next_or_cancelled, max_tasks_from_env, NextTask};
 use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -88,12 +88,8 @@ async fn async_pull_samples(
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
-    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(num_cpus::get()); // Number of CPUs is actually a good heuristic for a small machine);
-
-    let max_tasks = min(default_max_tasks, limit);
+    // Number of CPUs is a good heuristic for a small machine; DATAGO_MAX_TASKS overrides it.
+    let max_tasks = min(max_tasks_from_env(num_cpus::get()), limit);
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);

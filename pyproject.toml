@@ -72,5 +72,17 @@ strip = true
 # supports cargo (default) and git.
 sdist-generator = "cargo"
 
+[tool.uv]
+# uv only rebuilds the project when pyproject.toml/setup.py change, so a plain
+# `uv run` keeps serving a stale wheel after Rust edits. Track the Cargo inputs
+# too, so the extension is rebuilt whenever the compiled sources change.
+# (Defining cache-keys replaces the defaults, hence pyproject.toml is listed.)
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "src/**/*.rs" },
+]
+
 [tool.ty.rules]
 unresolved-import = "ignore"

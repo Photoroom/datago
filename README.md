@@ -25,7 +25,8 @@ Please note that in all the of the following cases, you can directly get an Iter
 
 ```python
 from dataset import DatagoIterDataset
-client_config = {} # See below for examples
+
+client_config = {}  # See below for examples
 datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
 ```
 
@@ -93,8 +94,8 @@ config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
-        "random_sampling": False, # True if used directly for training
-        "rank": 0, # Optional, distributed workloads are possible
+        "random_sampling": False,  # True if used directly for training
+        "rank": 0,  # Optional, distributed workloads are possible
         "world_size": 1,
     },
     "limit": 200,
@@ -130,13 +131,13 @@ client_config = {
     "source_config": {
         "url": url,
         "random_sampling": False,
-        "concurrent_downloads": 8, # The number of TarballSamples which should be handled concurrently
+        "concurrent_downloads": 8,  # The number of TarballSamples which should be handled concurrently
         "rank": 0,
         "world_size": 1,
     },
     "prefetch_buffer_size": 128,
     "samples_buffer_size": 64,
-    "limit": 1_000_000, # Dummy example, max number of samples you would like to serve
+    "limit": 1_000_000,  # Dummy example, max number of samples you would like to serve
 }
 
 client = DatagoClient(json.dumps(client_config))
@@ -278,7 +279,7 @@ The following benchmarks are using ImageNet 1k, which is very low resolution and
 
 One liner to repro locally (rebuilding the package):
 ```bash
-DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --python 3.14 --group dev python/benchmark_filesystem.py --sweep --limit 500
+DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --reinstall-package datago --python 3.14 --group dev python/benchmark_filesystem.py --sweep --limit 500
 ```
 
 ## Webdataset: FakeIN

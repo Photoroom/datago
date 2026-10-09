@@ -1,6 +1,6 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
-use crate::worker_utils::{join_next_or_cancelled, NextTask};
+use crate::worker_utils::{join_next_or_cancelled, max_tasks_from_env, NextTask};
 use log::{debug, error, info};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -152,7 +152,7 @@ async fn process_sample(
                     match samples_tx.send(final_sample) {
                         Ok(_) => (),
                         Err(e) => {
-                            if !samples_tx.is_closed() {
+                            if !samples_tx.is_disconnected() {
                                 debug!("wds_worker: error dispatching sample: {e}");
                                 return Err(());
                             }
@@ -182,12 +182,9 @@ async fn async_deserialize_samples(
     cancel: CancellationToken,
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
-    // We'll keep a pool of N async tasks in parallel
-    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .unwrap_or_else(|_| "0".to_string())
-        .parse::<usize>()
-        .unwrap_or(num_cpus::get());
-    let max_tasks = min(num_cpus::get() * 4, default_max_tasks); // Ensure minimum of 8 processing tasks
+    // We'll keep a pool of N async tasks in parallel. Default to one task per CPU,
+    // capped at 4x CPUs; DATAGO_MAX_TASKS overrides the default.
+    let max_tasks = min(num_cpus::get() * 4, max_tasks_from_env(num_cpus::get()));
 
     info!("WDS: Using {max_tasks} processing tasks in worker threadpool");
     let mut tasks = tokio::task::JoinSet::new();

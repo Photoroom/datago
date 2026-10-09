@@ -197,7 +197,7 @@ async fn pull_tarballs(
     // Send the last collected sample if any
     if !current_files_for_sample.content.is_empty()
         && samples_metadata_tx.send(current_files_for_sample).is_err()
-        && !samples_metadata_tx.is_closed()
+        && !samples_metadata_tx.is_disconnected()
     {
         return Err("Failed to send last sample".into());
     }
@@ -230,7 +230,7 @@ async fn pull_tarballs_task(
             Err(e) => {
                 attempt += 1;
                 debug!("Error pulling TarballSample: {e}. Attempt {attempt}/{retries}");
-                if samples_metadata_tx.is_closed() {
+                if samples_metadata_tx.is_disconnected() {
                     debug!(
                         "dispatch_shards: samples_metadata_tx channel closed, stopping retries."
                     );
@@ -325,7 +325,7 @@ async fn tasks_from_shards(
 
             for url in task_list {
                 // Escape out if the channel is closed
-                if samples_metadata_tx.is_closed() {
+                if samples_metadata_tx.is_disconnected() {
                     debug!(
                         "dispatch_shards: channel is closed, enough samples probably. Bailing out"
                     );

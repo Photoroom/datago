@@ -3,7 +3,7 @@ use crate::structs::{
     to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
     LatentPayload, Sample, SharedClient, UrlLatent,
 };
-use crate::worker_utils::{join_next_or_cancelled, NextTask};
+use crate::worker_utils::{join_next_or_cancelled, max_tasks_from_env, NextTask};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
@@ -275,18 +275,14 @@ async fn async_pull_samples(
     cancel: CancellationToken,
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
-    // We'll keep a pool of N async tasks in parallel
-    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .unwrap_or_else(|_| "0".to_string())
-        .parse::<usize>()
-        .unwrap_or(num_cpus::get() * 4);
-
+    // We'll keep a pool of N async tasks in parallel. DB downloads are IO-bound,
+    // so default to 4x CPUs; DATAGO_MAX_TASKS overrides it.
     let max_retries = std::env::var("DATAGO_MAX_RETRIES")
         .ok()
         .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(3);
 
-    let max_tasks = min(default_max_tasks, limit);
+    let max_tasks = min(max_tasks_from_env(num_cpus::get() * 4), limit);
     debug!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
