@@ -41,7 +41,9 @@ Remaining thread handles are retained by a cleanup reaper rather than detached.
 Prefer `try/finally` with `client.stop()` for explicit cleanup. Queued async work is
 cancelled; a filesystem/network syscall already executing cannot be forcibly stopped
 and may continue in the background until the OS call returns. The native Rust client
-retains its blocking API.
+retains its blocking API. Reads do not silently restart: once the stream is
+exhausted (or `stop()` has been called) `get_sample()` returns `None`, and you must
+call `start()` again to begin a new pass.
 
 <details> <summary><strong>Dataroom</strong></summary>
 
@@ -276,7 +278,7 @@ The following benchmarks are using ImageNet 1k, which is very low resolution and
 
 One liner to repro locally (rebuilding the package):
 ```bash
- DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --python 3.14 --group dev  python/benchmark_filesystem.py --sweep  --limit 500
+DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --python 3.14 --group dev python/benchmark_filesystem.py --sweep --limit 500
 ```
 
 ## Webdataset: FakeIN

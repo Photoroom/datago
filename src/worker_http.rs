@@ -3,13 +3,14 @@ use crate::structs::{
     to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
     LatentPayload, Sample, SharedClient, UrlLatent,
 };
-use crate::worker_utils::{join_next_or_output_closed, NextTask};
+use crate::worker_utils::{join_next_or_cancelled, NextTask};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::task::JoinError;
+use tokio_util::sync::CancellationToken;
 // ------------------------------------------------------------------
 #[derive(Debug, Serialize, Deserialize)]
 struct SampleMetadata {
@@ -271,6 +272,7 @@ async fn async_pull_samples(
     image_transform: Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
+    cancel: CancellationToken,
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel
@@ -311,21 +313,21 @@ async fn async_pull_samples(
 
         // If we have enough tasks, we'll wait for the older one to finish
         if tasks.len() >= max_tasks {
-            match join_next_or_output_closed(&mut tasks, &shareable_channel_tx).await {
+            match join_next_or_cancelled(&mut tasks, &cancel).await {
                 NextTask::Completed(Some(Ok(_))) => {
                     count += 1;
                 }
                 NextTask::Completed(Some(Err(e))) => {
                     // Task failed, log the error
-                    error!("file_worker: task failed with error: {e}");
+                    error!("http_worker: task failed with error: {e}");
                     join_error = Some(e);
                     break 'samples;
                 }
                 NextTask::Completed(None) => {
                     // Task was cancelled or panicked
-                    error!("file_worker: task was cancelled or panicked");
+                    error!("http_worker: task was cancelled or panicked");
                 }
-                NextTask::OutputClosed => break 'samples,
+                NextTask::Cancelled => break 'samples,
             }
         }
         if count >= limit {
@@ -336,7 +338,9 @@ async fn async_pull_samples(
     // Release the page feeder on early limit/error exits as well as EOS.
     let _ = samples_meta_rx.close();
 
-    if shareable_channel_tx.is_closed() {
+    // A client stop flips the cancel token. Abort queued async work rather than
+    // waiting for a stalled download to finish.
+    if cancel.is_cancelled() {
         tasks.abort_all();
     }
 
@@ -347,6 +351,7 @@ async fn async_pull_samples(
                 debug!("dispatch_shards: task completed successfully");
                 count += 1;
             }
+            Err(e) if e.is_cancelled() => {} // expected after abort_all() on stop
             Err(e) => {
                 error!("dispatch_shards: task failed with error: {e}");
                 if join_error.is_none() {
@@ -375,6 +380,7 @@ pub fn pull_samples(
     image_transform: Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
+    cancel: CancellationToken,
 ) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
@@ -389,6 +395,7 @@ pub fn pull_samples(
             image_transform,
             encoding,
             limit,
+            cancel,
         )
         .await
         {

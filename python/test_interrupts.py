@@ -206,3 +206,54 @@ def test_stop_is_idempotent_and_explicit_start_restarts(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "STOPPED" in result.stdout
+
+
+def test_concurrent_readers_do_not_raise_borrow_error(tmp_path):
+    """Concurrent get_sample() must serialize on the internal state lock instead
+    of raising `RuntimeError: Already borrowed` (the pyclass is frozen)."""
+    import threading
+
+    from PIL import Image
+
+    from datago import DatagoClient
+
+    count = 64
+    for index in range(count):
+        Image.new("RGB", (8, 8)).save(tmp_path / f"{index}.png")
+    client = DatagoClient(
+        json.dumps(
+            {
+                "source_type": "file",
+                "source_config": {"root_path": str(tmp_path)},
+                "limit": count,
+                "samples_buffer_size": 4,
+            }
+        )
+    )
+    client.start()
+
+    errors: list[BaseException] = []
+    seen: list[str] = []
+    lock = threading.Lock()
+
+    def read():
+        try:
+            while True:
+                sample = client.get_sample()
+                if sample is None:
+                    return
+                with lock:
+                    seen.append(sample.id)
+        except BaseException as exc:  # noqa: BLE001 - surface any borrow error
+            errors.append(exc)
+
+    threads = [threading.Thread(target=read) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    client.stop()
+
+    assert not errors, errors
+    assert len(seen) == count
+    assert len(set(seen)) == count

@@ -1,5 +1,7 @@
 use crate::client::DatagoClient;
-use crate::structs::{new_shared_client, BinaryFile, DatagoEngine, SharedClient, TarballSample};
+use crate::structs::{
+    new_shared_client, BinaryFile, DatagoEngine, MetadataReceiver, SharedClient, TarballSample,
+};
 use crate::worker_wds;
 
 use async_tar::Archive;
@@ -18,7 +20,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use tokio::io::BufReader;
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tokio_util::io::StreamReader; // For grouping, if more complex grouping is needed
+use tokio_util::io::StreamReader;
+use tokio_util::sync::CancellationToken; // For grouping, if more complex grouping is needed
 
 fn default_reference_image_type() -> String {
     "jpg".to_string()
@@ -490,6 +493,8 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
+    let cancel = CancellationToken::new();
+    let cancel_worker = cancel.clone();
     let worker = Some(thread::spawn(move || {
         worker_wds::deserialize_samples(
             samples_metadata_rx_worker,
@@ -498,12 +503,14 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             encoding,
             limit,
             extension_reference_image_type,
+            cancel_worker,
         );
     }));
 
     DatagoEngine {
         samples_rx,
-        metadata_rx: crate::structs::MetadataReceiver::Tarball(samples_metadata_rx),
+        metadata_rx: MetadataReceiver::Tarball(samples_metadata_rx),
+        cancel,
         feeder,
         worker,
     }
@@ -602,7 +609,7 @@ mod tests {
                 "samples_buffer_size": 1
             });
 
-            let mut client = DatagoClient::new(client_config.to_string());
+            let client = DatagoClient::new(client_config.to_string());
             let engine = orchestrate(&client);
             let mut count = 0;
             let limit: i32 = 2;
@@ -668,7 +675,7 @@ mod tests {
                 "samples_buffer_size": 1
             });
 
-            let mut client = DatagoClient::new(client_config.to_string());
+            let client = DatagoClient::new(client_config.to_string());
             let engine = orchestrate(&client);
             let mut count = 0;
 

@@ -6,6 +6,7 @@ use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::thread;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
@@ -168,6 +169,8 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     };
     let limit = client.limit;
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
+    let cancel = CancellationToken::new();
+    let cancel_worker = cancel.clone();
 
     let worker = Some(thread::spawn(move || {
         worker_files::pull_samples(
@@ -176,6 +179,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             image_transform,
             encoding,
             limit,
+            cancel_worker,
         );
         debug!("Worker thread completed");
     }));
@@ -183,6 +187,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     DatagoEngine {
         samples_rx,
         metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
+        cancel,
         feeder,
         worker,
     }

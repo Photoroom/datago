@@ -1,32 +1,26 @@
 //! Small cancellation-aware helpers shared by the asynchronous source workers.
 
-use crate::structs::Sample;
-use kanal::Sender;
 use tokio::task::{JoinError, JoinSet};
+use tokio_util::sync::CancellationToken;
 
 pub enum NextTask<T> {
     Completed(Option<Result<T, JoinError>>),
-    OutputClosed,
+    Cancelled,
 }
 
-const OUTPUT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
-
-/// Wait for a task, but keep observing the downstream receiver. Channel closure
-/// is the cross-source cancellation signal; polling is bounded to 20 ms because
-/// kanal's synchronous Sender does not expose an async `closed()` future.
-pub async fn join_next_or_output_closed<T: Send + 'static>(
+/// Wait for the next task to finish, cancel all remaining work as soon as the
+/// engine's cancellation token flips. `stop()` flips the token (see
+/// `DatagoClient::take_engine_if`), so a stalled download or decode is dropped
+/// instead of being awaited to completion.
+pub async fn join_next_or_cancelled<T: Send + 'static>(
     tasks: &mut JoinSet<T>,
-    output: &Sender<Option<Sample>>,
+    cancel: &CancellationToken,
 ) -> NextTask<T> {
-    loop {
-        tokio::select! {
-            result = tasks.join_next() => return NextTask::Completed(result),
-            _ = tokio::time::sleep(OUTPUT_POLL_INTERVAL) => {
-                if output.is_closed() {
-                    tasks.abort_all();
-                    return NextTask::OutputClosed;
-                }
-            }
+    tokio::select! {
+        result = tasks.join_next() => NextTask::Completed(result),
+        _ = cancel.cancelled() => {
+            tasks.abort_all();
+            NextTask::Cancelled
         }
     }
 }

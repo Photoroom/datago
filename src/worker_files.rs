@@ -1,10 +1,11 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
-use crate::worker_utils::{join_next_or_output_closed, NextTask};
+use crate::worker_utils::{join_next_or_cancelled, NextTask};
 use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
     // The image decoder and std file reads are blocking. Keep them off Tokio's
@@ -83,6 +84,7 @@ async fn async_pull_samples(
     image_transform: Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
+    cancel: CancellationToken,
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
@@ -106,8 +108,8 @@ async fn async_pull_samples(
         // Check if we have capacity before spawning new tasks
         if tasks.len() >= max_tasks {
             // Wait for some tasks to complete before adding more
-            match join_next_or_output_closed(&mut tasks, &samples_tx).await {
-                NextTask::OutputClosed => break,
+            match join_next_or_cancelled(&mut tasks, &cancel).await {
+                NextTask::Cancelled => break,
                 NextTask::Completed(Some(result)) => {
                     if result.is_ok() {
                         count += 1;
@@ -134,9 +136,9 @@ async fn async_pull_samples(
     // its own receiver clone for explicit shutdown.
     let _ = samples_metadata_rx.close();
 
-    // A client stop closes the output receiver. Cancel queued async work rather
+    // A client stop flips the cancel token. Cancel queued async work rather
     // than waiting for its result to be sent into a closed channel.
-    if samples_tx.is_closed() {
+    if cancel.is_cancelled() {
         tasks.abort_all();
     }
 
@@ -162,6 +164,7 @@ pub fn pull_samples(
     image_transform: Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
+    cancel: CancellationToken,
 ) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
@@ -175,6 +178,7 @@ pub fn pull_samples(
             image_transform,
             encoding,
             limit,
+            cancel,
         )
         .await;
     });
@@ -548,6 +552,7 @@ mod tests {
             None,
             image_processing::ImageEncoding::default(),
             10,
+            CancellationToken::new(),
         )
         .await;
 
@@ -601,6 +606,7 @@ mod tests {
             None,
             image_processing::ImageEncoding::default(),
             limit,
+            CancellationToken::new(),
         )
         .await;
 
@@ -768,6 +774,7 @@ mod tests {
             None,
             image_processing::ImageEncoding::default(),
             1,
+            CancellationToken::new(),
         );
 
         // Check that a sample was received

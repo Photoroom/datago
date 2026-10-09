@@ -86,7 +86,7 @@ jobs:
           cd python
           uv run --group test pytest -v .
           else
-          echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.11"
+          echo "Skipping tests for Python ${{ matrix.python-version }}, only testing Python 3.14"
           fi
 
       - name: Upload wheels
