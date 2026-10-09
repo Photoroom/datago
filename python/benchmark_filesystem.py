@@ -139,6 +139,16 @@ def benchmark(
     # buffer would fail here.
     assert img is not None, "No image - benchmark did not run"
     last_image = np.asarray(img)
+    if last_image.dtype != np.uint8:
+        # Wider dtypes (uint16/float32) can't be saved from an array directly;
+        # scale a preview down to 8-bit. The full-depth data is untouched.
+        if np.issubdtype(last_image.dtype, np.floating):
+            last_image = np.clip(last_image, 0.0, 1.0) * 255.0
+        else:
+            last_image = (
+                last_image.astype(np.float64) / np.iinfo(last_image.dtype).max * 255.0
+            )
+        last_image = np.rint(last_image).astype(np.uint8)
     # PIL wants (H, W) for single-channel and (H, W, C) otherwise; squeeze a
     # trailing singleton axis defensively for either loader.
     if last_image.ndim == 3 and last_image.shape[2] == 1:

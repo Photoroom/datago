@@ -27,8 +27,10 @@ metadata properties; these avoid constructing a PIL image for common metadata
 lookups. Set `"image_format": "numpy"` in the client config to have
 `get_sample_auto_convert()` return read-only, zero-copy ndarrays for `image`,
 `masks`, and `additional_images` instead of PIL images (the default is `"pil"`).
-Single-channel images are shaped `(H, W)` and multi-channel `(H, W, C)`, matching
-PIL / torchvision.
+Single-channel images are shaped `(H, W)` and multi-channel `(H, W, C)`, and the
+dtype follows the source (`uint8`, `uint16`, or `float32`), matching PIL /
+torchvision. PIL output cannot represent multi-channel images wider than 8 bits and
+raises in that case; use `"image_format": "numpy"` to keep their full depth.
 
 Encoded payloads (`pre_encode_images=True`) behave differently: the buffer protocol
 (`memoryview(payload)`, `numpy.frombuffer(payload, ...)`, `numpy.asarray(payload)`)

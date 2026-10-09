@@ -4,6 +4,7 @@ import json
 import os
 
 import numpy as np
+import pytest
 from datago import DatagoClient
 from PIL import Image
 
@@ -167,6 +168,28 @@ def _file_client(directory, image, **extra):
     return DatagoClient(json.dumps(config))
 
 
+def _write_rgb16_png(path, pixels):
+    """Write a 16-bit RGB PNG (Pillow has no RGB16 mode to save one)."""
+    import binascii
+    import struct
+    import zlib
+
+    height, width, _ = pixels.shape
+
+    def chunk(tag, data):
+        crc = binascii.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    raw = b"".join(b"\x00" + pixels[y].astype(">u2").tobytes() for y in range(height))
+    ihdr = struct.pack(">IIBBBBB", width, height, 16, 2, 0, 0, 0)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
 def test_image_format_numpy_returns_zero_copy_ndarray(tmp_path):
     pixels = np.arange(5 * 7 * 3, dtype=np.uint8).reshape(5, 7, 3)
     client = _file_client(
@@ -212,4 +235,76 @@ def test_image_format_pil_alias(tmp_path):
     sample = client.get_sample_auto_convert()
     assert sample is not None
     assert isinstance(sample["image"], Image.Image)
+    client.stop()
+
+
+def test_numpy_preserves_16bit_grayscale(tmp_path):
+    pixels = ((np.arange(3 * 4, dtype=np.uint16) * 5000) % 65535).reshape(3, 4)
+    client = _file_client(
+        tmp_path / "g16", Image.fromarray(pixels), image_format="numpy"
+    )
+    sample = client.get_sample_auto_convert()
+    assert sample is not None
+    image = sample["image"]
+    assert image.dtype == np.uint16
+    assert image.shape == (3, 4)
+    np.testing.assert_array_equal(image, pixels)
+    client.stop()
+
+
+def test_numpy_preserves_16bit_rgb(tmp_path):
+    pixels = ((np.arange(3 * 4 * 3, dtype=np.uint16) * 5000) % 65535).reshape(3, 4, 3)
+    directory = tmp_path / "rgb16"
+    directory.mkdir()
+    _write_rgb16_png(directory / "rgb.png", pixels)
+    client = DatagoClient(
+        json.dumps(
+            {
+                "source_type": "file",
+                "source_config": {"root_path": str(directory)},
+                "limit": 1,
+                "samples_buffer_size": 1,
+                "image_format": "numpy",
+            }
+        )
+    )
+    sample = client.get_sample_auto_convert()
+    assert sample is not None
+    image = sample["image"]
+    assert image.dtype == np.uint16
+    assert image.shape == (3, 4, 3)
+    np.testing.assert_array_equal(image, pixels)
+    client.stop()
+
+
+def test_pil_16bit_grayscale_uses_i16(tmp_path):
+    pixels = ((np.arange(3 * 4, dtype=np.uint16) * 5000) % 65535).reshape(3, 4)
+    client = _file_client(tmp_path / "g16_pil", Image.fromarray(pixels))
+    sample = client.get_sample()
+    assert sample is not None
+    pil = sample.image.to_pil_image()
+    assert pil.mode == "I;16"
+    np.testing.assert_array_equal(np.asarray(pil), pixels)
+    client.stop()
+
+
+def test_pil_16bit_rgb_raises(tmp_path):
+    pixels = ((np.arange(3 * 4 * 3, dtype=np.uint16) * 5000) % 65535).reshape(3, 4, 3)
+    directory = tmp_path / "rgb16_pil"
+    directory.mkdir()
+    _write_rgb16_png(directory / "rgb.png", pixels)
+    client = DatagoClient(
+        json.dumps(
+            {
+                "source_type": "file",
+                "source_config": {"root_path": str(directory)},
+                "limit": 1,
+                "samples_buffer_size": 1,
+            }
+        )
+    )
+    sample = client.get_sample()
+    assert sample is not None
+    with pytest.raises(ValueError):
+        sample.image.to_pil_image()
     client.stop()

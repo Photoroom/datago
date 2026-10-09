@@ -1,5 +1,5 @@
 use crate::image_processing::ImageTransformConfig;
-use pyo3::exceptions::PyBufferError;
+use pyo3::exceptions::{PyBufferError, PyValueError};
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
@@ -193,31 +193,41 @@ impl ImagePayload {
             // copy; PIL then materializes a writable image.
             let numpy = py.import("numpy")?;
             let pil = py.import("PIL.Image")?;
+
+            // PIL has no multi-channel 16/32-bit mode; fail loudly rather than
+            // silently degrade. Use image_format="numpy" for those payloads.
+            if self.bit_depth > 8 && self.channels != 1 {
+                return Err(PyValueError::new_err(
+                    "PIL cannot represent multi-channel images with bit_depth > 8; \
+                     use image_format=\"numpy\"",
+                ));
+            }
+
             let owner = Py::new(
                 py,
                 SharedImageBuffer {
                     data: self.data.clone(),
                 },
             )?;
+            let dtype = numpy.getattr(numpy_dtype_name(self.bit_depth))?;
 
             if self.channels == 1 {
                 // Greyscale image - use a 2D shape and create directly
                 let shape = (self.height, self.width);
                 let np_array = numpy
-                    .call_method1(
-                        "frombuffer",
-                        (owner.bind(py).as_any(), numpy.getattr("uint8")?),
-                    )?
+                    .call_method1("frombuffer", (owner.bind(py).as_any(), dtype))?
                     .call_method1("reshape", (shape,))?;
                 let image = pil.call_method1("fromarray", (np_array,))?;
-                Ok(image.call_method1("convert", ("L",))?.into())
+                if self.bit_depth == 8 {
+                    Ok(image.call_method1("convert", ("L",))?.into())
+                } else {
+                    // 16-bit -> "I;16", 32-bit float -> "F"
+                    Ok(image.into())
+                }
             } else {
                 let shape = (self.height, self.width, self.channels as usize);
                 let np_array = numpy
-                    .call_method1(
-                        "frombuffer",
-                        (owner.bind(py).as_any(), numpy.getattr("uint8")?),
-                    )?
+                    .call_method1("frombuffer", (owner.bind(py).as_any(), dtype))?
                     .call_method1("reshape", (shape,))?;
                 if self.channels == 4 {
                     let image = pil.call_method1("fromarray", (np_array,))?;
@@ -231,8 +241,8 @@ impl ImagePayload {
 
     /// Get the image as a numpy array. Raw payloads return a read-only zero-copy
     /// view over the shared pixels; encoded payloads are decoded first (not
-    /// zero-copy). Single-channel images are shaped `(H, W)`, multi-channel
-    /// `(H, W, C)`.
+    /// zero-copy). The dtype follows the source (`uint8`/`uint16`/`float32`);
+    /// single-channel images are shaped `(H, W)`, multi-channel `(H, W, C)`.
     pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if self.is_encoded {
             // For encoded images, we need to decode first
@@ -350,8 +360,9 @@ impl PythonImagePayload {
     }
 
     /// Convert to numpy array. Raw payloads return a read-only zero-copy view;
-    /// encoded payloads are decoded first (not zero-copy). Single-channel images
-    /// are shaped `(H, W)`, multi-channel `(H, W, C)`.
+    /// encoded payloads are decoded first (not zero-copy). The dtype follows the
+    /// source (`uint8`/`uint16`/`float32`); single-channel images are shaped
+    /// `(H, W)`, multi-channel `(H, W, C)`.
     pub fn to_numpy_array(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let payload = &slf.borrow().inner;
@@ -425,13 +436,23 @@ fn image_mode(channels: i8, bit_depth: usize) -> &'static str {
     }
 }
 
+/// numpy dtype name matching the payload's sample depth.
+fn numpy_dtype_name(bit_depth: usize) -> &'static str {
+    match bit_depth {
+        16 => "uint16",
+        32 => "float32",
+        _ => "uint8",
+    }
+}
+
 fn numpy_from_buffer(
     py: Python<'_>,
     owner: &Bound<'_, PyAny>,
     payload: &ImagePayload,
 ) -> PyResult<Py<PyAny>> {
     let numpy = py.import("numpy")?;
-    let array = numpy.call_method1("frombuffer", (owner, numpy.getattr("uint8")?))?;
+    let dtype = numpy.getattr(numpy_dtype_name(payload.bit_depth))?;
+    let array = numpy.call_method1("frombuffer", (owner, dtype))?;
     // Single-channel images are exposed as (H, W) to match PIL/torchvision, and
     // multi-channel images as (H, W, C).
     let array = if payload.channels == 1 {
