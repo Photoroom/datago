@@ -12,6 +12,7 @@ use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
 use std::thread;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -60,6 +61,9 @@ impl MetadataReceiver {
 pub struct DatagoEngine {
     pub samples_rx: kanal::Receiver<Option<Sample>>,
     pub metadata_rx: MetadataReceiver,
+    /// Flipped when the engine is torn down (stop, end-of-stream, or interrupt)
+    /// so workers can abort in-flight tasks promptly.
+    pub cancel: CancellationToken,
     pub feeder: Option<thread::JoinHandle<()>>,
     pub worker: Option<thread::JoinHandle<()>>,
 }

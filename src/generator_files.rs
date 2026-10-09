@@ -6,6 +6,7 @@ use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::thread;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
@@ -46,16 +47,22 @@ fn enumerate_files(
     source_config: SourceFileConfig,
     limit: usize,
 ) {
-    // Get an iterator over the files in the root path
+    // Get an iterator over regular files only. Besides skipping directories with
+    // image-like names, this avoids opening FIFOs/devices in the blocking decoder.
     let supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
 
     // Use streaming walkdir to avoid loading all files into memory at once
-    let _supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
     let walker = walkdir::WalkDir::new(&source_config.root_path)
         .follow_links(false)
         .into_iter()
-        .filter_map(|e| e.ok())
+        // Test cancellation before filtering extensions so a tree full of
+        // unrelated files does not require a complete walk after stop().
+        .take_while(|_| !samples_metadata_tx.is_disconnected())
         .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if !entry.file_type().is_file() {
+                return None;
+            }
             let path = entry.path();
             let file_name = path.to_string_lossy().to_lowercase();
             if supported_extensions
@@ -69,10 +76,8 @@ fn enumerate_files(
         });
 
     // Collect some of the files, over sample to increase randomness or allow for faulty files
-    let mut files_list: Vec<walkdir::DirEntry> = walker
-        .take_while(|_| !samples_metadata_tx.is_closed())
-        .take(limit * 2)
-        .collect();
+    let mut files_list = Vec::new();
+    files_list.extend(walker.take(limit.saturating_mul(2)));
 
     // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
     if source_config.world_size > 1 {
@@ -164,6 +169,8 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     };
     let limit = client.limit;
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
+    let cancel = CancellationToken::new();
+    let cancel_worker = cancel.clone();
 
     let worker = Some(thread::spawn(move || {
         worker_files::pull_samples(
@@ -172,6 +179,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             image_transform,
             encoding,
             limit,
+            cancel_worker,
         );
         debug!("Worker thread completed");
     }));
@@ -179,6 +187,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     DatagoEngine {
         samples_rx,
         metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
+        cancel,
         feeder,
         worker,
     }

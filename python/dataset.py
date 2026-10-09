@@ -1,10 +1,11 @@
-from datago import DatagoClient, initialize_logging
 import json
-from typing import Dict, Any
+from typing import Any
+
+from datago import DatagoClient, initialize_logging
 
 
 class DatagoIterDataset:
-    def __init__(self, datago_config: Dict[str, Any], return_python_types: bool = True):
+    def __init__(self, datago_config: dict[str, Any], return_python_types: bool = True):
         self.client = DatagoClient(json.dumps(datago_config))
         self.client.start()
         self.return_python_types = return_python_types
@@ -42,13 +43,13 @@ class DatagoIterDataset:
 
         except KeyboardInterrupt:
             self.client.stop()
-            raise StopIteration
+            raise
 
 
 if __name__ == "__main__":
     initialize_logging("warn")
     # Example config, using this for filesystem walkthrough would work just as well
-    client_config = client_config = {
+    client_config = {
         "source_type": "db",
         "source_config": {
             "page_size": 10,

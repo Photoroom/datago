@@ -39,19 +39,26 @@ Please note that in all the of the following cases, you can directly get an Iter
 
 ```python
 from dataset import DatagoIterDataset
-client_config = {} # See below for examples
+
+client_config = {}  # See below for examples
 datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
 ```
 
 `return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
 
-Python sample reads release the GIL while waiting and check Python signals every
-100 ms, so Ctrl-C can interrupt a stalled reader (including readers in background
-prefetch threads). `stop()` closes both pipeline queues before joining threads,
-releases the GIL during shutdown, and is also interruptible. Prefer `try/finally`
-with `client.stop()` for explicit cleanup. On interruption, queued work is cancelled;
-already-running native filesystem/network operations may finish later rather than
-delaying `KeyboardInterrupt`. The native Rust client retains its blocking API.
+Python sample reads try the ready queue without releasing the GIL, then release it
+while waiting and poll Python signals every 100 ms. Python delivers SIGINT handlers
+on the main thread only. If a reader runs in a background thread, handle Ctrl-C on
+the main thread by calling `client.stop()`; that cancellation is safe while the
+reader is waiting. `stop()` closes both pipeline queues, releases the GIL while
+joining, and returns after a short grace period if native work is still in flight.
+Remaining thread handles are retained by a cleanup reaper rather than detached.
+Prefer `try/finally` with `client.stop()` for explicit cleanup. Queued async work is
+cancelled; a filesystem/network syscall already executing cannot be forcibly stopped
+and may continue in the background until the OS call returns. The native Rust client
+retains its blocking API. Reads do not silently restart: once the stream is
+exhausted (or `stop()` has been called) `get_sample()` returns `None`, and you must
+call `start()` again to begin a new pass.
 
 <details> <summary><strong>Dataroom</strong></summary>
 
@@ -101,8 +108,8 @@ config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
-        "random_sampling": False, # True if used directly for training
-        "rank": 0, # Optional, distributed workloads are possible
+        "random_sampling": False,  # True if used directly for training
+        "rank": 0,  # Optional, distributed workloads are possible
         "world_size": 1,
     },
     "limit": 200,
@@ -138,13 +145,13 @@ client_config = {
     "source_config": {
         "url": url,
         "random_sampling": False,
-        "concurrent_downloads": 8, # The number of TarballSamples which should be handled concurrently
+        "concurrent_downloads": 8,  # The number of TarballSamples which should be handled concurrently
         "rank": 0,
         "world_size": 1,
     },
     "prefetch_buffer_size": 128,
     "samples_buffer_size": 64,
-    "limit": 1_000_000, # Dummy example, max number of samples you would like to serve
+    "limit": 1_000_000,  # Dummy example, max number of samples you would like to serve
 }
 
 client = DatagoClient(json.dumps(client_config))
@@ -215,7 +222,7 @@ Just install the rust toolchain via rustup
 
 ## [Apple Silicon MacOS only]
 
-If you are using an Apple Silicon Mac OS machine, create a `.cargo/config` file and paste the following:
+If you are using an Apple Silicon Mac OS machine, create a `.cargo/config.toml` file and paste the following:
 
 ``` cfg
 [target.x86_64-apple-darwin]
@@ -233,7 +240,7 @@ rustflags = [
 
 ## Build a benchmark CLI
 
-`Cargo run --release --  -h` to get all the information, should be fairly straightforward
+`cargo run --release --  -h` to get all the information, should be fairly straightforward
 
 ## Run the rust test suite
 
@@ -286,7 +293,7 @@ The following benchmarks are using ImageNet 1k, which is very low resolution and
 
 One liner to repro locally (rebuilding the package):
 ```bash
- DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --python 3.14 --group dev  python/benchmark_filesystem.py --sweep  --limit 500
+DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --reinstall-package datago --python 3.14 --group dev python/benchmark_filesystem.py --sweep --limit 500
 ```
 
 ## Webdataset: FakeIN

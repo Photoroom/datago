@@ -1,10 +1,12 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample, TarballSample};
+use crate::worker_utils::{join_next_or_cancelled, max_tasks_from_env, NextTask};
 use log::{debug, error, info};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 // List all the types we'll support
 pub const TEXT_TYPES: [&str; 3] = ["cls", "json", "txt"];
@@ -150,7 +152,7 @@ async fn process_sample(
                     match samples_tx.send(final_sample) {
                         Ok(_) => (),
                         Err(e) => {
-                            if !samples_tx.is_closed() {
+                            if !samples_tx.is_disconnected() {
                                 debug!("wds_worker: error dispatching sample: {e}");
                                 return Err(());
                             }
@@ -177,14 +179,12 @@ async fn async_deserialize_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
     extension_reference_image: String,
+    cancel: CancellationToken,
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
-    // We'll keep a pool of N async tasks in parallel
-    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .unwrap_or_else(|_| "0".to_string())
-        .parse::<usize>()
-        .unwrap_or(num_cpus::get());
-    let max_tasks = min(num_cpus::get() * 4, default_max_tasks); // Ensure minimum of 8 processing tasks
+    // We'll keep a pool of N async tasks in parallel. Default to one task per CPU,
+    // capped at 4x CPUs; DATAGO_MAX_TASKS overrides the default.
+    let max_tasks = min(num_cpus::get() * 4, max_tasks_from_env(num_cpus::get()));
 
     info!("WDS: Using {max_tasks} processing tasks in worker threadpool");
     let mut tasks = tokio::task::JoinSet::new();
@@ -193,7 +193,7 @@ async fn async_deserialize_samples(
     let shareable_img_tfm = Arc::new(image_transform);
     let mut join_error: Option<String> = None;
 
-    while let Ok(sample) = samples_metadata_rx.recv() {
+    'samples: while let Ok(sample) = samples_metadata_rx.recv() {
         if sample.is_empty() {
             info!("wds_worker: end of stream received, stopping there");
             let _ = samples_metadata_rx.close();
@@ -211,20 +211,29 @@ async fn async_deserialize_samples(
 
         // If we have enough tasks, we'll wait for the older one to finish
         if tasks.len() >= max_tasks {
-            if let Some(result) = tasks.join_next().await {
-                match result {
-                    Ok(_) => count += 1,
-                    Err(e) => {
-                        join_error = Some(format!("Task failed: {e}"));
-                        break;
-                    }
+            match join_next_or_cancelled(&mut tasks, &cancel).await {
+                NextTask::Completed(Some(Ok(_))) => count += 1,
+                NextTask::Completed(Some(Err(e))) => {
+                    join_error = Some(format!("Task failed: {e}"));
+                    break 'samples;
                 }
+                NextTask::Completed(None) => {}
+                NextTask::Cancelled => break 'samples,
             }
 
             if count >= limit {
                 break;
             }
         }
+    }
+
+    // Close even on early limit/error exits so the shard feeder observes cancel.
+    let _ = samples_metadata_rx.close();
+
+    // A client stop flips the cancel token. Abort queued async work rather than
+    // waiting for a stalled task to finish.
+    if cancel.is_cancelled() {
+        tasks.abort_all();
     }
 
     // Make sure to wait for all the remaining tasks
@@ -234,6 +243,7 @@ async fn async_deserialize_samples(
                 debug!("dispatch_shards: task completed successfully");
                 count += 1;
             }
+            Err(e) if e.is_cancelled() => {} // expected after abort_all() on stop
             Err(e) => {
                 error!("dispatch_shards: task failed with error: {e}");
                 if join_error.is_none() {
@@ -262,25 +272,28 @@ pub fn deserialize_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
     extension_reference_image: String,
+    cancel: CancellationToken,
 ) {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get()) // Tasks in flight are limited by DATAGO_MAX_TASKS env
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            match async_deserialize_samples(
-                samples_metadata_rx,
-                samples_tx,
-                image_transform,
-                encoding,
-                limit,
-                extension_reference_image,
-            )
-            .await
-            {
-                Ok(_) => debug!("wds_worker: all samples processed successfully"),
-                Err(e) => error!("wds_worker: error processing samples : {e}"),
-            }
-        });
+        .unwrap();
+    runtime.block_on(async {
+        match async_deserialize_samples(
+            samples_metadata_rx,
+            samples_tx,
+            image_transform,
+            encoding,
+            limit,
+            extension_reference_image,
+            cancel,
+        )
+        .await
+        {
+            Ok(_) => debug!("wds_worker: all samples processed successfully"),
+            Err(e) => error!("wds_worker: error processing samples : {e}"),
+        }
+    });
+    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
 }

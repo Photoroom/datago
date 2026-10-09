@@ -119,7 +119,6 @@ def benchmark(
             shuffle=False,
             num_workers=num_workers,
             collate_fn=_passthrough,
-            prefetch_factor=2,
         )
 
         # Iterate over the DataLoader

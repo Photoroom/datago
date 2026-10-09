@@ -1,5 +1,7 @@
 use crate::client::DatagoClient;
-use crate::structs::{new_shared_client, BinaryFile, DatagoEngine, SharedClient, TarballSample};
+use crate::structs::{
+    new_shared_client, BinaryFile, DatagoEngine, MetadataReceiver, SharedClient, TarballSample,
+};
 use crate::worker_wds;
 
 use async_tar::Archive;
@@ -18,7 +20,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use tokio::io::BufReader;
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tokio_util::io::StreamReader; // For grouping, if more complex grouping is needed
+use tokio_util::io::StreamReader;
+use tokio_util::sync::CancellationToken; // For grouping, if more complex grouping is needed
 
 fn default_reference_image_type() -> String {
     "jpg".to_string()
@@ -194,7 +197,7 @@ async fn pull_tarballs(
     // Send the last collected sample if any
     if !current_files_for_sample.content.is_empty()
         && samples_metadata_tx.send(current_files_for_sample).is_err()
-        && !samples_metadata_tx.is_closed()
+        && !samples_metadata_tx.is_disconnected()
     {
         return Err("Failed to send last sample".into());
     }
@@ -227,7 +230,7 @@ async fn pull_tarballs_task(
             Err(e) => {
                 attempt += 1;
                 debug!("Error pulling TarballSample: {e}. Attempt {attempt}/{retries}");
-                if samples_metadata_tx.is_closed() {
+                if samples_metadata_tx.is_disconnected() {
                     debug!(
                         "dispatch_shards: samples_metadata_tx channel closed, stopping retries."
                     );
@@ -322,7 +325,7 @@ async fn tasks_from_shards(
 
             for url in task_list {
                 // Escape out if the channel is closed
-                if samples_metadata_tx.is_closed() {
+                if samples_metadata_tx.is_disconnected() {
                     debug!(
                         "dispatch_shards: channel is closed, enough samples probably. Bailing out"
                     );
@@ -490,6 +493,8 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
+    let cancel = CancellationToken::new();
+    let cancel_worker = cancel.clone();
     let worker = Some(thread::spawn(move || {
         worker_wds::deserialize_samples(
             samples_metadata_rx_worker,
@@ -498,12 +503,14 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             encoding,
             limit,
             extension_reference_image_type,
+            cancel_worker,
         );
     }));
 
     DatagoEngine {
         samples_rx,
-        metadata_rx: crate::structs::MetadataReceiver::Tarball(samples_metadata_rx),
+        metadata_rx: MetadataReceiver::Tarball(samples_metadata_rx),
+        cancel,
         feeder,
         worker,
     }
@@ -602,7 +609,7 @@ mod tests {
                 "samples_buffer_size": 1
             });
 
-            let mut client = DatagoClient::new(client_config.to_string());
+            let client = DatagoClient::new(client_config.to_string());
             let engine = orchestrate(&client);
             let mut count = 0;
             let limit: i32 = 2;
@@ -668,7 +675,7 @@ mod tests {
                 "samples_buffer_size": 1
             });
 
-            let mut client = DatagoClient::new(client_config.to_string());
+            let client = DatagoClient::new(client_config.to_string());
             let engine = orchestrate(&client);
             let mut count = 0;
 
