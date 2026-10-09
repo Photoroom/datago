@@ -609,13 +609,13 @@ pub fn sample_to_python_types(
     // Convert attributes to python dict
     let attributes_dict = PyDict::new(py);
     for (key, value) in sample.attributes {
-        // If value is a string it can be passed as is, else we pass the json-encoded version
-        let value_serialized: String = if value.is_string() {
-            value.to_string()
+        // String values are passed through as-is; everything else is JSON-encoded.
+        if let Some(text) = value.as_str() {
+            attributes_dict.set_item(key, text).unwrap();
         } else {
-            serde_json::to_string(&value).unwrap_or("{}".to_string())
-        };
-        attributes_dict.set_item(key, value_serialized).unwrap();
+            let encoded = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
+            attributes_dict.set_item(key, encoded).unwrap();
+        }
     }
     sample_dict.set_item("attributes", attributes_dict).unwrap();
 
