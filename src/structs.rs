@@ -170,40 +170,50 @@ impl ImagePayload {
             let image = pil.call_method1("open", (bytes_io,))?;
             Ok(image.into())
         } else {
-            // For raw images, create numpy array first then convert to PIL
+            // For raw images, expose the Rust allocation through the buffer
+            // protocol so numpy can view it without an intermediate Python bytes
+            // copy; PIL then materializes a writable image.
             let numpy = py.import("numpy")?;
-            let shape: (usize, usize, usize) = if self.channels == 1 {
-                (self.height, self.width, 1)
-            } else {
-                (self.height, self.width, self.channels as usize)
-            };
-
-            let np_array = numpy
-                .call_method1("frombuffer", (self.data.as_ref(), numpy.getattr("uint8")?))?
-                .call_method1("reshape", (shape,))?;
-
             let pil = py.import("PIL.Image")?;
+            let owner = Py::new(
+                py,
+                SharedImageBuffer {
+                    data: self.data.clone(),
+                },
+            )?;
+
             if self.channels == 1 {
-                // Greyscale image - use 2D shape and create directly
-                let shape_2d = (self.height, self.width);
-                let np_array_2d = numpy
-                    .call_method1("frombuffer", (self.data.as_ref(), numpy.getattr("uint8")?))?
-                    .call_method1("reshape", (shape_2d,))?;
-                let image = pil.call_method1("fromarray", (np_array_2d,))?;
+                // Greyscale image - use a 2D shape and create directly
+                let shape = (self.height, self.width);
+                let np_array = numpy
+                    .call_method1(
+                        "frombuffer",
+                        (owner.bind(py).as_any(), numpy.getattr("uint8")?),
+                    )?
+                    .call_method1("reshape", (shape,))?;
+                let image = pil.call_method1("fromarray", (np_array,))?;
                 Ok(image.call_method1("convert", ("L",))?.into())
-            } else if self.channels == 4 {
-                // RGBA image
-                let image = pil.call_method1("fromarray", (np_array,))?;
-                Ok(image.call_method1("convert", ("RGBA",))?.into())
             } else {
-                // RGB image (assuming 3 channels)
-                let image = pil.call_method1("fromarray", (np_array,))?;
-                Ok(image.into())
+                let shape = (self.height, self.width, self.channels as usize);
+                let np_array = numpy
+                    .call_method1(
+                        "frombuffer",
+                        (owner.bind(py).as_any(), numpy.getattr("uint8")?),
+                    )?
+                    .call_method1("reshape", (shape,))?;
+                if self.channels == 4 {
+                    let image = pil.call_method1("fromarray", (np_array,))?;
+                    Ok(image.call_method1("convert", ("RGBA",))?.into())
+                } else {
+                    Ok(pil.call_method1("fromarray", (np_array,))?.into())
+                }
             }
         }
     }
 
-    /// Get the image as a numpy array (zero-copy when possible)
+    /// Get the image as a numpy array. Raw payloads return a read-only zero-copy
+    /// view over the shared pixels; encoded payloads are decoded first (not
+    /// zero-copy).
     pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if self.is_encoded {
             // For encoded images, we need to decode first
@@ -214,10 +224,8 @@ impl ImagePayload {
                 .getattr("BytesIO")?
                 .call1((self.data.as_ref(),))?;
             let image = pil.call_method1("open", (bytes_io,))?;
-            let np_array = image
-                .call_method0("convert")?
-                .call_method1("RGB", ())?
-                .call_method0("to_numpy")?;
+            let rgb = image.call_method1("convert", ("RGB",))?;
+            let np_array = py.import("numpy")?.call_method1("asarray", (rgb,))?;
             Ok(np_array.into())
         } else {
             let owner = Py::new(
@@ -230,13 +238,20 @@ impl ImagePayload {
         }
     }
 
+    // Buffer-protocol export: exposes the stored bytes read-only. For encoded
+    // payloads this is the compressed stream, not decoded pixels; use
+    // `to_numpy_array()` / `to_pil_image()` to decode.
     unsafe fn __getbuffer__(
         slf: Bound<'_, Self>,
         view: *mut ffi::Py_buffer,
         flags: c_int,
     ) -> PyResult<()> {
-        let payload = slf.borrow();
-        unsafe { fill_readonly_buffer(view, flags, payload.data.as_ref(), slf.into_any()) }
+        // Retain the Arc rather than the mutable wrapper, so an outstanding view
+        // stays valid even if `data` is reassigned through the setter afterwards.
+        let py = slf.py();
+        let data = slf.borrow().data.clone();
+        let owner = Py::new(py, SharedImageBuffer { data: data.clone() })?;
+        unsafe { fill_readonly_buffer(view, flags, data.as_ref(), owner.into_bound(py).into_any()) }
     }
 
     unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
@@ -315,25 +330,39 @@ impl PythonImagePayload {
         self.inner.to_pil_image(py)
     }
 
-    /// Convert to numpy array (exposed directly for convenience)
+    /// Convert to numpy array. Raw payloads return a read-only zero-copy view;
+    /// encoded payloads are decoded first (not zero-copy).
     pub fn to_numpy_array(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let payload = &slf.borrow().inner;
         if payload.is_encoded {
             return payload.to_numpy_array(py);
         }
-        numpy_from_buffer(py, slf.as_any(), payload)
+        let owner = Py::new(
+            py,
+            SharedImageBuffer {
+                data: payload.data.clone(),
+            },
+        )?;
+        numpy_from_buffer(py, owner.bind(py).as_any(), payload)
     }
 
     /// NumPy's frombuffer retains a memoryview of this object as its base,
     /// keeping the immutable Arc-backed allocation alive after the sample drops.
+    // Buffer-protocol export: exposes the stored bytes read-only. For encoded
+    // payloads this is the compressed stream, not decoded pixels; use
+    // `to_numpy_array()` / `to_pil_image()` to decode.
     unsafe fn __getbuffer__(
         slf: Bound<'_, Self>,
         view: *mut ffi::Py_buffer,
         flags: c_int,
     ) -> PyResult<()> {
-        let payload = slf.borrow();
-        unsafe { fill_readonly_buffer(view, flags, payload.inner.data.as_ref(), slf.into_any()) }
+        // Retain the Arc via a dedicated owner so the view lifetime is tied to
+        // the pixels, independent of this wrapper object.
+        let py = slf.py();
+        let data = slf.borrow().inner.data.clone();
+        let owner = Py::new(py, SharedImageBuffer { data: data.clone() })?;
+        unsafe { fill_readonly_buffer(view, flags, data.as_ref(), owner.into_bound(py).into_any()) }
     }
 
     unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
@@ -343,6 +372,7 @@ impl PythonImagePayload {
 
 /// Internal buffer owner used when callers start from the Rust ImagePayload
 /// pyclass instead of PythonImagePayload. Its Arc is retained by NumPy's base.
+/// The wrapped bytes are raw pixels or an encoded stream, mirroring the payload.
 #[pyclass]
 struct SharedImageBuffer {
     data: Arc<[u8]>,
@@ -350,6 +380,7 @@ struct SharedImageBuffer {
 
 #[pymethods]
 impl SharedImageBuffer {
+    // Exports whatever bytes were wrapped (raw pixels or an encoded stream).
     unsafe fn __getbuffer__(
         slf: Bound<'_, Self>,
         view: *mut ffi::Py_buffer,

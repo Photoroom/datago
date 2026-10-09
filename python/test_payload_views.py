@@ -75,3 +75,80 @@ def test_image_payload_clone_shares_storage_but_explicit_bytes_are_owned(tmp_pat
     payload.data = bytes([0] * len(payload.data))
     assert bytes(clone.data) == original
     client.stop()
+
+
+def test_buffer_view_outlives_data_reassignment(tmp_path):
+    """A view on the mutable payload wrapper must keep the old pixels alive when
+    `data` is reassigned (this used to be a use-after-free)."""
+    pixels = np.arange(6 * 8 * 3, dtype=np.uint8).reshape(6, 8, 3)
+    client = client_for(tmp_path, Image.fromarray(pixels))
+    sample = client.get_sample()
+    assert sample is not None
+
+    payload = sample.image.get_payload()
+    view = memoryview(payload)
+    expected = bytes(view)
+
+    del sample
+    client.stop()
+
+    payload.data = bytes(len(expected))  # replaces the wrapper's storage
+    assert bytes(view) == expected
+
+
+def test_to_pil_image_matches_pixels(tmp_path):
+    pixels = np.arange(5 * 7 * 3, dtype=np.uint8).reshape(5, 7, 3)
+    client = client_for(tmp_path, Image.fromarray(pixels))
+    sample = client.get_sample()
+    assert sample is not None
+
+    np.testing.assert_array_equal(np.asarray(sample.image.to_pil_image()), pixels)
+    # __call__ and attribute delegation share the same conversion path.
+    np.testing.assert_array_equal(np.asarray(sample.image()), pixels)
+    client.stop()
+
+
+def test_to_pil_image_grayscale(tmp_path):
+    pixels = (np.arange(4 * 6, dtype=np.uint8) % 250).reshape(4, 6)
+    client = client_for(tmp_path, Image.fromarray(pixels, mode="L"))
+    sample = client.get_sample()
+    assert sample is not None
+
+    pil = sample.image.to_pil_image()
+    assert pil.mode == "L"
+    np.testing.assert_array_equal(np.asarray(pil), pixels)
+    client.stop()
+
+
+def test_encoded_to_numpy_array_decodes(tmp_path):
+    """Encoded payloads must decode to a numpy array (this path used to raise)."""
+    directory = tmp_path / "encoded"
+    directory.mkdir()
+    Image.new("RGB", (9, 5), (40, 80, 120)).save(directory / "a.png")
+    client_config = {
+        "source_type": "file",
+        "source_config": {"root_path": str(directory)},
+        "limit": 1,
+        "samples_buffer_size": 1,
+        "image_config": {
+            "crop_and_resize": True,
+            "default_image_size": 1024,
+            "downsampling_ratio": 32,
+            "min_aspect_ratio": 0.5,
+            "max_aspect_ratio": 2.0,
+            "pre_encode_images": True,
+        },
+    }
+    client = DatagoClient(json.dumps(client_config))
+    sample = client.get_sample()
+    assert sample is not None
+    payload = sample.image.get_payload()
+    assert payload.channels == -1  # encoded
+    array = sample.image.to_numpy_array()
+    assert array.ndim == 3
+    assert array.shape[2] == 3
+    # Documented contract: for encoded payloads the buffer protocol exposes the
+    # compressed stream, not pixels; only to_numpy_array() decodes.
+    assert memoryview(sample.image).nbytes == len(payload.data)
+    assert memoryview(sample.image).nbytes != array.size
+    client.stop()

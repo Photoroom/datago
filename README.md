@@ -24,7 +24,13 @@ the exporter and pixels alive after the sample is dropped. Since the storage is
 shared and immutable, use `array.copy()` when a writable array is needed. The image
 wrapper also exposes `width`, `height`, `size`, `mode`, and `palette` as native
 metadata properties; these avoid constructing a PIL image for common metadata
-lookups. Encoded image payloads still need decoding and are not zero-copy arrays.
+lookups.
+
+Encoded payloads (`pre_encode_images=True`) behave differently: the buffer protocol
+(`memoryview(payload)`, `numpy.frombuffer(payload, ...)`, `numpy.asarray(payload)`)
+exposes the *compressed* bytes rather than decoded pixels, and `payload.data` is the
+encoded byte string. Use `to_numpy_array()` or `to_pil_image()` to decode those
+payloads; unlike the raw path, decoding is not zero-copy.
 
 Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types. Speed will be network dependent, but GB/s is typical. Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
 
