@@ -2,7 +2,9 @@ import json
 import os
 import time
 
+import numpy as np
 import typer
+from PIL import Image
 from benchmark_defaults import IMAGE_CONFIG
 from dataset import DatagoIterDataset
 from tqdm import tqdm
@@ -10,6 +12,10 @@ from tqdm import tqdm
 
 def _passthrough(x):
     return x
+
+
+def _to_numpy(image):
+    return np.asarray(image)
 
 
 def benchmark(
@@ -23,13 +29,26 @@ def benchmark(
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
     num_workers: int = typer.Option(os.cpu_count(), help="Number of workers to use"),
     sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
+    image_format: str = typer.Option(
+        "pil", help="Materialized image type for both loaders: 'pil' or 'numpy'"
+    ),
 ):
+    image_format = image_format.lower()
+    if image_format not in ("pil", "numpy"):
+        raise typer.BadParameter("image_format must be 'pil' or 'numpy'")
+
     if sweep:
         results_sweep = {}
         num_workers = 1
         while num_workers <= (os.cpu_count() or 16):
             results_sweep[num_workers] = benchmark(
-                root_path, limit, crop_and_resize, compare_torch, num_workers, False
+                root_path,
+                limit,
+                crop_and_resize,
+                compare_torch,
+                num_workers,
+                False,
+                image_format,
             )
             num_workers *= 2
 
@@ -39,7 +58,8 @@ def benchmark(
         return results_sweep
 
     print(
-        f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers"
+        f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers "
+        f"- image_format={image_format}"
     )
 
     # This setting is not exposed in the config, but an env variable can be used instead
@@ -55,6 +75,8 @@ def benchmark(
         "prefetch_buffer_size": 256,
         "samples_buffer_size": 256,
         "limit": limit,
+        # "pil" (default) or "numpy", which hands back a zero-copy read-only ndarray
+        "image_format": image_format,
     }
 
     if crop_and_resize:
@@ -68,7 +90,9 @@ def benchmark(
 
     img = None
     count = 0
-    for sample in tqdm(datago_dataset, desc="Datago", dynamic_ncols=True):
+    for sample in tqdm(
+        datago_dataset, desc=f"Datago ({image_format})", dynamic_ncols=True
+    ):
         assert sample["id"] != ""
         img = sample["image"]
 
@@ -80,31 +104,35 @@ def benchmark(
 
     assert count == limit, f"Expected {limit} samples, got {count}"
     fps = limit / (time.time() - start)
-    results = {"datago": {"fps": fps, "count": count}}
-    print(f"Datago - FPS {fps:.2f} - workers {num_workers}")
+    results = {"datago": {"fps": fps, "count": count, "image_format": image_format}}
+    print(
+        f"Datago - FPS {fps:.2f} - workers {num_workers} - image_format {image_format}"
+    )
     del datago_dataset
 
-    # Save the last image as a test
+    # Save the last image as a test. This goes through Image.fromarray() whether
+    # the payload is a PIL image or a (zero-copy) numpy buffer, so a corrupt
+    # buffer would fail here.
     assert img is not None, "No image - benchmark did not run"
-    img.save("benchmark_last_image.png")
+    Image.fromarray(np.asarray(img)).save("benchmark_last_image.png")
 
     # Let's compare against a classic pytorch dataloader
     if compare_torch:
         from torch.utils.data import DataLoader
         from torchvision import datasets, transforms
 
-        # Define the transformations to apply to each image
-        transform = (
-            transforms.Compose(
-                [
-                    transforms.Resize(
-                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
-                    ),
-                ]
+        # Materialize the torch side in the same format as datago for fairness.
+        if crop_and_resize:
+            resize = transforms.Resize(
+                (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
             )
-            if crop_and_resize
-            else None
-        )
+            transform = (
+                transforms.Compose([resize, _to_numpy])
+                if image_format == "numpy"
+                else resize
+            )
+        else:
+            transform = _to_numpy if image_format == "numpy" else None
 
         # Create the ImageFolder dataset
         dataset = datasets.ImageFolder(
@@ -112,7 +140,6 @@ def benchmark(
         )
 
         # Create a DataLoader to allow for multiple workers
-        # Use available CPU count for num_workers
         dataloader = DataLoader(
             dataset,
             batch_size=1,
@@ -124,15 +151,23 @@ def benchmark(
         # Iterate over the DataLoader
         start = time.time()
         n_images = 0
-        for batch in tqdm(dataloader, desc="Torch", dynamic_ncols=True):
+        for batch in tqdm(
+            dataloader, desc=f"Torch ({image_format})", dynamic_ncols=True
+        ):
             n_images += len(batch)
             if n_images > limit:
                 break
 
             del batch  # Help with memory pressure, same as above
         fps = n_images / (time.time() - start)
-        results["torch"] = {"fps": fps, "count": n_images}
-        print(f"Torch - FPS {fps:.2f} - workers {num_workers}")
+        results["torch"] = {
+            "fps": fps,
+            "count": n_images,
+            "image_format": image_format,
+        }
+        print(
+            f"Torch - FPS {fps:.2f} - workers {num_workers} - image_format {image_format}"
+        )
 
     return results
 

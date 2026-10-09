@@ -152,3 +152,51 @@ def test_encoded_to_numpy_array_decodes(tmp_path):
     assert memoryview(sample.image).nbytes == len(payload.data)
     assert memoryview(sample.image).nbytes != array.size
     client.stop()
+
+
+def _file_client(directory, image, **extra):
+    directory.mkdir(parents=True, exist_ok=True)
+    image.save(directory / "sample.png")
+    config = {
+        "source_type": "file",
+        "source_config": {"root_path": str(directory)},
+        "limit": 1,
+        "samples_buffer_size": 1,
+        **extra,
+    }
+    return DatagoClient(json.dumps(config))
+
+
+def test_image_format_numpy_returns_zero_copy_ndarray(tmp_path):
+    pixels = np.arange(5 * 7 * 3, dtype=np.uint8).reshape(5, 7, 3)
+    client = _file_client(
+        tmp_path / "np", Image.fromarray(pixels), image_format="numpy"
+    )
+    sample = client.get_sample_auto_convert()
+    assert sample is not None
+    image = sample["image"]
+    assert isinstance(image, np.ndarray)
+    assert not image.flags.owndata
+    assert not image.flags.writeable
+    np.testing.assert_array_equal(image, pixels)
+    client.stop()
+
+
+def test_image_format_defaults_to_pil(tmp_path):
+    client = _file_client(tmp_path / "pil_default", Image.new("RGB", (4, 3), (1, 2, 3)))
+    sample = client.get_sample_auto_convert()
+    assert sample is not None
+    assert isinstance(sample["image"], Image.Image)
+    client.stop()
+
+
+def test_image_format_pil_alias(tmp_path):
+    client = _file_client(
+        tmp_path / "pil_alias",
+        Image.new("RGB", (4, 3), (1, 2, 3)),
+        image_format="PIL",
+    )
+    sample = client.get_sample_auto_convert()
+    assert sample is not None
+    assert isinstance(sample["image"], Image.Image)
+    client.stop()

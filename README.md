@@ -24,7 +24,9 @@ the exporter and pixels alive after the sample is dropped. Since the storage is
 shared and immutable, use `array.copy()` when a writable array is needed. The image
 wrapper also exposes `width`, `height`, `size`, `mode`, and `palette` as native
 metadata properties; these avoid constructing a PIL image for common metadata
-lookups.
+lookups. Set `"image_format": "numpy"` in the client config to have
+`get_sample_auto_convert()` return read-only, zero-copy ndarrays for `image`,
+`masks`, and `additional_images` instead of PIL images (the default is `"pil"`).
 
 Encoded payloads (`pre_encode_images=True`) behave differently: the buffer protocol
 (`memoryview(payload)`, `numpy.frombuffer(payload, ...)`, `numpy.asarray(payload)`)
