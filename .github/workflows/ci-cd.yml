@@ -81,7 +81,7 @@ jobs:
           DATAROOM_TEST_SOURCE: ${{ secrets.DATAROOM_TEST_SOURCE }}
           DATAROOM_API_URL: ${{ secrets.DATAROOM_API_URL }}
         run: |
-          if [ "${{ matrix.python-version }}" == "3.11" ]; then
+          if [ "${{ matrix.python-version }}" == "3.14" ]; then
           uv pip install dist/*.whl
           cd python
           uv run --group test pytest -v .
