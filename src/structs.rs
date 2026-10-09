@@ -231,7 +231,8 @@ impl ImagePayload {
 
     /// Get the image as a numpy array. Raw payloads return a read-only zero-copy
     /// view over the shared pixels; encoded payloads are decoded first (not
-    /// zero-copy).
+    /// zero-copy). Single-channel images are shaped `(H, W)`, multi-channel
+    /// `(H, W, C)`.
     pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if self.is_encoded {
             // For encoded images, we need to decode first
@@ -349,7 +350,8 @@ impl PythonImagePayload {
     }
 
     /// Convert to numpy array. Raw payloads return a read-only zero-copy view;
-    /// encoded payloads are decoded first (not zero-copy).
+    /// encoded payloads are decoded first (not zero-copy). Single-channel images
+    /// are shaped `(H, W)`, multi-channel `(H, W, C)`.
     pub fn to_numpy_array(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let payload = &slf.borrow().inner;
@@ -429,14 +431,21 @@ fn numpy_from_buffer(
     payload: &ImagePayload,
 ) -> PyResult<Py<PyAny>> {
     let numpy = py.import("numpy")?;
-    let shape = (
-        payload.height,
-        payload.width,
-        payload.channels.max(0) as usize,
-    );
-    let array = numpy
-        .call_method1("frombuffer", (owner, numpy.getattr("uint8")?))?
-        .call_method1("reshape", (shape,))?;
+    let array = numpy.call_method1("frombuffer", (owner, numpy.getattr("uint8")?))?;
+    // Single-channel images are exposed as (H, W) to match PIL/torchvision, and
+    // multi-channel images as (H, W, C).
+    let array = if payload.channels == 1 {
+        array.call_method1("reshape", ((payload.height, payload.width),))?
+    } else {
+        array.call_method1(
+            "reshape",
+            ((
+                payload.height,
+                payload.width,
+                payload.channels.max(0) as usize,
+            ),),
+        )?
+    };
     Ok(array.into())
 }
 

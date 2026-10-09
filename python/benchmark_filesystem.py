@@ -114,7 +114,12 @@ def benchmark(
     # the payload is a PIL image or a (zero-copy) numpy buffer, so a corrupt
     # buffer would fail here.
     assert img is not None, "No image - benchmark did not run"
-    Image.fromarray(np.asarray(img)).save("benchmark_last_image.png")
+    last_image = np.asarray(img)
+    # PIL wants (H, W) for single-channel and (H, W, C) otherwise; squeeze a
+    # trailing singleton axis defensively for either loader.
+    if last_image.ndim == 3 and last_image.shape[2] == 1:
+        last_image = last_image[:, :, 0]
+    Image.fromarray(last_image).save("benchmark_last_image.png")
 
     # Let's compare against a classic pytorch dataloader
     if compare_torch:

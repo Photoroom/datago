@@ -182,6 +182,19 @@ def test_image_format_numpy_returns_zero_copy_ndarray(tmp_path):
     client.stop()
 
 
+def test_grayscale_numpy_matches_pil_shape(tmp_path):
+    pixels = (np.arange(4 * 6, dtype=np.uint8) % 250).reshape(4, 6)
+    client = _file_client(
+        tmp_path / "gray_np", Image.fromarray(pixels, mode="L"), image_format="numpy"
+    )
+    sample = client.get_sample_auto_convert()
+    assert sample is not None
+    image = sample["image"]
+    assert image.shape == (4, 6)  # same as np.asarray(PIL "L"), not (4, 6, 1)
+    np.testing.assert_array_equal(image, pixels)
+    client.stop()
+
+
 def test_image_format_defaults_to_pil(tmp_path):
     client = _file_client(tmp_path / "pil_default", Image.new("RGB", (4, 3), (1, 2, 3)))
     sample = client.get_sample_auto_convert()
