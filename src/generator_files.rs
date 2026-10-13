@@ -60,7 +60,13 @@ fn enumerate_files(
         .take_while(|_| !samples_metadata_tx.is_disconnected())
         .filter_map(|entry| {
             let entry = entry.ok()?;
-            if !entry.file_type().is_file() {
+            // Follow symlinks for the type check: curated subsets are often
+            // symlink farms. FIFOs, devices and directories are still skipped.
+            let file_type = entry.file_type();
+            let is_file = file_type.is_file()
+                || (file_type.is_symlink()
+                    && std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file()));
+            if !is_file {
                 return None;
             }
             let path = entry.path();
