@@ -56,7 +56,7 @@ blocking-pool tasks that outlive runtime shutdown.
 
 - **Breaking change:** reads after end-of-stream or `stop()` return `None` rather
   than silently starting another epoch. Call `start()` explicitly for each new pass.
-- DB processing now defaults to `min(4 * CPU count, connection budget, sample limit)`
+- DB processing now defaults to `min(CPU count, connection budget, sample limit)`
   in-flight tasks, rather than accidentally serializing when `DATAGO_MAX_TASKS` is
   unset. WDS processing defaults to one task per CPU. `DATAGO_MAX_TASKS=0` retains
   serial processing; explicit overrides retain their existing source-specific caps.
