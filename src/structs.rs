@@ -391,6 +391,7 @@ pub struct UrlLatent {
 pub struct SharedClient {
     pub client: ClientWithMiddleware,
     pub semaphore: Arc<tokio::sync::Semaphore>,
+    pub max_connections: usize,
 }
 
 pub fn new_shared_client(max_connections: usize) -> SharedClient {
@@ -413,6 +414,7 @@ pub fn new_shared_client(max_connections: usize) -> SharedClient {
     SharedClient {
         client,
         semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
+        max_connections,
     }
 }
 

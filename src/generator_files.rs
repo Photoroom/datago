@@ -346,6 +346,46 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn test_enumerate_files_symlinks() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::net::UnixListener;
+
+        let targets = TempDir::new().unwrap();
+        let target = create_test_images(targets.path(), 1).remove(0);
+        let dataset = TempDir::new().unwrap();
+        let image_link = dataset.path().join("image.png");
+        symlink(target, &image_link).unwrap();
+        symlink(targets.path(), dataset.path().join("directory.png")).unwrap();
+        symlink(
+            targets.path().join("missing.png"),
+            dataset.path().join("dangling.png"),
+        )
+        .unwrap();
+        let socket_path = targets.path().join("socket.png");
+        let _socket = UnixListener::bind(&socket_path).unwrap();
+        symlink(socket_path, dataset.path().join("socket.png")).unwrap();
+
+        let (sender, receiver) = kanal::bounded(10);
+        enumerate_files(
+            sender,
+            SourceFileConfig {
+                root_path: dataset.path().to_string_lossy().into_owned(),
+                random_sampling: false,
+                rank: 0,
+                world_size: 1,
+            },
+            10,
+        );
+        assert_eq!(
+            receiver.recv().unwrap(),
+            serde_json::Value::String(image_link.to_string_lossy().into_owned())
+        );
+        assert_eq!(receiver.recv().unwrap(), serde_json::Value::Null);
+        assert!(receiver.recv().is_err());
+    }
+
+    #[test]
     fn test_enumerate_files_with_limit() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();

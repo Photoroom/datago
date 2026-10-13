@@ -46,6 +46,27 @@ retains its blocking API. Reads do not silently restart: once the stream is
 exhausted (or `stop()` has been called) `get_sample()` returns `None`, and you must
 call `start()` again to begin a new pass.
 
+Waiting on an empty queue also lets other Python threads run. For very cheap
+samples, GIL contention can reduce throughput compared with a reader that keeps
+the GIL; queued samples still use the fast path without releasing it.
+`live_cleanup_threads()` counts cleanup reapers, not all native threads or
+blocking-pool tasks that outlive runtime shutdown.
+
+### Release notes: 2026.10.1
+
+- **Breaking change:** reads after end-of-stream or `stop()` return `None` rather
+  than silently starting another epoch. Call `start()` explicitly for each new pass.
+- DB processing now defaults to `min(4 * CPU count, connection budget, sample limit)`
+  in-flight tasks, rather than accidentally serializing when `DATAGO_MAX_TASKS` is
+  unset. WDS processing defaults to one task per CPU. `DATAGO_MAX_TASKS=0` retains
+  serial processing; explicit overrides retain their existing source-specific caps.
+- Python waits release the GIL and check signals; cancellation also covers DB page
+  requests and WDS shard listing/downloads. Already-running blocking filesystem
+  calls may still outlive shutdown.
+- Source builds require `maturin>=1.9.4,<2`. Release builds no longer use
+  `panic = "abort"`, allowing worker panics to be reported instead of aborting
+  the process.
+
 <details> <summary><strong>Dataroom</strong></summary>
 
 ```python

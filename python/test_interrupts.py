@@ -23,7 +23,7 @@ SCRIPT = textwrap.dedent("""
     import threading
     import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from datago import DatagoClient
+    from datago import DatagoClient, live_cleanup_threads
 
     request_started = threading.Event()
     release_response = threading.Event()
@@ -52,12 +52,34 @@ SCRIPT = textwrap.dedent("""
         "samples_buffer_size": 1,
     })
     mode = sys.argv[1]
+    if len(sys.argv) > 2 and sys.argv[2] == "wds":
+        config = json.dumps({
+            "source_type": "webdataset",
+            "source_config": {
+                "url": f"http://127.0.0.1:{server.server_port}/shard-{{0..0}}.tar",
+                "concurrent_downloads": 1,
+            },
+            "limit": 1,
+            "samples_buffer_size": 1,
+        })
     client = DatagoClient(config)
 
     try:
         client.start()
         assert request_started.wait(10), "Datago feeder did not enter the blocked HTTP request"
-        if mode == "background":
+        if mode == "feeder-cleanup":
+            for iteration in range(3):
+                client.stop()
+                deadline = time.monotonic() + 2
+                while live_cleanup_threads() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert live_cleanup_threads() == 0, "feeder still waits for the HTTP response"
+                if iteration < 2:
+                    request_started.clear()
+                    client.start()
+                    assert request_started.wait(10), "restarted feeder did not request data"
+            print("CLEANED", flush=True)
+        elif mode == "background":
             reader_started = threading.Event()
 
             def background_read():
@@ -75,7 +97,10 @@ SCRIPT = textwrap.dedent("""
 
             signal.signal(signal.SIGINT, stop_from_signal)
             print("READY", flush=True)
-            assert signal_handled.wait(4), "main-thread SIGINT handler did not run"
+            deadline = time.monotonic() + 2
+            while not signal_handled.is_set() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert signal_handled.is_set(), "main-thread SIGINT handler did not run"
             reader.join(timeout=2)
             assert not reader.is_alive(), "signal handler did not stop the background reader"
             print("READER_STOPPED", flush=True)
@@ -120,6 +145,20 @@ SCRIPT = textwrap.dedent("""
         server.shutdown()
         server.server_close()
 """)
+
+
+@pytest.mark.parametrize("source", ["db", "wds"])
+def test_stop_cancels_stalled_feeders_without_accumulating_reapers(source):
+    result = subprocess.run(
+        [sys.executable, "-u", "-c", SCRIPT, "feeder-cleanup", source],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+        env={**os.environ, "DATAGO_MAX_TASKS": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CLEANED" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -213,9 +252,8 @@ def test_concurrent_readers_do_not_raise_borrow_error(tmp_path):
     of raising `RuntimeError: Already borrowed` (the pyclass is frozen)."""
     import threading
 
-    from PIL import Image
-
     from datago import DatagoClient
+    from PIL import Image
 
     count = 64
     for index in range(count):

@@ -419,6 +419,7 @@ fn query_shards_and_dispatch(
     shared_client: Arc<SharedClient>,
     samples_metadata_tx: kanal::Sender<TarballSample>,
     source_config: SourceWebDatasetConfig,
+    cancel: CancellationToken,
 ) {
     // List all the shards from the bucket
     // for each of them, start an async task to download the TarballSample and unpack it in memory
@@ -438,19 +439,19 @@ fn query_shards_and_dispatch(
         .build()
         .unwrap()
         .block_on(async {
-            match tasks_from_shards(
-                shared_client.clone(),
-                samples_metadata_tx,
-                &source_config,
-                max_retries,
-            )
-            .await
-            {
-                Ok(_) => {
-                    debug!("query_shards_and_dispatch: finished processing all shards");
-                }
-                Err(e) => {
-                    debug!("query_shards_and_dispatch: ended with : {e:?}");
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {}
+                result = tasks_from_shards(
+                    shared_client.clone(),
+                    samples_metadata_tx,
+                    &source_config,
+                    max_retries,
+                ) => {
+                    match result {
+                        Ok(_) => debug!("query_shards_and_dispatch: finished processing all shards"),
+                        Err(error) => debug!("query_shards_and_dispatch: ended with : {error:?}"),
+                    }
                 }
             }
         });
@@ -477,9 +478,16 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     // List the contents of the bucket and feed the workers
     let http_client = Arc::new(new_shared_client(client.max_connections));
+    let cancel = CancellationToken::new();
+    let cancel_feeder = cancel.clone();
 
     let feeder = Some(thread::spawn(move || {
-        query_shards_and_dispatch(http_client, samples_metadata_tx, source_config);
+        query_shards_and_dispatch(
+            http_client,
+            samples_metadata_tx,
+            source_config,
+            cancel_feeder,
+        );
     }));
 
     // Kick the workers which deserialize all the payloads
@@ -493,7 +501,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
-    let cancel = CancellationToken::new();
     let cancel_worker = cancel.clone();
     let worker = Some(thread::spawn(move || {
         worker_wds::deserialize_samples(
@@ -562,7 +569,12 @@ mod tests {
             let mut count = 0;
             let limit = 2;
             let feeder = thread::spawn(move || {
-                query_shards_and_dispatch(http_client, samples_meta_tx, config);
+                query_shards_and_dispatch(
+                    http_client,
+                    samples_meta_tx,
+                    config,
+                    CancellationToken::new(),
+                );
             });
 
             while count < limit {

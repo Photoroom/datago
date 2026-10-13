@@ -16,8 +16,8 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 const SIGNAL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Number of background cleanup threads currently joining native workers whose
-/// blocking IO outlived the stop grace period. Exposed so repeated stop/restart
-/// cycles cannot silently accumulate threads.
+/// blocking IO outlived the stop grace period. Blocking-pool tasks which outlive
+/// runtime shutdown are not counted here.
 static LIVE_CLEANUP_THREADS: AtomicUsize = AtomicUsize::new(0);
 
 enum ReceiveFailure<E> {
@@ -31,11 +31,14 @@ enum ReceiveFailure<E> {
 /// reader is waiting, and concurrent calls serialize instead of raising
 /// `RuntimeError: Already borrowed`.
 struct ClientState {
-    engine: Option<DatagoEngine>,
-    is_started: bool,
-    // After EOS/stop, reads return None rather than implicitly starting a new pass.
-    stopped: bool,
+    lifecycle: ClientLifecycle,
     generation: u64,
+}
+
+enum ClientLifecycle {
+    Idle,
+    Running(DatagoEngine),
+    Stopped,
 }
 
 #[pyclass(frozen)]
@@ -61,7 +64,9 @@ pub struct DatagoClient {
 }
 
 /// Number of cleanup threads joining native workers whose blocking IO outlived
-/// the stop grace period. Useful from Python to detect thread accumulation.
+/// the stop grace period. Counts reaper threads, not every native thread:
+/// blocking-pool tasks may outlive their runtime's shutdown timeout and are not
+/// included once the engine's feeder and worker threads have been joined.
 #[pyfunction]
 #[allow(dead_code)] // only referenced through the Python module in the lib target
 pub fn live_cleanup_threads() -> usize {
@@ -144,9 +149,7 @@ impl DatagoClient {
                     encode_format,
                     jpeg_quality,
                     state: Mutex::new(ClientState {
-                        engine: None,
-                        is_started: false,
-                        stopped: false,
+                        lifecycle: ClientLifecycle::Idle,
                         generation: 0,
                     }),
                     is_valid: true,
@@ -166,9 +169,7 @@ impl DatagoClient {
                     encode_format: crate::image_processing::EncodeFormat::default(),
                     jpeg_quality: 92,
                     state: Mutex::new(ClientState {
-                        engine: None,
-                        is_started: false,
-                        stopped: false,
+                        lifecycle: ClientLifecycle::Idle,
                         generation: 0,
                     }),
                     is_valid: false,
@@ -194,11 +195,7 @@ impl DatagoClient {
     /// as `get_sample()`.
     #[pyo3(name = "get_sample_auto_convert")]
     fn py_get_sample_auto_convert(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let sample = match self.get_sample_python(py)? {
-            Some(sample) => sample,
-            None => return Ok(None),
-        };
-        Ok(sample_to_python_types(sample, py))
+        self.get_sample_auto_convert(py)
     }
 
     /// Stop streaming and release the worker threads.
@@ -222,15 +219,15 @@ impl DatagoClient {
     }
 
     fn start_locked(&self, state: &mut ClientState) {
-        if state.is_started {
+        if matches!(state.lifecycle, ClientLifecycle::Running(_)) {
             return;
         }
-        state.stopped = false;
+        state.lifecycle = ClientLifecycle::Idle;
         if !self.is_valid {
             return;
         }
         initialize_logging(Some("warn".to_string()));
-        state.engine = match &self.source_type {
+        let engine = match &self.source_type {
             SourceType::Db => Some(generator_http::orchestrate(self)),
             SourceType::File => Some(generator_files::orchestrate(self)),
             SourceType::WebDataset => {
@@ -242,9 +239,9 @@ impl DatagoClient {
                 None
             }
         };
-        state.is_started = state.engine.is_some();
-        if state.is_started {
+        if let Some(engine) = engine {
             state.generation = state.generation.wrapping_add(1);
+            state.lifecycle = ClientLifecycle::Running(engine);
         }
     }
 
@@ -252,16 +249,16 @@ impl DatagoClient {
     /// close it while Python or Rust waits without this lock held.
     fn sample_receiver(&self) -> Option<(kanal::Receiver<Option<Sample>>, u64)> {
         let mut state = self.state();
-        if state.stopped {
+        if matches!(state.lifecycle, ClientLifecycle::Stopped) {
             return None;
         }
-        if !state.is_started {
+        if matches!(state.lifecycle, ClientLifecycle::Idle) {
             self.start_locked(&mut state);
         }
-        state
-            .engine
-            .as_ref()
-            .map(|engine| (engine.samples_rx.clone(), state.generation))
+        match &state.lifecycle {
+            ClientLifecycle::Running(engine) => Some((engine.samples_rx.clone(), state.generation)),
+            ClientLifecycle::Idle | ClientLifecycle::Stopped => None,
+        }
     }
 
     fn take_engine(&self) -> Option<DatagoEngine> {
@@ -282,9 +279,10 @@ impl DatagoClient {
                 return None;
             }
         }
-        state.is_started = false;
-        state.stopped = true;
-        let engine = state.engine.take();
+        let engine = match std::mem::replace(&mut state.lifecycle, ClientLifecycle::Stopped) {
+            ClientLifecycle::Running(engine) => Some(engine),
+            ClientLifecycle::Idle | ClientLifecycle::Stopped => None,
+        };
         if let Some(engine) = &engine {
             let _ = engine.samples_rx.close();
             engine.metadata_rx.close();
@@ -323,8 +321,10 @@ impl DatagoClient {
         }
     }
 
+    /// Read and convert using the signal-aware Python wait strategy, including
+    /// when called directly from Rust with an attached Python token.
     pub fn get_sample_auto_convert(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let sample = match self.get_sample() {
+        let sample = match self.get_sample_python(py)? {
             Some(sample) => sample,
             None => return Ok(None),
         };
@@ -499,7 +499,7 @@ pub fn initialize_logging(log_level: Option<String>) -> bool {
 
 mod tests {
     #[cfg(test)]
-    use crate::client::DatagoClient;
+    use crate::client::{ClientLifecycle, DatagoClient};
 
     #[cfg(test)]
     use crate::structs::DatagoEngine;
@@ -523,7 +523,7 @@ mod tests {
         let (_metadata_tx, metadata_rx) = kanal::bounded(1);
         {
             let mut state = client.state();
-            state.engine = Some(DatagoEngine {
+            state.lifecycle = ClientLifecycle::Running(DatagoEngine {
                 samples_rx,
                 metadata_rx: crate::structs::MetadataReceiver::Json(metadata_rx),
                 cancel: tokio_util::sync::CancellationToken::new(),
@@ -531,14 +531,15 @@ mod tests {
                 worker: None,
             });
             state.generation = 2;
-            state.is_started = true;
-            state.stopped = false;
         }
 
         assert!(client.take_engine_for(1).is_none());
-        assert!(client.state().is_started);
+        assert!(matches!(
+            client.state().lifecycle,
+            ClientLifecycle::Running(_)
+        ));
         assert!(client.take_engine_for(2).is_some());
-        assert!(!client.state().is_started);
+        assert!(matches!(client.state().lifecycle, ClientLifecycle::Stopped));
     }
 
     #[cfg(test)]
