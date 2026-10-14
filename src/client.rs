@@ -323,7 +323,7 @@ impl DatagoClient {
 
     /// Read and convert using the signal-aware Python wait strategy, including
     /// when called directly from Rust with an attached Python token.
-    pub fn get_sample_auto_convert(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+    fn get_sample_auto_convert(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let sample = match self.get_sample_python(py)? {
             Some(sample) => sample,
             None => return Ok(None),
