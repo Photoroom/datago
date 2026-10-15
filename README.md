@@ -12,45 +12,9 @@ Datago handles, outside of the Python GIL
 - some optional vision processing (aligning different image payloads)
 - optional serialization
 
-Raw image payloads share immutable pixel storage between Rust sample/image
-wrappers. Accessing `get_payload()` or cloning a sample no longer copies all
-pixels. Explicitly reading `payload.data` still returns owned Python bytes; assigning
-to it replaces the storage on that payload wrapper without mutating existing views.
-
-For raw images, `sample.image.to_numpy_array()` and
-`sample.image.get_payload().to_numpy_array()` expose read-only NumPy views directly
-over the Rust-owned pixels (no intermediate Python `bytes` copy). The ndarray keeps
-the exporter and pixels alive after the sample is dropped. Since the storage is
-shared and immutable, use `array.copy()` when a writable array is needed. The image
-wrapper also exposes `width`, `height`, `size`, `mode`, and `palette` as native
-metadata properties; these avoid constructing a PIL image for common metadata
-lookups. Set `"image_format": "numpy"` in the client config to have
-`get_sample_auto_convert()` return read-only, zero-copy ndarrays for `image`,
-`masks`, and `additional_images` instead of PIL images (the default is `"pil"`).
-Single-channel images are shaped `(H, W)` and multi-channel `(H, W, C)`, and the
-dtype follows the source (`uint8`, `uint16`, or `float32`), matching PIL /
-torchvision. PIL output cannot represent multi-channel images wider than 8 bits and
-raises in that case; use `"image_format": "numpy"` to keep their full depth.
-
-Encoded payloads (`pre_encode_images=True`) behave differently: the buffer protocol
-(`memoryview(payload)`, `numpy.frombuffer(payload, ...)`, `numpy.asarray(payload)`)
-exposes the *compressed* bytes rather than decoded pixels, and `payload.data` is the
-encoded byte string. Use `to_numpy_array()` or `to_pil_image()` to decode those
-payloads; unlike the raw path, decoding is not zero-copy.
-
-Image conversions validate the channel count, sample depth, and pixel buffer
-length. Unsupported conversions raise ordinary Python exceptions such as
-`ValueError`. Encoded NumPy output uses the native decoder and preserves alpha,
-grayscale channels, and 16-bit precision. Raw `LA` images retain their two channels,
-including during resizing.
-
-Workers count successfully published samples: `limit` is an upper bound on the
-number delivered by the native client, including when work finishes concurrently.
-Unreadable items do not consume that budget. A finite source can still end before
-the limit is reached. Cancellation remains active after metadata ends and while
-the consumer's output queue is full.
-
-Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types. Speed will be network dependent, but GB/s is typical. Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
+Images can be returned as PIL objects or read-only NumPy views over shared Rust
+storage. File, HTTP, and WebDataset sources support bounded buffering, cancellation,
+and distributed loading through source-specific rank/world-size settings.
 
 ![Datago organization](assets/447175851-2277afcb-8abf-4d17-b2db-dae27c6056d0.png)
 
@@ -64,11 +28,49 @@ Please note that in all the of the following cases, you can directly get an Iter
 ```python
 from dataset import DatagoIterDataset
 
-client_config = {}  # See below for examples
+client_config = {
+    "source_type": "file",
+    "source_config": {"root_path": "/path/to/images"},
+    "limit": 2000,
+    "samples_buffer_size": 256,
+    "image_format": "numpy",  # Omit for PIL output.
+}
 datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
 ```
 
-`return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
+With `return_python_types=True`, samples are dictionaries whose images follow the
+configured `image_format`.
+
+### Image output
+
+| API / setting | Result |
+| --- | --- |
+| `client.get_sample()` | Sample and image wrappers with metadata and explicit conversion methods |
+| `client.get_sample_auto_convert()`, `"image_format": "pil"` (default) | Dictionary containing PIL images |
+| `client.get_sample_auto_convert()`, `"image_format": "numpy"` | Dictionary containing NumPy arrays for images, masks, and additional images |
+
+Set `"image_format": "numpy"` in the client configuration to avoid materializing
+PIL images. Raw arrays are read-only views over shared Rust pixels and remain valid
+after the sample or client is dropped. Use `array.copy()` for writable storage.
+Single-channel arrays have shape `(H, W)`; multi-channel arrays use `(H, W, C)`.
+Their dtype preserves the source: `uint8`, `uint16`, or `float32`.
+
+`sample.image.to_numpy_array()` and `sample.image.to_pil_image()` also convert
+individual images. PIL supports 16-bit grayscale, but wider multi-channel images
+raise `ValueError`; use NumPy to preserve their precision. Invalid pixel layouts
+and unsupported conversions propagate ordinary Python exceptions.
+
+Cloning a sample or calling `get_payload()` shares its immutable pixels. Reading
+`payload.data` returns an owned byte copy; assigning to it replaces that wrapper's
+storage without invalidating existing views. Raw metadata properties (`width`,
+`height`, `size`, `mode`, `palette`) avoid constructing a PIL image.
+
+With `pre_encode_images=True`, the buffer protocol exposes compressed bytes.
+Use `to_numpy_array()` or `to_pil_image()` to decode them. Decoding runs natively
+outside the GIL and preserves channels and precision; decoded output requires a
+new allocation rather than a view over the compressed stream.
+
+### Lifecycle and cancellation
 
 Python sample reads try the ready queue without releasing the GIL, then release it
 while waiting and poll Python signals every 100 ms. Python delivers SIGINT handlers
@@ -77,9 +79,10 @@ the main thread by calling `client.stop()`; that cancellation is safe while the
 reader is waiting. `stop()` closes both pipeline queues, releases the GIL while
 joining, and returns after a short grace period if native work is still in flight.
 Remaining thread handles are retained by a cleanup reaper rather than detached.
-Prefer `try/finally` with `client.stop()` for explicit cleanup. Queued async work is
-cancelled; a filesystem/network syscall already executing cannot be forcibly stopped
-and may continue in the background until the OS call returns. The native Rust client
+Prefer `try/finally` with `client.stop()` for explicit cleanup. Cancellation remains
+active after metadata ends and while the output queue is full. Async downloads and
+queued work are cancelled; already-running blocking IO or computation may continue
+in the background until the native operation returns. The native Rust client
 retains its blocking API. Reads do not silently restart: once the stream is
 exhausted (or `stop()` has been called) `get_sample()` returns `None`, and you must
 call `start()` again to begin a new pass.
@@ -89,6 +92,10 @@ samples, GIL contention can reduce throughput compared with a reader that keeps
 the GIL; queued samples still use the fast path without releasing it.
 `live_cleanup_threads()` counts cleanup reapers, not all native threads or
 blocking-pool tasks that outlive runtime shutdown.
+
+Workers count successfully published samples: `limit` is an upper bound on delivery,
+including under concurrency. Unreadable items do not consume that budget, although
+a finite source may end before reaching the limit.
 
 ### Release notes: 2026.10.1
 
@@ -133,7 +140,8 @@ for _ in range(10):
     sample = client.get_sample()
 ```
 
-Please note that the image buffers will be passed around as raw pointers, see below (we provide python utils to convert to PIL types).
+`get_sample()` returns wrappers with explicit image conversion methods; see
+[Image output](#image-output).
 
 </details><details> <summary><strong>Local files</strong></summary>
 
@@ -220,7 +228,7 @@ There are three main processing topics that you can choose from:
 - pre-encode the images to a specific format (jpg, png, ...)
 
 ```python
-   config = {
+config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
@@ -242,7 +250,9 @@ There are three main processing topics that you can choose from:
 
 ## Match the raw exported buffers with typical python types
 
-See helper functions provided in `raw_types.py`, should be self explanatory. Check python benchmarks for examples. As mentioned above, we also provide a wrapper so that you get a `dataset` directly.
+Use `sample.image.to_numpy_array()` or `sample.image.to_pil_image()` for a single
+image, or `client.get_sample_auto_convert()` for a complete dictionary. See
+[Image output](#image-output) for storage, dtype, and lifetime guarantees.
 
 ## Logging
 
@@ -255,7 +265,9 @@ When using the library from Python, `env_logger` will be initialized automatical
 
 There are a couple of env variables which will change the behavior of the library, for settings which felt too low level to be exposed in the config.
 
-- `DATAGO_MAX_TASKS`: refers to the number of threads which will be used to load the samples. Defaults to a multiple of the CPU cores.
+- `DATAGO_MAX_TASKS`: maximum in-flight processing tasks, not native thread count.
+  Defaults to CPU count for files/WDS and the smaller of CPU count and connection
+  budget for DB sources, with source-specific caps. `0` means serial processing.
 - `RUST_LOG`: see above, will change the level of logging for the whole library, could be useful for debugging or to report an issue here.
 - `DATAGO_MAX_RETRIES`: number of retries for a failed sample load, defaults to 3.
 
@@ -299,55 +311,9 @@ the output queue, so counting, cancellation, and end-of-stream behavior are shar
 by all sources. Encoded bytes and raw pixel layouts are interpreted separately;
 public payload fields remain compatible, with validation before pixel conversion.
 
-The filesystem benchmark reports construction-to-completion throughput, time to
-the first sample (`startup_seconds`), and throughput after that first sample
-(`steady_fps`). Both loaders include construction in their total time and consume
-the same number of samples. With resizing enabled, both use a square target with
-Lanczos resizing and center cropping. Compare on the same RGB8 corpus; decoder,
-cache state, file enumeration, and scheduling differences still affect results.
-`num_workers` controls Datago's in-flight tasks and Torch's worker processes;
-it does not imply equal native thread counts.
+## DB benchmark CLI
 
-## Native filesystem benchmark
-
-The Python filesystem report includes `pixels` and `megapixels_per_second`
-(MP/s). A pixel is one output spatial position (`width * height`), regardless of
-channel count or bit depth; resized runs count the resized pixels. The same
-metrics are returned for Torch and included in sweep JSON.
-
-A small native example consumes the same Datago pipeline without entering Python:
-
-```bash
-cargo run --release --example benchmark_filesystem -- /path/to/images --limit 2000 --num-workers 8
-```
-
-It prints JSON with FPS, MP/s, MB/s, sample/pixel/byte counts, elapsed time,
-time to first sample, and post-start FPS. Add `--crop-and-resize` to match the
-Python benchmark's 1024 x 1024 output. Both use a 256-sample buffer and exclude
-cleanup from elapsed time. A short source is reported as an error.
-
-Compare with the Python materialization path:
-
-```bash
-uv run --group dev python/benchmark_filesystem.py --root-path /path/to/images --limit 2000 --num-workers 8 --image-format numpy --no-compare-torch
-```
-
-For a closer view of binding and Python iteration overhead, compare the native
-result against the raw stage, then add NumPy and PIL conversion:
-
-```bash
-uv run --group dev python/bench_stages.py --root-path /path/to/images --limit 2000 --workers 8 --stages raw,numpy,pil,convert
-```
-
-The stage benchmark also accepts `--crop-and-resize` for the same square workload.
-Use release builds for both the extension and native example, the same options
-and corpus, and repeated runs with comparable filesystem cache state. The native
-reader consumes raw samples; its difference from converted Python output includes
-object creation, conversion, and iteration as well as binding overhead. Python's
-progress reporting also adds work. These are pipeline comparisons, not a direct
-measurement of the cost of an individual binding call.
-
-The existing DB benchmark CLI remains available with `cargo run --release -- -h`.
+Run `cargo run --release -- -h` for the existing DB benchmark options.
 
 ## Run the rust test suite
 
@@ -387,6 +353,41 @@ Create a new tag and a new release in this repo, a new package will be pushed au
 As usual, benchmarks are a tricky game, and you shouldn't read too much into the following plots but do your own tests. Some python benchmark examples are provided in the [python](./python/) folder.
 
 In general, Datago will be impactful if you want to load a lot of images very fast, but if you consume them as you go at a more leisury pace then it's not really needed. The more CPU work there is with the images and the higher quality they are, the more Datago will shine.
+
+## Filesystem throughput: Python and Rust
+
+The Python filesystem benchmark reports FPS, MP/s, MB/s, time to first sample,
+and post-start FPS for Datago and optionally Torch. Its returned results and sweep
+JSON include `pixels` and `megapixels_per_second`. Pixels count output spatial
+positions (`width * height`), independent of channel count or bit depth.
+
+The native Rust example consumes the same pipeline without entering Python and
+prints JSON with the same metrics. Compare it against Python's raw stage to assess
+binding and iteration overhead, then add NumPy, PIL, and dictionary conversion:
+
+```bash
+# Native raw-sample baseline.
+cargo run --release --example benchmark_filesystem -- /path/to/images --limit 2000 --num-workers 8
+
+# Python raw samples, then image and dictionary conversion.
+uv run --group dev python/bench_stages.py --root-path /path/to/images --limit 2000 --workers 8 --stages raw,numpy,pil,convert
+
+# Full Python NumPy output; remove --no-compare-torch to include Torch.
+uv run --group dev python/benchmark_filesystem.py --root-path /path/to/images --limit 2000 --num-workers 8 --image-format numpy --no-compare-torch
+```
+
+All three accept `--crop-and-resize` for 1024 × 1024 output. Resized runs count
+output pixels. They use a 256-sample buffer, include construction/startup in elapsed
+time, exclude cleanup, and report an error if the source cannot supply the limit.
+The Rust and full Python reports use `startup_seconds` for time to the first sample
+and `steady_fps` for the rate after it (`null` for a single-sample run).
+
+Use release builds for both the extension and native example, identical options
+and an RGB8 corpus, and repeated runs with comparable filesystem cache state.
+Native versus converted Python output includes conversion and object creation,
+so the difference is broader than binding-call overhead. Python progress reporting
+also adds work. `num_workers` controls Datago tasks and Torch processes; native
+thread counts can differ.
 
 ## From disk: ImageNet
 

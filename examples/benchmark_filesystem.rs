@@ -84,16 +84,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(format!("expected {limit} samples, received {count}").into());
     }
     let startup = first_sample.expect("positive limit and complete run");
+    let round = |value: f64| (value * 1000.0).round() / 1000.0;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "backend": "rust", "image_format": "raw", "num_workers": workers,
             "crop_and_resize": resize, "count": count, "pixels": pixels, "bytes": bytes,
-            "elapsed_seconds": elapsed, "startup_seconds": startup,
-            "steady_fps": if count > 1 { Some((count - 1) as f64 / (elapsed - startup)) } else { None },
-            "fps": count as f64 / elapsed,
-            "megapixels_per_second": pixels as f64 / elapsed / 1e6,
-            "bandwidth_mbps": bytes as f64 / elapsed / 1e6,
+            "elapsed_seconds": round(elapsed), "startup_seconds": round(startup),
+            "steady_fps": if count > 1 { Some(round((count - 1) as f64 / (elapsed - startup))) } else { None },
+            "fps": round(count as f64 / elapsed),
+            "megapixels_per_second": round(pixels as f64 / elapsed / 1e6),
+            "bandwidth_mbps": round(bytes as f64 / elapsed / 1e6),
         }))?
     );
     Ok(())
