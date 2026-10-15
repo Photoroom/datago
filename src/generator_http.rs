@@ -473,19 +473,23 @@ pub fn pull_and_dispatch_pages(
     samples_metadata_tx: Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     limit: usize,
+    cancel: CancellationToken,
 ) {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            async_pull_and_dispatch_pages(
-                shared_client,
-                samples_metadata_tx.clone(),
-                source_config,
-                limit,
-            )
-            .await;
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {}
+                _ = async_pull_and_dispatch_pages(
+                    shared_client,
+                    samples_metadata_tx.clone(),
+                    source_config,
+                    limit,
+                ) => {}
+            }
         });
 
     // Send an empty value to signal the end of the stream
@@ -516,10 +520,18 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let limit = client.limit;
     let source_config = source_db_config.clone();
     let shared_client = http_client.clone();
+    let cancel = CancellationToken::new();
+    let cancel_feeder = cancel.clone();
 
     // Spawn a thread which will ping the DB
     let feeder = Some(thread::spawn(move || {
-        pull_and_dispatch_pages(&shared_client, samples_metadata_tx, source_config, limit);
+        pull_and_dispatch_pages(
+            &shared_client,
+            samples_metadata_tx,
+            source_config,
+            limit,
+            cancel_feeder,
+        );
     }));
 
     // Spawn a thread which will handle the async workers
@@ -533,7 +545,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let limit = client.limit;
     let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
-    let cancel = CancellationToken::new();
     let cancel_worker = cancel.clone();
 
     let worker = Some(thread::spawn(move || {

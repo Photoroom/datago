@@ -276,13 +276,16 @@ async fn async_pull_samples(
 ) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll keep a pool of N async tasks in parallel. DB downloads are IO-bound,
-    // so default to 4x CPUs; DATAGO_MAX_TASKS overrides it.
+    // so default to one task per CPU capped by the connection budget.
     let max_retries = std::env::var("DATAGO_MAX_RETRIES")
         .ok()
         .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(3);
 
-    let max_tasks = min(max_tasks_from_env(num_cpus::get() * 4), limit);
+    let max_tasks = min(
+        max_tasks_from_env(min(num_cpus::get(), client.max_connections)),
+        limit,
+    );
     debug!("Using {max_tasks} tasks in the async threadpool");
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;

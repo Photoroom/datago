@@ -69,8 +69,7 @@ def benchmark(
         return results_sweep
 
     print(
-        f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers "
-        f"- image_format={image_format}"
+        f"Running benchmark for {root_path} - {limit} samples - {num_workers} workers - image_format={image_format}"
     )
 
     # This setting is not exposed in the config, but an env variable can be used instead
@@ -96,8 +95,8 @@ def benchmark(
     # Make sure in the following that we compare apples to apples, meaning in that case
     # that we materialize the payloads in the python scope in the expected format
     # (PIL.Image for images and masks for instance, numpy arrays for latents)
-    datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
     start = time.time()  # Note that the datago dataset will start walking the filesystem at construction time
+    datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
 
     img = None
     count = 0
@@ -129,8 +128,7 @@ def benchmark(
         }
     }
     print(
-        f"Datago - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
-        f"workers {num_workers} - image_format {image_format}"
+        f"Datago - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - workers {num_workers} - image_format {image_format}"
     )
     del datago_dataset
 
@@ -197,7 +195,7 @@ def benchmark(
             n_images += len(batch)
             for item in batch:
                 total_bytes += _image_nbytes(item)
-            if n_images > limit:
+            if n_images >= limit:
                 break
 
             del batch  # Help with memory pressure, same as above
