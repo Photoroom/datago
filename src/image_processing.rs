@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::Arc;
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const DEFAULT_JPEG_QUALITY: u8 = 92;
@@ -419,7 +420,7 @@ pub async fn image_to_payload(
     }
 
     Ok(ImagePayload {
-        data: image_bytes,
+        data: Arc::from(image_bytes),
         original_height,
         original_width,
         height,
