@@ -1,11 +1,12 @@
 use crate::client::DatagoClient;
-use crate::structs::DatagoEngine;
+use crate::structs::{DatagoEngine, MetadataReceiver};
 use crate::worker_files;
 use kanal::bounded;
 use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::thread;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
@@ -46,16 +47,28 @@ fn enumerate_files(
     source_config: SourceFileConfig,
     limit: usize,
 ) {
-    // Get an iterator over the files in the root path
+    // Get an iterator over regular files only. Besides skipping directories with
+    // image-like names, this avoids opening FIFOs/devices in the blocking decoder.
     let supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
 
     // Use streaming walkdir to avoid loading all files into memory at once
-    let _supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
     let walker = walkdir::WalkDir::new(&source_config.root_path)
         .follow_links(false)
         .into_iter()
-        .filter_map(|e| e.ok())
+        // Test cancellation before filtering extensions so a tree full of
+        // unrelated files does not require a complete walk after stop().
+        .take_while(|_| !samples_metadata_tx.is_disconnected())
         .filter_map(|entry| {
+            let entry = entry.ok()?;
+            // Follow symlinks for the type check: curated subsets are often
+            // symlink farms. FIFOs, devices and directories are still skipped.
+            let file_type = entry.file_type();
+            let is_file = file_type.is_file()
+                || (file_type.is_symlink()
+                    && std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file()));
+            if !is_file {
+                return None;
+            }
             let path = entry.path();
             let file_name = path.to_string_lossy().to_lowercase();
             if supported_extensions
@@ -69,7 +82,8 @@ fn enumerate_files(
         });
 
     // Collect some of the files, over sample to increase randomness or allow for faulty files
-    let mut files_list: Vec<walkdir::DirEntry> = walker.take(limit * 2).collect();
+    let mut files_list = Vec::new();
+    files_list.extend(walker.take(limit.saturating_mul(2)));
 
     // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
     if source_config.world_size > 1 {
@@ -161,6 +175,8 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     };
     let limit = client.limit;
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
+    let cancel = CancellationToken::new();
+    let cancel_worker = cancel.clone();
 
     let worker = Some(thread::spawn(move || {
         worker_files::pull_samples(
@@ -169,12 +185,15 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             image_transform,
             encoding,
             limit,
+            cancel_worker,
         );
         debug!("Worker thread completed");
     }));
 
     DatagoEngine {
         samples_rx,
+        metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
+        cancel,
         feeder,
         worker,
     }
@@ -324,6 +343,46 @@ mod tests {
         for created_file in &created_files {
             assert!(received_files.contains(created_file));
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_enumerate_files_symlinks() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::net::UnixListener;
+
+        let targets = TempDir::new().unwrap();
+        let target = create_test_images(targets.path(), 1).remove(0);
+        let dataset = TempDir::new().unwrap();
+        let image_link = dataset.path().join("image.png");
+        symlink(target, &image_link).unwrap();
+        symlink(targets.path(), dataset.path().join("directory.png")).unwrap();
+        symlink(
+            targets.path().join("missing.png"),
+            dataset.path().join("dangling.png"),
+        )
+        .unwrap();
+        let socket_path = targets.path().join("socket.png");
+        let _socket = UnixListener::bind(&socket_path).unwrap();
+        symlink(socket_path, dataset.path().join("socket.png")).unwrap();
+
+        let (sender, receiver) = kanal::bounded(10);
+        enumerate_files(
+            sender,
+            SourceFileConfig {
+                root_path: dataset.path().to_string_lossy().into_owned(),
+                random_sampling: false,
+                rank: 0,
+                world_size: 1,
+            },
+            10,
+        );
+        assert_eq!(
+            receiver.recv().unwrap(),
+            serde_json::Value::String(image_link.to_string_lossy().into_owned())
+        );
+        assert_eq!(receiver.recv().unwrap(), serde_json::Value::Null);
+        assert!(receiver.recv().is_err());
     }
 
     #[test]
