@@ -18,18 +18,20 @@ def _to_numpy(image):
     return np.asarray(image)
 
 
-def _image_nbytes(image) -> int:
-    """Raw pixel payload size in bytes (metadata excluded)."""
+def _image_metrics(image) -> tuple[int, int]:
+    """Return spatial pixels and raw payload bytes; channels count only as bytes."""
     # ImageFolder yields (image, target) tuples; unwrap if needed.
     if isinstance(image, (tuple, list)):
         image = image[0]
     if isinstance(image, np.ndarray):
-        return int(image.nbytes)
+        height, width = image.shape[:2]
+        return int(width * height), int(image.nbytes)
     # Count materialized pixel bytes, including wider grayscale PIL modes.
     itemsize = (
         2 if image.mode.startswith("I;16") else 4 if image.mode in ("I", "F") else 1
     )
-    return image.width * image.height * len(image.getbands()) * itemsize
+    pixels = image.width * image.height
+    return pixels, pixels * len(image.getbands()) * itemsize
 
 
 def _timing(start, first_sample, count):
@@ -127,6 +129,7 @@ def benchmark(
     img = None
     count = 0
     total_bytes = 0
+    total_pixels = 0
     for sample in tqdm(
         datago_dataset, desc=f"Datago ({image_format})", dynamic_ncols=True
     ):
@@ -134,7 +137,9 @@ def benchmark(
             first_sample = time.perf_counter()
         assert sample["id"] != ""
         img = sample["image"]
-        total_bytes += _image_nbytes(img)
+        pixels, nbytes = _image_metrics(img)
+        total_pixels += pixels
+        total_bytes += nbytes
 
         if count < limit - 1:
             del img
@@ -147,18 +152,21 @@ def benchmark(
     elapsed = timing["elapsed_seconds"]
     fps = limit / elapsed
     bandwidth_mbps = total_bytes / elapsed / 1e6
+    megapixels_per_second = total_pixels / elapsed / 1e6
     results = {
         "datago": {
             **timing,
             "fps": fps,
             "count": count,
             "bytes": total_bytes,
+            "pixels": total_pixels,
+            "megapixels_per_second": megapixels_per_second,
             "bandwidth_mbps": bandwidth_mbps,
             "image_format": image_format,
         }
     }
     print(
-        f"Datago - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
+        f"Datago - FPS {fps:.2f} - MP/s {megapixels_per_second:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
         f"startup {timing['startup_seconds']:.3f}s - steady FPS {timing['steady_fps']} - "
         f"tasks {num_workers} - image_format {image_format}"
     )
@@ -228,6 +236,7 @@ def benchmark(
         # Iterate over the DataLoader
         n_images = 0
         total_bytes = 0
+        total_pixels = 0
         for batch in tqdm(
             dataloader, desc=f"Torch ({image_format})", dynamic_ncols=True
         ):
@@ -235,7 +244,9 @@ def benchmark(
                 first_sample = time.perf_counter()
             n_images += len(batch)
             for item in batch:
-                total_bytes += _image_nbytes(item)
+                pixels, nbytes = _image_metrics(item)
+                total_pixels += pixels
+                total_bytes += nbytes
             if n_images >= limit:
                 break
 
@@ -245,17 +256,20 @@ def benchmark(
         elapsed = timing["elapsed_seconds"]
         fps = n_images / elapsed
         bandwidth_mbps = total_bytes / elapsed / 1e6
+        megapixels_per_second = total_pixels / elapsed / 1e6
         results["torch"] = {
             **timing,
             "fps": fps,
             "count": n_images,
             "bytes": total_bytes,
+            "pixels": total_pixels,
+            "megapixels_per_second": megapixels_per_second,
             "bandwidth_mbps": bandwidth_mbps,
             "image_format": image_format,
         }
         print(
-            f"Torch - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
-            f"startup {timing['startup_seconds']:.3f}s - steady FPS {timing['steady_fps']:.2f} - "
+            f"Torch - FPS {fps:.2f} - MP/s {megapixels_per_second:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
+            f"startup {timing['startup_seconds']:.3f}s - steady FPS {timing['steady_fps']} - "
             f"workers {num_workers} - image_format {image_format}"
         )
 

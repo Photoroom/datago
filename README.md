@@ -308,9 +308,46 @@ cache state, file enumeration, and scheduling differences still affect results.
 `num_workers` controls Datago's in-flight tasks and Torch's worker processes;
 it does not imply equal native thread counts.
 
-## Build a benchmark CLI
+## Native filesystem benchmark
 
-`cargo run --release --  -h` to get all the information, should be fairly straightforward
+The Python filesystem report includes `pixels` and `megapixels_per_second`
+(MP/s). A pixel is one output spatial position (`width * height`), regardless of
+channel count or bit depth; resized runs count the resized pixels. The same
+metrics are returned for Torch and included in sweep JSON.
+
+A small native example consumes the same Datago pipeline without entering Python:
+
+```bash
+cargo run --release --example benchmark_filesystem -- /path/to/images --limit 2000 --num-workers 8
+```
+
+It prints JSON with FPS, MP/s, MB/s, sample/pixel/byte counts, elapsed time,
+time to first sample, and post-start FPS. Add `--crop-and-resize` to match the
+Python benchmark's 1024 x 1024 output. Both use a 256-sample buffer and exclude
+cleanup from elapsed time. A short source is reported as an error.
+
+Compare with the Python materialization path:
+
+```bash
+uv run --group dev python/benchmark_filesystem.py --root-path /path/to/images --limit 2000 --num-workers 8 --image-format numpy --no-compare-torch
+```
+
+For a closer view of binding and Python iteration overhead, compare the native
+result against the raw stage, then add NumPy and PIL conversion:
+
+```bash
+uv run --group dev python/bench_stages.py --root-path /path/to/images --limit 2000 --workers 8 --stages raw,numpy,pil,convert
+```
+
+The stage benchmark also accepts `--crop-and-resize` for the same square workload.
+Use release builds for both the extension and native example, the same options
+and corpus, and repeated runs with comparable filesystem cache state. The native
+reader consumes raw samples; its difference from converted Python output includes
+object creation, conversion, and iteration as well as binding overhead. Python's
+progress reporting also adds work. These are pipeline comparisons, not a direct
+measurement of the cost of an individual binding call.
+
+The existing DB benchmark CLI remains available with `cargo run --release -- -h`.
 
 ## Run the rust test suite
 

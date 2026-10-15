@@ -18,11 +18,16 @@ import os
 import time
 
 import typer
+from benchmark_defaults import IMAGE_CONFIG
 from datago import DatagoClient
 
 
 def measure(
-    root_path: str, limit: int, num_workers: int, stage: str
+    root_path: str,
+    limit: int,
+    num_workers: int,
+    stage: str,
+    crop_and_resize: bool = False,
 ) -> tuple[int, float]:
     # The benchmark controls datago's internal task pool through this env var.
     os.environ["DATAGO_MAX_TASKS"] = str(num_workers)
@@ -34,12 +39,18 @@ def measure(
         "samples_buffer_size": 256,
         "limit": limit,
     }
+    if crop_and_resize:
+        client_config["image_config"] = {
+            **IMAGE_CONFIG,
+            "min_aspect_ratio": 1.0,
+            "max_aspect_ratio": 1.0,
+        }
+    # Match the native example: include construction/startup, exclude cleanup.
+    start = time.perf_counter()
     client = DatagoClient(json.dumps(client_config))
     client.start()
-
-    start = time.perf_counter()
     count = 0
-    while True:
+    for _ in range(limit):
         if stage == "convert":
             sample = client.get_sample_auto_convert()
         else:
@@ -52,9 +63,11 @@ def measure(
             break
         count += 1
 
-    fps = count / (time.perf_counter() - start)
+    elapsed = time.perf_counter() - start
     client.stop()
-    return count, fps
+    if count != limit:
+        raise ValueError(f"Expected {limit} samples, got {count}")
+    return count, count / elapsed
 
 
 def main(
@@ -62,11 +75,14 @@ def main(
     limit: int = typer.Option(2000, help="The number of samples to test on"),
     stages: str = typer.Option("raw,numpy,pil,convert"),
     workers: str = typer.Option("1,2,4,8,16"),
+    crop_and_resize: bool = typer.Option(
+        False, help="Resize and center-crop to 1024 x 1024"
+    ),
 ):
     worker_list = [int(w) for w in workers.split(",")]
     for num_workers in worker_list:
         for stage in stages.split(","):
-            count, fps = measure(root_path, limit, num_workers, stage)
+            count, fps = measure(root_path, limit, num_workers, stage, crop_and_resize)
             print(
                 f"{stage:8s} workers={num_workers:3d}  fps={fps:8.1f}  count={count}",
                 flush=True,
