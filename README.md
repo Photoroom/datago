@@ -38,6 +38,18 @@ exposes the *compressed* bytes rather than decoded pixels, and `payload.data` is
 encoded byte string. Use `to_numpy_array()` or `to_pil_image()` to decode those
 payloads; unlike the raw path, decoding is not zero-copy.
 
+Image conversions validate the channel count, sample depth, and pixel buffer
+length. Unsupported conversions raise ordinary Python exceptions such as
+`ValueError`. Encoded NumPy output uses the native decoder and preserves alpha,
+grayscale channels, and 16-bit precision. Raw `LA` images retain their two channels,
+including during resizing.
+
+Workers count successfully published samples: `limit` is an upper bound on the
+number delivered by the native client, including when work finishes concurrently.
+Unreadable items do not consume that budget. A finite source can still end before
+the limit is reached. Cancellation remains active after metadata ends and while
+the consumer's output queue is full.
+
 Samples are exposed in the Python scope as python native objects, using PIL and Numpy base types. Speed will be network dependent, but GB/s is typical. Depending on the front ends, datago can be rank and world-size aware, in which case the samples are dispatched depending on the samples hash.
 
 ![Datago organization](assets/447175851-2277afcb-8abf-4d17-b2db-dae27c6056d0.png)
@@ -270,6 +282,31 @@ rustflags = [
   "-C", "link-arg=dynamic_lookup",
 ]
 ```
+
+## Code organization
+
+- `client.rs` owns the engine lifecycle, Python signal polling, and cleanup.
+- `generator_*.rs` enumerate source metadata; `worker_*.rs` prepare individual samples.
+- `worker_utils.rs` coordinates bounded concurrency, publication, sample limits, and cancellation.
+- `image_payload.rs` owns shared pixels and validates their layout for image access.
+- `python_buffer.rs` contains the buffer protocol boundary and its ownership invariants.
+- `python_conversion.rs` converts samples into Python dictionaries and propagates errors.
+- `config.rs` and `http_client.rs` contain configuration and connection policy.
+- `structs.rs` holds pipeline data types and re-exports the original public type paths.
+
+Tasks return prepared samples to the coordinator. Only the coordinator writes to
+the output queue, so counting, cancellation, and end-of-stream behavior are shared
+by all sources. Encoded bytes and raw pixel layouts are interpreted separately;
+public payload fields remain compatible, with validation before pixel conversion.
+
+The filesystem benchmark reports construction-to-completion throughput, time to
+the first sample (`startup_seconds`), and throughput after that first sample
+(`steady_fps`). Both loaders include construction in their total time and consume
+the same number of samples. With resizing enabled, both use a square target with
+Lanczos resizing and center cropping. Compare on the same RGB8 corpus; decoder,
+cache state, file enumeration, and scheduling differences still affect results.
+`num_workers` controls Datago's in-flight tasks and Torch's worker processes;
+it does not imply equal native thread counts.
 
 ## Build a benchmark CLI
 

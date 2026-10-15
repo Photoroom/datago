@@ -331,7 +331,7 @@ impl DatagoClient {
             Some(sample) => sample,
             None => return Ok(None),
         };
-        Ok(sample_to_python_types(sample, py, self.image_format))
+        sample_to_python_types(sample, py, self.image_format).map(Some)
     }
 
     /// Blocking stop: closes both pipeline queues and joins the worker threads.

@@ -149,7 +149,11 @@ fn image_to_dyn_image(dst_image: &Image) -> image::DynamicImage {
             image::DynamicImage::ImageRgba8(img_buffer)
         }
 
-        fr::PixelType::U8 | fr::PixelType::U8x2 => {
+        fr::PixelType::U8x2 => {
+            let img_buffer = image::GrayAlphaImage::from_raw(width, height, pixels).unwrap();
+            image::DynamicImage::ImageLumaA8(img_buffer)
+        }
+        fr::PixelType::U8 => {
             let img_buffer = image::GrayImage::from_raw(width, height, pixels).unwrap();
             image::DynamicImage::ImageLuma8(img_buffer)
         }

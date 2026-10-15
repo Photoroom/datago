@@ -4,9 +4,9 @@ import time
 
 import numpy as np
 import typer
-from PIL import Image
 from benchmark_defaults import IMAGE_CONFIG
 from dataset import DatagoIterDataset
+from PIL import Image
 from tqdm import tqdm
 
 
@@ -25,8 +25,21 @@ def _image_nbytes(image) -> int:
         image = image[0]
     if isinstance(image, np.ndarray):
         return int(image.nbytes)
-    # PIL.Image: 1 byte per band for the 8-bit modes datago produces.
-    return image.width * image.height * len(image.getbands())
+    # Count materialized pixel bytes, including wider grayscale PIL modes.
+    itemsize = (
+        2 if image.mode.startswith("I;16") else 4 if image.mode in ("I", "F") else 1
+    )
+    return image.width * image.height * len(image.getbands()) * itemsize
+
+
+def _timing(start, first_sample, count):
+    """Separate time to first sample from throughput after the pipeline starts."""
+    end = time.perf_counter()
+    return {
+        "elapsed_seconds": end - start,
+        "startup_seconds": first_sample - start,
+        "steady_fps": (count - 1) / (end - first_sample) if count > 1 else None,
+    }
 
 
 def benchmark(
@@ -38,12 +51,18 @@ def benchmark(
         False, help="Crop and resize the images on the fly"
     ),
     compare_torch: bool = typer.Option(True, help="Compare against torch dataloader"),
-    num_workers: int = typer.Option(os.cpu_count(), help="Number of workers to use"),
+    num_workers: int = typer.Option(
+        os.cpu_count() or 1, help="Number of workers to use"
+    ),
     sweep: bool = typer.Option(False, help="Sweep over the number of workers"),
     image_format: str = typer.Option(
         "pil", help="Materialized image type for both loaders: 'pil' or 'numpy'"
     ),
 ):
+    if limit < 1 or num_workers < 0:
+        raise typer.BadParameter(
+            "limit must be positive and num_workers must be nonnegative"
+        )
     image_format = image_format.lower()
     if image_format not in ("pil", "numpy"):
         raise typer.BadParameter("image_format must be 'pil' or 'numpy'")
@@ -90,12 +109,19 @@ def benchmark(
     }
 
     if crop_and_resize:
-        client_config["image_config"] = IMAGE_CONFIG
+        # Both loaders resize and center-crop to the same square output.
+        client_config["image_config"] = {
+            **IMAGE_CONFIG,
+            "min_aspect_ratio": 1.0,
+            "max_aspect_ratio": 1.0,
+        }
 
     # Make sure in the following that we compare apples to apples, meaning in that case
     # that we materialize the payloads in the python scope in the expected format
     # (PIL.Image for images and masks for instance, numpy arrays for latents)
-    start = time.time()  # Note that the datago dataset will start walking the filesystem at construction time
+    # Include construction and worker startup for both loaders.
+    start = time.perf_counter()
+    first_sample = None
     datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
 
     img = None
@@ -104,6 +130,8 @@ def benchmark(
     for sample in tqdm(
         datago_dataset, desc=f"Datago ({image_format})", dynamic_ncols=True
     ):
+        if first_sample is None:
+            first_sample = time.perf_counter()
         assert sample["id"] != ""
         img = sample["image"]
         total_bytes += _image_nbytes(img)
@@ -115,11 +143,13 @@ def benchmark(
         count += 1
 
     assert count == limit, f"Expected {limit} samples, got {count}"
-    elapsed = time.time() - start
+    timing = _timing(start, first_sample, count)
+    elapsed = timing["elapsed_seconds"]
     fps = limit / elapsed
     bandwidth_mbps = total_bytes / elapsed / 1e6
     results = {
         "datago": {
+            **timing,
             "fps": fps,
             "count": count,
             "bytes": total_bytes,
@@ -128,7 +158,9 @@ def benchmark(
         }
     }
     print(
-        f"Datago - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - workers {num_workers} - image_format {image_format}"
+        f"Datago - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
+        f"startup {timing['startup_seconds']:.3f}s - steady FPS {timing['steady_fps']} - "
+        f"tasks {num_workers} - image_format {image_format}"
     )
     del datago_dataset
 
@@ -160,8 +192,14 @@ def benchmark(
 
         # Materialize the torch side in the same format as datago for fairness.
         if crop_and_resize:
-            resize = transforms.Resize(
-                (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
+            size = IMAGE_CONFIG["default_image_size"]
+            resize = transforms.Compose(
+                [
+                    transforms.Resize(
+                        size, interpolation=transforms.InterpolationMode.LANCZOS
+                    ),
+                    transforms.CenterCrop((size, size)),
+                ]
             )
             transform = (
                 transforms.Compose([resize, _to_numpy])
@@ -171,7 +209,9 @@ def benchmark(
         else:
             transform = _to_numpy if image_format == "numpy" else None
 
-        # Create the ImageFolder dataset
+        start = time.perf_counter()
+        first_sample = None
+        # Include file enumeration as well as DataLoader startup.
         dataset = datasets.ImageFolder(
             root=root_path, transform=transform, allow_empty=True
         )
@@ -186,12 +226,13 @@ def benchmark(
         )
 
         # Iterate over the DataLoader
-        start = time.time()
         n_images = 0
         total_bytes = 0
         for batch in tqdm(
             dataloader, desc=f"Torch ({image_format})", dynamic_ncols=True
         ):
+            if first_sample is None:
+                first_sample = time.perf_counter()
             n_images += len(batch)
             for item in batch:
                 total_bytes += _image_nbytes(item)
@@ -199,10 +240,13 @@ def benchmark(
                 break
 
             del batch  # Help with memory pressure, same as above
-        elapsed = time.time() - start
+        assert n_images == limit, f"Expected {limit} samples, got {n_images}"
+        timing = _timing(start, first_sample, n_images)
+        elapsed = timing["elapsed_seconds"]
         fps = n_images / elapsed
         bandwidth_mbps = total_bytes / elapsed / 1e6
         results["torch"] = {
+            **timing,
             "fps": fps,
             "count": n_images,
             "bytes": total_bytes,
@@ -211,6 +255,7 @@ def benchmark(
         }
         print(
             f"Torch - FPS {fps:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
+            f"startup {timing['startup_seconds']:.3f}s - steady FPS {timing['steady_fps']:.2f} - "
             f"workers {num_workers} - image_format {image_format}"
         )
 

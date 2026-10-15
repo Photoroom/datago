@@ -18,7 +18,6 @@ import os
 import time
 
 import typer
-
 from datago import DatagoClient
 
 
@@ -38,7 +37,7 @@ def measure(
     client = DatagoClient(json.dumps(client_config))
     client.start()
 
-    start = time.time()
+    start = time.perf_counter()
     count = 0
     while True:
         if stage == "convert":
@@ -53,7 +52,7 @@ def measure(
             break
         count += 1
 
-    fps = count / (time.time() - start)
+    fps = count / (time.perf_counter() - start)
     client.stop()
     return count, fps
 

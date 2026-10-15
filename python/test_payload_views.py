@@ -308,3 +308,129 @@ def test_pil_16bit_rgb_raises(tmp_path):
     with pytest.raises(ValueError):
         sample.image.to_pil_image()
     client.stop()
+
+
+@pytest.mark.parametrize("kind", ["gray", "gray16", "rgba", "rgb16"])
+def test_encoded_numpy_preserves_channels_and_precision(tmp_path, kind):
+    directory = tmp_path / kind
+    directory.mkdir()
+    if kind == "rgb16":
+        pixels = (np.arange(36, dtype=np.uint16) * 1500).reshape(3, 4, 3)
+        _write_rgb16_png(directory / "sample.png", pixels)
+    else:
+        if kind == "gray16":
+            pixels = (np.arange(12, dtype=np.uint16) * 5000).reshape(3, 4)
+        elif kind == "rgba":
+            pixels = np.arange(48, dtype=np.uint8).reshape(3, 4, 4)
+        else:
+            pixels = np.arange(12, dtype=np.uint8).reshape(3, 4)
+        Image.fromarray(pixels).save(directory / "sample.png")
+    client = DatagoClient(
+        json.dumps(
+            {
+                "source_type": "file",
+                "source_config": {"root_path": str(directory)},
+                "limit": 1,
+                "samples_buffer_size": 1,
+                "image_format": "numpy",
+                "image_config": {"crop_and_resize": False, "pre_encode_images": True},
+            }
+        )
+    )
+    try:
+        sample = client.get_sample_auto_convert()
+        assert sample["image"].dtype == pixels.dtype
+        np.testing.assert_array_equal(sample["image"], pixels)
+    finally:
+        client.stop()
+
+
+@pytest.mark.parametrize("pre_encode", [False, True])
+def test_auto_convert_preserves_python_conversion_error(tmp_path, pre_encode):
+    pixels = np.zeros((3, 4, 3), dtype=np.uint16)
+    _write_rgb16_png(tmp_path / "sample.png", pixels)
+    client = DatagoClient(
+        json.dumps(
+            {
+                "source_type": "file",
+                "source_config": {"root_path": str(tmp_path)},
+                "limit": 1,
+                "samples_buffer_size": 1,
+                "image_config": {
+                    "crop_and_resize": False,
+                    "pre_encode_images": pre_encode,
+                },
+            }
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="PIL cannot represent"):
+            client.get_sample_auto_convert()
+    finally:
+        client.stop()
+
+
+def test_grayscale_alpha_metadata_matches_pil(tmp_path):
+    client = client_for(tmp_path, Image.new("LA", (4, 3), (100, 50)))
+    try:
+        sample = client.get_sample()
+        assert sample.image.mode == sample.image.to_pil_image().mode == "LA"
+    finally:
+        client.stop()
+
+
+@pytest.mark.parametrize(
+    "field,value", [("channels", -1), ("bit_depth", 12), ("width", 99)]
+)
+def test_invalid_pixel_layout_raises_value_error(tmp_path, field, value):
+    client = client_for(tmp_path, Image.new("RGB", (4, 3)))
+    try:
+        payload = client.get_sample().image.get_payload()
+        setattr(payload, field, value)
+        with pytest.raises(ValueError):
+            payload.to_numpy_array()
+    finally:
+        client.stop()
+
+
+def test_numpy_and_memoryview_reject_writes(tmp_path):
+    client = client_for(tmp_path, Image.new("RGB", (4, 3)))
+    try:
+        image = client.get_sample().image
+        with pytest.raises(TypeError):
+            memoryview(image)[0] = 0
+        array = image.to_numpy_array()
+        with pytest.raises(ValueError):
+            array.setflags(write=True)
+        # Multiple independently released exports keep their own owners alive.
+        views = [memoryview(image) for _ in range(8)]
+        views[0].release()
+        del image
+        client.stop()
+        assert all(bytes(view) == bytes(36) for view in views[1:])
+    finally:
+        client.stop()
+
+
+def test_resized_grayscale_alpha_keeps_both_channels(tmp_path):
+    client = _file_client(
+        tmp_path / "la_resize",
+        Image.new("LA", (8, 6), (100, 50)),
+        image_format="numpy",
+        image_config={
+            "crop_and_resize": True,
+            "default_image_size": 4,
+            "downsampling_ratio": 1,
+            "min_aspect_ratio": 1.0,
+            "max_aspect_ratio": 1.0,
+        },
+    )
+    try:
+        image = client.get_sample_auto_convert()["image"]
+        assert image.shape == (4, 4, 2)
+        # Resizing premultiplies alpha in integer storage, so restoring the
+        # grayscale value can round by two levels at this opacity.
+        np.testing.assert_allclose(image[:, :, 0], 100, atol=2, rtol=0)
+        np.testing.assert_array_equal(image[:, :, 1], 50)
+    finally:
+        client.stop()
