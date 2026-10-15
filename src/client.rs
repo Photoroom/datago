@@ -14,10 +14,10 @@ use std::time::{Duration, Instant};
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 const SIGNAL_INTERVAL: Duration = Duration::from_millis(100);
+const STOP_GRACE_PERIOD: Duration = Duration::from_millis(100);
 
-/// Number of background cleanup threads currently joining native workers whose
-/// blocking IO outlived the stop grace period. Blocking-pool tasks which outlive
-/// runtime shutdown are not counted here.
+/// Number of background cleanup threads waiting for or joining native workers.
+/// Blocking-pool tasks which outlive runtime shutdown are not counted here.
 static LIVE_CLEANUP_THREADS: AtomicUsize = AtomicUsize::new(0);
 
 enum ReceiveFailure<E> {
@@ -63,8 +63,8 @@ pub struct DatagoClient {
     is_valid: bool,
 }
 
-/// Number of cleanup threads joining native workers whose blocking IO outlived
-/// the stop grace period. Counts reaper threads, not every native thread:
+/// Number of cleanup threads waiting for or joining native workers, including
+/// the drop grace period. Counts reaper threads, not every native thread:
 /// blocking-pool tasks may outlive their runtime's shutdown timeout and are not
 /// included once the engine's feeder and worker threads have been joined.
 #[pyfunction]
@@ -412,15 +412,21 @@ fn receive_until<E>(
 /// join off to a background cleanup thread. The GIL is released while polling
 /// and joining so other Python threads keep running.
 fn wait_or_reap_engine(py: Python<'_>, engine: DatagoEngine) {
-    let deadline = Instant::now() + Duration::from_millis(100);
-    while !engine_finished(&engine) && Instant::now() < deadline {
-        py.detach(|| std::thread::sleep(Duration::from_millis(2)));
+    py.detach(move || {
+        if wait_for_engine(&engine, STOP_GRACE_PERIOD) {
+            join_engine(engine);
+        } else {
+            reap_engine(engine, Duration::ZERO);
+        }
+    });
+}
+
+fn wait_for_engine(engine: &DatagoEngine, grace_period: Duration) -> bool {
+    let deadline = Instant::now() + grace_period;
+    while !engine_finished(engine) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
     }
-    if engine_finished(&engine) {
-        py.detach(|| join_engine(engine));
-    } else {
-        reap_engine(engine);
-    }
+    engine_finished(engine)
 }
 
 fn join_engine(mut engine: DatagoEngine) {
@@ -434,17 +440,21 @@ fn join_engine(mut engine: DatagoEngine) {
 }
 
 /// Join a still-running engine on a detached thread. This is the escape hatch
-/// for blocking IO that cannot be cancelled; `LIVE_CLEANUP_THREADS` keeps the
-/// number of such abandoned joiners observable.
-fn reap_engine(engine: DatagoEngine) {
-    let live = LIVE_CLEANUP_THREADS.fetch_add(1, Ordering::SeqCst) + 1;
-    warn!(
-        "datago: native workers still busy after the stop grace period; joining them \
-         on a background cleanup thread (live cleanup threads: {live})"
-    );
+/// for blocking IO that cannot be cancelled. Drop delegates its grace period
+/// here so it never sleeps while holding the GIL or calls into Python during
+/// interpreter shutdown.
+fn reap_engine(engine: DatagoEngine, grace_period: Duration) {
+    LIVE_CLEANUP_THREADS.fetch_add(1, Ordering::SeqCst);
     let spawned = std::thread::Builder::new()
         .name("datago-cleanup".to_string())
         .spawn(move || {
+            if !wait_for_engine(&engine, grace_period) {
+                warn!(
+                    "datago: native workers still busy after the stop grace period; joining them \
+                     on a background cleanup thread (live cleanup threads: {})",
+                    LIVE_CLEANUP_THREADS.load(Ordering::SeqCst)
+                );
+            }
             join_engine(engine);
             LIVE_CLEANUP_THREADS.fetch_sub(1, Ordering::SeqCst);
         });
@@ -477,7 +487,7 @@ impl Drop for DatagoClient {
             if engine_finished(&engine) {
                 join_engine(engine);
             } else {
-                reap_engine(engine);
+                reap_engine(engine, STOP_GRACE_PERIOD);
             }
         }
     }
@@ -515,6 +525,38 @@ mod tests {
 
     #[cfg(test)]
     use crate::structs::PythonImagePayload;
+
+    #[test]
+    fn drop_does_not_wait_for_busy_workers() {
+        let client = DatagoClient::new("{}".to_string());
+        let (_samples_tx, samples_rx) = kanal::bounded(1);
+        let (_metadata_tx, metadata_rx) = kanal::bounded(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = release_rx.recv();
+            finished_tx.send(()).unwrap();
+        });
+        client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
+            samples_rx,
+            metadata_rx: crate::structs::MetadataReceiver::Json(metadata_rx),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            feeder: None,
+            worker: Some(worker),
+        });
+
+        // Model IO which cannot finish until the caller runs again after drop.
+        let started = std::time::Instant::now();
+        drop(client);
+        assert!(
+            started.elapsed() < super::STOP_GRACE_PERIOD / 2,
+            "drop waited for workers on the caller's thread"
+        );
+        release_tx.send(()).unwrap();
+        finished_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("background cleanup did not let the worker finish");
+    }
 
     #[test]
     fn stale_reader_cleanup_cannot_take_a_restarted_engine() {
