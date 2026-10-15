@@ -25,11 +25,47 @@ Please note that in all the of the following cases, you can directly get an Iter
 
 ```python
 from dataset import DatagoIterDataset
-client_config = {} # See below for examples
+
+client_config = {}  # See below for examples
 datago_dataset = DatagoIterDataset(client_config, return_python_types=True)
 ```
 
 `return_python_types` enforces that images will be of the PIL.Image sort for instance, being an external binary module should be transparent.
+
+Python sample reads try the ready queue without releasing the GIL, then release it
+while waiting and poll Python signals every 100 ms. Python delivers SIGINT handlers
+on the main thread only. If a reader runs in a background thread, handle Ctrl-C on
+the main thread by calling `client.stop()`; that cancellation is safe while the
+reader is waiting. `stop()` closes both pipeline queues, releases the GIL while
+joining, and returns after a short grace period if native work is still in flight.
+Remaining thread handles are retained by a cleanup reaper rather than detached.
+Prefer `try/finally` with `client.stop()` for explicit cleanup. Queued async work is
+cancelled; a filesystem/network syscall already executing cannot be forcibly stopped
+and may continue in the background until the OS call returns. The native Rust client
+retains its blocking API. Reads do not silently restart: once the stream is
+exhausted (or `stop()` has been called) `get_sample()` returns `None`, and you must
+call `start()` again to begin a new pass.
+
+Waiting on an empty queue also lets other Python threads run. For very cheap
+samples, GIL contention can reduce throughput compared with a reader that keeps
+the GIL; queued samples still use the fast path without releasing it.
+`live_cleanup_threads()` counts cleanup reapers, not all native threads or
+blocking-pool tasks that outlive runtime shutdown.
+
+### Release notes: 2026.10.1
+
+- **Breaking change:** reads after end-of-stream or `stop()` return `None` rather
+  than silently starting another epoch. Call `start()` explicitly for each new pass.
+- DB processing now defaults to `min(CPU count, connection budget, sample limit)`
+  in-flight tasks, rather than accidentally serializing when `DATAGO_MAX_TASKS` is
+  unset. WDS processing defaults to one task per CPU. `DATAGO_MAX_TASKS=0` retains
+  serial processing; explicit overrides retain their existing source-specific caps.
+- Python waits release the GIL and check signals; cancellation also covers DB page
+  requests and WDS shard listing/downloads. Already-running blocking filesystem
+  calls may still outlive shutdown.
+- Source builds require `maturin>=1.9.4,<2`. Release builds no longer use
+  `panic = "abort"`, allowing worker panics to be reported instead of aborting
+  the process.
 
 <details> <summary><strong>Dataroom</strong></summary>
 
@@ -79,8 +115,8 @@ config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
-        "random_sampling": False, # True if used directly for training
-        "rank": 0, # Optional, distributed workloads are possible
+        "random_sampling": False,  # True if used directly for training
+        "rank": 0,  # Optional, distributed workloads are possible
         "world_size": 1,
     },
     "limit": 200,
@@ -116,13 +152,13 @@ client_config = {
     "source_config": {
         "url": url,
         "random_sampling": False,
-        "concurrent_downloads": 8, # The number of TarballSamples which should be handled concurrently
+        "concurrent_downloads": 8,  # The number of TarballSamples which should be handled concurrently
         "rank": 0,
         "world_size": 1,
     },
     "prefetch_buffer_size": 128,
     "samples_buffer_size": 64,
-    "limit": 1_000_000, # Dummy example, max number of samples you would like to serve
+    "limit": 1_000_000,  # Dummy example, max number of samples you would like to serve
 }
 
 client = DatagoClient(json.dumps(client_config))
@@ -261,6 +297,11 @@ The following benchmarks are using ImageNet 1k, which is very low resolution and
 
 ### AMD EPYC 9454 - IN1k - disk - no processing
 ![AMD EPYC 9454](assets/epyc_vast.png)
+
+One liner to repro locally (rebuilding the package):
+```bash
+DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --reinstall-package datago --python 3.14 --group dev python/benchmark_filesystem.py --sweep --limit 500
+```
 
 ## Webdataset: FakeIN
 

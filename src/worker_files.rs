@@ -1,19 +1,26 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
+use crate::worker_utils::{join_next_or_cancelled, max_tasks_from_env, NextTask};
 use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
-    // Use buffered reading instead of loading entire file at once for better memory efficiency
-    let file = std::fs::File::open(path)
-        .map_err(|e| image::ImageError::IoError(std::io::Error::other(e)))?;
-    let reader = std::io::BufReader::new(file);
-
-    image::ImageReader::new(reader)
-        .with_guessed_format()?
-        .decode()
+    // The image decoder and std file reads are blocking. Keep them off Tokio's
+    // async worker threads so cancellation/channel handling can still progress.
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(path)
+            .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?;
+        let reader = std::io::BufReader::new(file);
+        image::ImageReader::new(reader)
+            .with_guessed_format()?
+            .decode()
+    })
+    .await
+    .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?
 }
 
 async fn image_payload_from_path(
@@ -77,15 +84,12 @@ async fn async_pull_samples(
     image_transform: Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
+    cancel: CancellationToken,
 ) {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
-    let default_max_tasks = std::env::var("DATAGO_MAX_TASKS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(num_cpus::get()); // Number of CPUs is actually a good heuristic for a small machine);
-
-    let max_tasks = min(default_max_tasks, limit);
+    // Number of CPUs is a good heuristic for a small machine; DATAGO_MAX_TASKS overrides it.
+    let max_tasks = min(max_tasks_from_env(num_cpus::get()), limit);
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
     let shareable_img_tfm = Arc::new(image_transform);
@@ -100,10 +104,14 @@ async fn async_pull_samples(
         // Check if we have capacity before spawning new tasks
         if tasks.len() >= max_tasks {
             // Wait for some tasks to complete before adding more
-            if let Some(result) = tasks.join_next().await {
-                if result.is_ok() {
-                    count += 1;
+            match join_next_or_cancelled(&mut tasks, &cancel).await {
+                NextTask::Cancelled => break,
+                NextTask::Completed(Some(result)) => {
+                    if result.is_ok() {
+                        count += 1;
+                    }
                 }
+                NextTask::Completed(None) => {}
             }
         }
 
@@ -120,20 +128,26 @@ async fn async_pull_samples(
         }
     }
 
-    // Make sure to wait for all the remaining tasks
-    let _ = tasks.join_all().await.iter().map(|result| {
-        if let Ok(()) = result {
-            count += 1;
-        } else {
-            // Task failed or was cancelled
-            debug!("file_worker: task failed or was cancelled");
+    // Early limit exit must release the feeder even though DatagoEngine retains
+    // its own receiver clone for explicit shutdown.
+    let _ = samples_metadata_rx.close();
 
-            // Could be because the channel was closed, so we should stop
-            if samples_tx.is_closed() {
-                debug!("file_worker: channel closed, stopping there");
-            }
+    // A client stop flips the cancel token. Cancel queued async work rather
+    // than waiting for its result to be sent into a closed channel.
+    if cancel.is_cancelled() {
+        tasks.abort_all();
+    }
+
+    // Make sure to wait for all the remaining tasks. Tasks aborted above come
+    // back from join_next() as a cancelled JoinError, which join_all() would
+    // panic on — so drain with join_next() instead.
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(_) => count += 1, // task completed: same counting rule as the main loop
+            Err(e) if e.is_cancelled() => {} // expected after abort_all(), not an error
+            Err(e) => error!("file_worker: task failed: {e}"), // task panicked
         }
-    });
+    }
     debug!("file_worker: total samples sent: {count}\n");
 
     // Signal the end of the stream
@@ -146,22 +160,27 @@ pub fn pull_samples(
     image_transform: Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
     limit: usize,
+    cancel: CancellationToken,
 ) {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            async_pull_samples(
-                samples_metadata_rx,
-                samples_tx,
-                image_transform,
-                encoding,
-                limit,
-            )
-            .await;
-        });
+        .unwrap();
+    runtime.block_on(async {
+        async_pull_samples(
+            samples_metadata_rx,
+            samples_tx,
+            image_transform,
+            encoding,
+            limit,
+            cancel,
+        )
+        .await;
+    });
+    // A blocking filesystem syscall already in progress is not cancellable.
+    // Do not make this worker's join wait indefinitely for Tokio's blocking pool.
+    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
 }
 
 #[cfg(test)]
@@ -529,6 +548,7 @@ mod tests {
             None,
             image_processing::ImageEncoding::default(),
             10,
+            CancellationToken::new(),
         )
         .await;
 
@@ -582,6 +602,7 @@ mod tests {
             None,
             image_processing::ImageEncoding::default(),
             limit,
+            CancellationToken::new(),
         )
         .await;
 
@@ -749,6 +770,7 @@ mod tests {
             None,
             image_processing::ImageEncoding::default(),
             1,
+            CancellationToken::new(),
         );
 
         // Check that a sample was received
