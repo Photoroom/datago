@@ -2,7 +2,7 @@ use crate::generator_files;
 use crate::generator_http;
 use crate::generator_wds;
 use crate::image_processing::ARAwareTransform;
-use crate::structs::{DatagoClientConfig, Sample, SourceType};
+use crate::structs::{DatagoClientConfig, ImageFormat, Sample, SourceType};
 
 use crate::structs::sample_to_python_types;
 use crate::structs::DatagoEngine;
@@ -57,6 +57,7 @@ pub struct DatagoClient {
     pub img_to_rgb8: bool,
     pub encode_format: crate::image_processing::EncodeFormat,
     pub jpeg_quality: u8,
+    pub image_format: ImageFormat,
 
     state: Mutex<ClientState>,
 
@@ -148,6 +149,7 @@ impl DatagoClient {
                     img_to_rgb8,
                     encode_format,
                     jpeg_quality,
+                    image_format: config.image_format,
                     state: Mutex::new(ClientState {
                         lifecycle: ClientLifecycle::Idle,
                         generation: 0,
@@ -168,6 +170,7 @@ impl DatagoClient {
                     img_to_rgb8: false,
                     encode_format: crate::image_processing::EncodeFormat::default(),
                     jpeg_quality: 92,
+                    image_format: ImageFormat::default(),
                     state: Mutex::new(ClientState {
                         lifecycle: ClientLifecycle::Idle,
                         generation: 0,
@@ -328,7 +331,7 @@ impl DatagoClient {
             Some(sample) => sample,
             None => return Ok(None),
         };
-        Ok(sample_to_python_types(sample, py))
+        sample_to_python_types(sample, py, self.image_format).map(Some)
     }
 
     /// Blocking stop: closes both pipeline queues and joins the worker threads.

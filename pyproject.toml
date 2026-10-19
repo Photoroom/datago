@@ -21,11 +21,11 @@ classifiers = [
 dependencies = [
     "fonttools>=4.60.2",
     "pillow",
+    "numpy",
 ]
 [dependency-groups]
 test = [
     "pytest",
-    "numpy",
     "prek>=0.2.29",
 ]
 

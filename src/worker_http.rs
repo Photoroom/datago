@@ -3,13 +3,12 @@ use crate::structs::{
     to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
     LatentPayload, Sample, SharedClient, UrlLatent,
 };
-use crate::worker_utils::{join_next_or_cancelled, max_tasks_from_env, NextTask};
+use crate::worker_utils::{max_tasks_from_env, run_worker};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 // ------------------------------------------------------------------
 #[derive(Debug, Serialize, Deserialize)]
@@ -118,10 +117,11 @@ async fn pull_sample(
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     retries: u8,
     encoding: image_processing::ImageEncoding,
-    samples_tx: Arc<kanal::Sender<Option<Sample>>>,
-) -> Result<(), ()> {
+) -> Result<Sample, ()> {
     // Deserialize the sample metadata
-    let sample: SampleMetadata = serde_json::from_value(sample_json).unwrap(); // Ok to surface an error here, return type will catch it
+    let sample: SampleMetadata = serde_json::from_value(sample_json).map_err(|error| {
+        error!("Invalid sample metadata: {error}");
+    })?;
 
     // Pull the image for a start, get an idea of the speed
     let mut image_payload: Option<ImagePayload> = None;
@@ -242,7 +242,7 @@ async fn pull_sample(
         attributes: sample.attributes,
         duplicate_state: sample.duplicate_state.unwrap_or(-1),
         image: to_python_image_payload(image_payload.unwrap_or(ImagePayload {
-            data: Vec::new(),
+            data: Arc::from(Vec::<u8>::new()),
             original_height: 0,
             original_width: 0,
             height: 0,
@@ -258,11 +258,7 @@ async fn pull_sample(
         tags: sample.tags.unwrap_or_default(),
     };
 
-    if samples_tx.send(Some(pulled_sample)).is_err() {
-        // Channel is closed, wrapping up
-        return Err(());
-    }
-    Ok(())
+    Ok(pulled_sample)
 }
 
 async fn async_pull_samples(
@@ -274,101 +270,35 @@ async fn async_pull_samples(
     limit: usize,
     cancel: CancellationToken,
 ) -> Result<(), String> {
-    // We use async-await here, to better use IO stalls
-    // We'll keep a pool of N async tasks in parallel. DB downloads are IO-bound,
-    // so default to one task per CPU capped by the connection budget.
-    let max_retries = std::env::var("DATAGO_MAX_RETRIES")
+    let retries = std::env::var("DATAGO_MAX_RETRIES")
         .ok()
-        .and_then(|v| v.parse::<u8>().ok())
+        .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(3);
-
     let max_tasks = min(
         max_tasks_from_env(min(num_cpus::get(), client.max_connections)),
         limit,
     );
-    debug!("Using {max_tasks} tasks in the async threadpool");
-    let mut tasks = tokio::task::JoinSet::new();
-    let mut count = 0;
-    let shareable_channel_tx: Arc<kanal::Sender<Option<Sample>>> = Arc::new(samples_tx);
-    let shareable_img_tfm = Arc::new(image_transform);
-    let mut join_error: Option<JoinError> = None;
-
-    'samples: while let Ok(received) = samples_meta_rx.recv() {
-        if received == serde_json::Value::Null {
-            debug!("http_worker: end of stream received, stopping there");
-            let _ = samples_meta_rx.close();
-            break;
-        }
-
-        // Append a new task to the queue
-        tasks.spawn(pull_sample(
-            client.clone(),
-            received,
-            shareable_img_tfm.clone(),
-            max_retries,
-            encoding,
-            shareable_channel_tx.clone(),
-        ));
-
-        // If we have enough tasks, we'll wait for the older one to finish
-        if tasks.len() >= max_tasks {
-            match join_next_or_cancelled(&mut tasks, &cancel).await {
-                NextTask::Completed(Some(Ok(_))) => {
-                    count += 1;
-                }
-                NextTask::Completed(Some(Err(e))) => {
-                    // Task failed, log the error
-                    error!("http_worker: task failed with error: {e}");
-                    join_error = Some(e);
-                    break 'samples;
-                }
-                NextTask::Completed(None) => {
-                    // Task was cancelled or panicked
-                    error!("http_worker: task was cancelled or panicked");
-                }
-                NextTask::Cancelled => break 'samples,
-            }
-        }
-        if count >= limit {
-            break;
-        }
-    }
-
-    // Release the page feeder on early limit/error exits as well as EOS.
-    let _ = samples_meta_rx.close();
-
-    // A client stop flips the cancel token. Abort queued async work rather than
-    // waiting for a stalled download to finish.
-    if cancel.is_cancelled() {
-        tasks.abort_all();
-    }
-
-    // Make sure to wait for all the remaining tasks
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(_) => {
-                debug!("dispatch_shards: task completed successfully");
-                count += 1;
-            }
-            Err(e) if e.is_cancelled() => {} // expected after abort_all() on stop
-            Err(e) => {
-                error!("dispatch_shards: task failed with error: {e}");
-                if join_error.is_none() {
-                    join_error = Some(e);
-                }
-            }
-        }
-    }
-
-    debug!("http_worker: total samples sent: {count}\n");
-
-    // Signal the end of the stream
-    let _ = shareable_channel_tx.send(None); // Channel could have been closed by a .stop() call
-
-    if let Some(e) = join_error {
-        // If we had an error, return it
-        return Err(e.to_string());
-    }
+    let client = client.clone();
+    let image_transform = Arc::new(image_transform);
+    let count = run_worker(
+        samples_meta_rx,
+        samples_tx,
+        max_tasks,
+        limit,
+        cancel,
+        |item| *item == serde_json::Value::Null,
+        move |item| {
+            pull_sample(
+                client.clone(),
+                item,
+                image_transform.clone(),
+                retries,
+                encoding,
+            )
+        },
+    )
+    .await?;
+    debug!("http_worker: samples delivered: {count}");
     Ok(())
 }
 
