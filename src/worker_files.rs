@@ -11,7 +11,7 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
     // The image decoder and std file reads are blocking. Keep them off Tokio's
     // async worker threads so cancellation/channel handling can still progress.
     let path = path.to_owned();
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let file = std::fs::File::open(path)
             .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?;
         let reader = std::io::BufReader::new(file);
@@ -19,8 +19,13 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
             .with_guessed_format()?
             .decode()
     })
-    .await
-    .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?
+    .await;
+    match result {
+        Ok(result) => result,
+        // A decoder panic is a worker failure, not an unreadable-file error.
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => Err(image::ImageError::IoError(std::io::Error::other(error))),
+    }
 }
 
 async fn image_payload_from_path(
@@ -80,7 +85,7 @@ async fn async_pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     let image_transform = Arc::new(image_transform);
     let result = run_worker(
         samples_metadata_rx,
@@ -92,10 +97,7 @@ async fn async_pull_samples(
         move |item| pull_sample(item, image_transform.clone(), encoding),
     )
     .await;
-    match result {
-        Ok(count) => debug!("file_worker: samples delivered: {count}"),
-        Err(error) => error!("file_worker: {error}"),
-    }
+    result.map(|count| debug!("file_worker: samples delivered: {count}"))
 }
 
 pub fn pull_samples(
@@ -105,13 +107,13 @@ pub fn pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         async_pull_samples(
             samples_metadata_rx,
             samples_tx,
@@ -120,11 +122,12 @@ pub fn pull_samples(
             limit,
             cancel,
         )
-        .await;
+        .await
     });
     // A blocking filesystem syscall already in progress is not cancellable.
     // Do not make this worker's join wait indefinitely for Tokio's blocking pool.
     runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    result
 }
 
 #[cfg(test)]
@@ -483,7 +486,8 @@ mod tests {
             10,
             CancellationToken::new(),
         )
-        .await;
+        .await
+        .unwrap();
 
         // Check received samples
         let mut received_samples = Vec::new();
@@ -537,7 +541,8 @@ mod tests {
             limit,
             CancellationToken::new(),
         )
-        .await;
+        .await
+        .unwrap();
 
         // Count received samples
         let mut count = 0;
@@ -691,7 +696,8 @@ mod tests {
             image_processing::ImageEncoding::default(),
             1,
             CancellationToken::new(),
-        );
+        )
+        .unwrap();
 
         // Check that a sample was received
         let sample_opt = samples_rx.recv().unwrap();
@@ -700,8 +706,7 @@ mod tests {
         let sample = sample_opt.unwrap();
         assert_eq!(sample.source, "filesystem");
 
-        // Should receive end marker
-        let end_marker = samples_rx.recv().unwrap();
-        assert!(end_marker.is_none());
+        // A clean producer exit closes the output after its last sample.
+        assert!(samples_rx.recv().is_err());
     }
 }

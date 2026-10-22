@@ -1,7 +1,7 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, BinaryFile, ImagePayload, Sample, TarballSample};
 use crate::worker_utils::{max_tasks_from_env, run_worker};
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::path::Path;
@@ -130,14 +130,14 @@ pub fn deserialize_samples(
     limit: usize,
     extension_reference_image: String,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get()) // Tasks in flight are limited by DATAGO_MAX_TASKS env
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        match async_deserialize_samples(
+    let result = runtime.block_on(async {
+        async_deserialize_samples(
             samples_metadata_rx,
             samples_tx,
             image_transform,
@@ -147,12 +147,9 @@ pub fn deserialize_samples(
             cancel,
         )
         .await
-        {
-            Ok(_) => debug!("wds_worker: all samples processed successfully"),
-            Err(e) => error!("wds_worker: error processing samples : {e}"),
-        }
     });
     runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    result
 }
 
 #[cfg(test)]

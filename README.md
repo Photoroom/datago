@@ -101,6 +101,42 @@ WebDataset samples require a readable reference image (`reference_image_type`);
 missing or corrupt references are skipped. Additional images use the reference
 image's target aspect ratio, regardless of their order in the archive.
 
+### Read results and errors
+
+| Outcome | Rust (`try_get_sample`) | Python (`get_sample` / `get_sample_auto_convert`) |
+|---|---|---|
+| Sample available | `Ok(Some(sample))` | Return the sample |
+| Normal exhaustion or explicit stop | `Ok(None)` | Return `None` |
+| Fatal source or worker failure | `Err(DatagoError::Source(_))` / `Err(DatagoError::Worker(_))` | Raise `RuntimeError` |
+| Read timeout | `Err(DatagoError::Timeout)` | Raise `TimeoutError` |
+| Invalid configuration or timeout argument | `Err(DatagoError::Configuration(_))` | Raise `ValueError` |
+
+Unreadable individual images are logged and skipped. Failures to enumerate the
+source, fetch/parse metadata pages, download shards, or execute a worker end the
+pass with an error. A fatal failure cancels outstanding work and discards queued
+samples. Concurrent stop and failure use the first recorded terminal outcome.
+After a fatal source/worker error or timeout, subsequent reads return `None`; call `start()` explicitly
+to begin a new pass. Errors belong to their engine generation and cannot stop a
+restarted pass.
+
+Python reads accept a keyword-only `timeout` in seconds (default: 300). Rust callers
+can use `try_get_sample_timeout(Duration)` for a per-read timeout. Zero checks the
+ready queue without waiting. Cleanup gets a short grace period; stalled native
+operations may finish under a background reaper. Python `KeyboardInterrupt` remains
+an interrupt rather than a pipeline error.
+
+```python
+try:
+    while (sample := client.get_sample(timeout=30.0)) is not None:
+        process(sample)
+finally:
+    client.stop()
+```
+
+The existing Rust `get_sample()` remains a compatibility wrapper: it logs failures
+and returns `None`. Use `try_get_sample()` when failure must be distinguished from
+normal exhaustion. Python propagates failures through its existing read methods.
+
 ### Release notes: 2026.10.1
 
 - **Breaking change:** reads after end-of-stream or `stop()` return `None` rather

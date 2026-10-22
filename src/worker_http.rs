@@ -299,14 +299,14 @@ pub fn pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        match async_pull_samples(
+    let result = runtime.block_on(async {
+        async_pull_samples(
             client,
             samples_meta_rx,
             samples_tx,
@@ -316,16 +316,9 @@ pub fn pull_samples(
             cancel,
         )
         .await
-        {
-            Ok(_) => {
-                debug!("http_worker: all samples pulled successfully");
-            }
-            Err(e) => {
-                error!("http_worker: error pulling samples: {e}");
-            }
-        }
     });
     runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    result
 }
 
 #[cfg(test)]

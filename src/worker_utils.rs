@@ -105,11 +105,6 @@ where
             }
         }
     }
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => {}
-        _ = samples_tx.as_async().send(None) => {}
-    }
     match failure {
         Some(error) => Err(error),
         None => Ok(delivered),
@@ -165,7 +160,7 @@ mod tests {
         .await
         .unwrap();
         let mut ids = Vec::new();
-        while let Some(sample) = samples_rx.recv().unwrap() {
+        while let Ok(Some(sample)) = samples_rx.recv() {
             let id = sample.id.parse::<usize>().unwrap();
             assert_ne!(id % 3, 0);
             ids.push(id);
@@ -310,7 +305,7 @@ mod tests {
 
         assert_eq!(worker.await.unwrap(), 2);
         let mut ids = Vec::new();
-        while let Some(sample) = samples_rx.recv().unwrap() {
+        while let Ok(Some(sample)) = samples_rx.recv() {
             ids.push(sample.id);
         }
         ids.sort();

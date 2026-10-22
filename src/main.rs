@@ -1,6 +1,8 @@
 mod config;
+mod error;
 mod http_client;
 mod image_payload;
+mod pipeline;
 mod python_buffer;
 mod python_conversion;
 use clap::{Arg, Command};
