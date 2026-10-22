@@ -43,6 +43,9 @@ def test_raw_numpy_array_is_a_readonly_zero_copy_view_with_independent_lifetime(
 
     view = memoryview(wrapper)
     assert view.readonly
+    assert (view.format, view.itemsize, view.ndim) == ("B", 1, 1)
+    assert view.shape == (pixels.nbytes,)
+    assert view.strides == (1,)
     array = wrapper.to_numpy_array()
     alias = np.frombuffer(view, dtype=np.uint8).reshape(9, 12, 3)
     assert not array.flags.owndata

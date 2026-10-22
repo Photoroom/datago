@@ -9,16 +9,15 @@ use std::ffi::c_int;
 use std::sync::Arc;
 
 #[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ImagePayload {
-    #[serde(with = "shared_bytes")]
     pub data: Arc<[u8]>,
     #[pyo3(get, set)]
-    pub original_height: usize, // Good indicator of the image frequency dbResponse at the current resolution
+    pub original_height: usize,
     #[pyo3(get, set)]
     pub original_width: usize,
     #[pyo3(get, set)]
-    pub height: usize, // Useful to decode the current payload
+    pub height: usize,
     #[pyo3(get, set)]
     pub width: usize,
     #[pyo3(get, set)]
@@ -29,51 +28,17 @@ pub struct ImagePayload {
     pub is_encoded: bool, // Indicates if image is already encoded (JPEG/PNG)
 }
 
-mod shared_bytes {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::sync::Arc;
-
-    pub fn serialize<S>(data: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        data.as_ref().serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Arc<[u8]>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<u8>::deserialize(deserializer).map(Arc::from)
-    }
-}
-
 #[pyclass(name = "ImagePayload")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PythonImagePayload {
     inner: ImagePayload,
 }
 
-impl Default for ImagePayload {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[pymethods]
 impl ImagePayload {
     #[new]
     pub fn new() -> Self {
-        ImagePayload {
-            data: Arc::from(Vec::<u8>::new()),
-            original_height: 0,
-            original_width: 0,
-            height: 0,
-            width: 0,
-            channels: 0,
-            bit_depth: 0,
-            is_encoded: false,
-        }
+        Self::default()
     }
 
     /// Explicit access to bytes returns an owned Python copy. Cloning the
@@ -121,21 +86,18 @@ impl ImagePayload {
     /// zero-copy). The dtype follows the source (`uint8`/`uint16`/`float32`);
     /// single-channel images are shaped `(H, W)`, multi-channel `(H, W, C)`.
     pub fn to_numpy_array(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match self.layout()? {
-            ImageLayout::Encoded => {
-                // Decode with the same native decoder used by source workers.
-                // A forced PIL RGB conversion would discard alpha and 16-bit data.
-                self.decode(py)?.to_numpy_array(py)
-            }
-            ImageLayout::Raw(layout) => {
-                let owner = Py::new(
-                    py,
-                    SharedImageBuffer {
-                        data: self.data.clone(),
-                    },
-                )?;
-                numpy_from_buffer(py, owner.bind(py).as_any(), layout)
-            }
+        if self.is_encoded {
+            // Native decoding preserves alpha and wider channel types.
+            self.decode(py)?.to_numpy_array(py)
+        } else {
+            let layout = self.raw_layout()?;
+            let owner = Py::new(
+                py,
+                SharedImageBuffer {
+                    data: self.data.clone(),
+                },
+            )?;
+            numpy_from_buffer(py, owner.bind(py).as_any(), layout)
         }
     }
 
@@ -222,8 +184,6 @@ impl PythonImagePayload {
         self.inner.to_numpy_array(py)
     }
 
-    /// NumPy's frombuffer retains a memoryview of this object as its base,
-    /// keeping the immutable Arc-backed allocation alive after the sample drops.
     // Buffer-protocol export: exposes the stored bytes read-only. For encoded
     // payloads this is the compressed stream, not decoded pixels; use
     // `to_numpy_array()` / `to_pil_image()` to decode.
@@ -239,14 +199,6 @@ impl PythonImagePayload {
         // SAFETY: PyO3 supplies CPython's writable buffer descriptor.
         unsafe { export_bytes(py, data, view, flags) }
     }
-}
-
-/// Interpretation of the legacy public payload fields. Conversion validates them
-/// once before exposing pixels. Keeping this derived avoids changing the serialized
-/// payload format or the existing Python metadata setters.
-enum ImageLayout {
-    Encoded,
-    Raw(PixelLayout),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -274,6 +226,8 @@ impl SampleType {
     }
 }
 
+/// Validated interpretation of the public metadata. Deriving this on access
+/// preserves the existing serialization format and Python metadata setters.
 #[derive(Clone, Copy)]
 struct PixelLayout {
     width: usize,
@@ -297,9 +251,11 @@ impl PixelLayout {
 }
 
 impl ImagePayload {
-    fn layout(&self) -> PyResult<ImageLayout> {
+    fn raw_layout(&self) -> PyResult<PixelLayout> {
         if self.is_encoded {
-            return Ok(ImageLayout::Encoded);
+            return Err(PyValueError::new_err(
+                "expected raw pixels, got encoded bytes",
+            ));
         }
         let sample_type = match self.bit_depth {
             8 => SampleType::U8,
@@ -333,16 +289,7 @@ impl ImagePayload {
                 "image dimensions and dtype do not match the pixel buffer length",
             ));
         }
-        Ok(ImageLayout::Raw(layout))
-    }
-
-    fn raw_layout(&self) -> PyResult<PixelLayout> {
-        match self.layout()? {
-            ImageLayout::Raw(layout) => Ok(layout),
-            ImageLayout::Encoded => Err(PyValueError::new_err(
-                "expected raw pixels, got encoded bytes",
-            )),
-        }
+        Ok(layout)
     }
 
     fn decode(&self, py: Python<'_>) -> PyResult<Self> {

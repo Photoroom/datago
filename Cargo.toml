@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 image = { version = "0.25.9", features = ["png", "jpeg", "webp", "default-formats"] }
 reqwest = { version = "0.12.15", features = ["blocking", "stream"] }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 url = "2.5.4"
 kanal = "0.1"

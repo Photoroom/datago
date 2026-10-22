@@ -95,7 +95,11 @@ blocking-pool tasks that outlive runtime shutdown.
 
 Workers count successfully published samples: `limit` is an upper bound on delivery,
 including under concurrency. Unreadable items do not consume that budget, although
-a finite source may end before reaching the limit.
+a finite source may end before reaching the limit. In-flight tasks are also capped
+by the remaining delivery budget, so a small limit does not start a full worker pool.
+WebDataset samples require a readable reference image (`reference_image_type`);
+missing or corrupt references are skipped. Additional images use the reference
+image's target aspect ratio, regardless of their order in the archive.
 
 ### Release notes: 2026.10.1
 

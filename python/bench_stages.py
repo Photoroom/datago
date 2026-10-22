@@ -50,21 +50,23 @@ def measure(
     client = DatagoClient(json.dumps(client_config))
     client.start()
     count = 0
-    for _ in range(limit):
-        if stage == "convert":
-            sample = client.get_sample_auto_convert()
-        else:
-            sample = client.get_sample()
-            if sample is not None and stage == "numpy":
-                sample.image.to_numpy_array()
-            elif sample is not None and stage == "pil":
-                sample.image.to_pil_image()
-        if sample is None:
-            break
-        count += 1
+    try:
+        for _ in range(limit):
+            if stage == "convert":
+                sample = client.get_sample_auto_convert()
+            else:
+                sample = client.get_sample()
+                if sample is not None and stage == "numpy":
+                    sample.image.to_numpy_array()
+                elif sample is not None and stage == "pil":
+                    sample.image.to_pil_image()
+            if sample is None:
+                break
+            count += 1
 
-    elapsed = time.perf_counter() - start
-    client.stop()
+        elapsed = time.perf_counter() - start
+    finally:
+        client.stop()
     if count != limit:
         raise ValueError(f"Expected {limit} samples, got {count}")
     return count, count / elapsed
@@ -79,9 +81,19 @@ def main(
         False, help="Resize and center-crop to 1024 x 1024"
     ),
 ):
-    worker_list = [int(w) for w in workers.split(",")]
+    if limit < 1:
+        raise typer.BadParameter("limit must be positive")
+    stage_list = [stage.strip() for stage in stages.split(",")]
+    if any(stage not in {"raw", "numpy", "pil", "convert"} for stage in stage_list):
+        raise typer.BadParameter("stages must be raw, numpy, pil, or convert")
+    try:
+        worker_list = [int(value) for value in workers.split(",")]
+    except ValueError as error:
+        raise typer.BadParameter("workers must be comma-separated integers") from error
+    if any(value < 0 for value in worker_list):
+        raise typer.BadParameter("workers must be nonnegative")
     for num_workers in worker_list:
-        for stage in stages.split(","):
+        for stage in stage_list:
             count, fps = measure(root_path, limit, num_workers, stage, crop_and_resize)
             print(
                 f"{stage:8s} workers={num_workers:3d}  fps={fps:8.1f}  count={count}",

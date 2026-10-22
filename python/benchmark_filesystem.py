@@ -167,7 +167,7 @@ def benchmark(
     }
     print(
         f"Datago - FPS {fps:.2f} - MP/s {megapixels_per_second:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
-        f"startup {timing['startup_seconds']:.3f}s - steady FPS {timing['steady_fps']:.3f} - "
+        f"startup {timing['startup_seconds']:.3f}s - steady FPS {timing['steady_fps']} - "
         f"tasks {num_workers} - image_format {image_format}"
     )
     del datago_dataset

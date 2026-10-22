@@ -78,7 +78,7 @@ where
                 }
             }
             received = &mut metadata,
-                if !input_finished && tasks.len() < max_tasks => {
+                if !input_finished && tasks.len() < max_tasks.min(limit - delivered) => {
                 metadata.set(metadata_rx.as_async().recv());
                 match received {
                     Ok(item) if !is_end(&item) => { tasks.spawn(process(item)); }
@@ -94,7 +94,7 @@ where
     }
 
     let _ = metadata_rx.close();
-    // Reaching the delivery limit must discard excess results, not publish them.
+    // Cancellation or failure must discard unfinished results, not publish them.
     // Aborted spawn_blocking IO can outlive its future; runtime teardown uses a
     // separate bounded shutdown for those non-cancellable native operations.
     tasks.abort_all();
@@ -174,6 +174,33 @@ mod tests {
         ids.dedup();
         assert_eq!(delivered, 5);
         assert_eq!(ids.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn does_not_start_work_beyond_the_remaining_limit() {
+        let (metadata_tx, metadata_rx) = kanal::bounded(16);
+        let (samples_tx, _samples_rx) = kanal::bounded(16);
+        for id in 0..10 {
+            metadata_tx.send(Some(id)).unwrap();
+        }
+        metadata_tx.send(None).unwrap();
+        let started = std::sync::atomic::AtomicUsize::new(0);
+        let delivered = run_worker(
+            metadata_rx,
+            samples_tx,
+            8,
+            2,
+            CancellationToken::new(),
+            Option::is_none,
+            |id| {
+                started.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move { Ok(sample(id.unwrap())) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(delivered, 2);
+        assert_eq!(started.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

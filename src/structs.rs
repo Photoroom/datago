@@ -188,6 +188,10 @@ mod tests {
         assert_eq!(payload.bit_depth, 8);
         assert_eq!(payload.data.len(), 3);
         assert!(!payload.is_encoded);
+        let serialized = serde_json::to_value(&payload).unwrap();
+        assert_eq!(serialized["data"], serde_json::json!([255, 0, 128]));
+        let restored: ImagePayload = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.data, payload.data);
     }
 
     #[test]

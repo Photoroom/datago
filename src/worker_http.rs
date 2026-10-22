@@ -30,7 +30,7 @@ pub async fn bytes_from_url(
 ) -> Option<Vec<u8>> {
     // Retry on the request a few times
     let timeout = std::time::Duration::from_secs(120);
-    let _permit = shared_client.semaphore.acquire().await;
+    let _permit = shared_client.semaphore.acquire().await.ok()?;
 
     // Get a client reference with optimized settings
     let client = &shared_client.client;
@@ -45,13 +45,11 @@ pub async fn bytes_from_url(
         request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token));
     }
 
-    if let Ok(response) = request.send().await {
-        if let Ok(bytes) = response.bytes().await {
-            return Some(bytes.to_vec());
-        }
+    let response = request.send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
     }
-
-    None
+    response.bytes().await.ok().map(|bytes| bytes.to_vec())
 }
 
 async fn image_from_url(
@@ -241,16 +239,7 @@ async fn pull_sample(
         source: sample.source,
         attributes: sample.attributes,
         duplicate_state: sample.duplicate_state.unwrap_or(-1),
-        image: to_python_image_payload(image_payload.unwrap_or(ImagePayload {
-            data: Arc::from(Vec::<u8>::new()),
-            original_height: 0,
-            original_width: 0,
-            height: 0,
-            width: 0,
-            channels: 0,
-            bit_depth: 0,
-            is_encoded: false,
-        })),
+        image: to_python_image_payload(image_payload.unwrap_or_default()),
         masks: to_python_image_payload_map(masks),
         additional_images: to_python_image_payload_map(additional_images),
         latents,
@@ -348,6 +337,31 @@ mod tests {
     use tokio::time::timeout;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn http_error_bodies_are_not_returned_as_payloads() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = new_shared_client(1);
+        assert!(bytes_from_url(&client, &server.uri(), None).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn closed_connection_pool_does_not_issue_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("payload"))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = new_shared_client(1);
+        client.semaphore.close();
+        assert!(bytes_from_url(&client, &server.uri(), None).await.is_none());
+    }
 
     #[tokio::test]
     async fn test_semaphore_connection_limiting() {
