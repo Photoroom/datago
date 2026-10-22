@@ -339,7 +339,7 @@ async fn async_pull_samples(
 
     // A client stop flips the cancel token. Abort queued async work rather than
     // waiting for a stalled download to finish.
-    if cancel.is_cancelled() {
+    if cancel.is_cancelled() || join_error.is_some() {
         tasks.abort_all();
     }
 
@@ -362,9 +362,6 @@ async fn async_pull_samples(
 
     debug!("http_worker: total samples sent: {count}\n");
 
-    // Signal the end of the stream
-    let _ = shareable_channel_tx.send(None); // Channel could have been closed by a .stop() call
-
     if let Some(e) = join_error {
         // If we had an error, return it
         return Err(e.to_string());
@@ -380,14 +377,14 @@ pub fn pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        match async_pull_samples(
+    let result = runtime.block_on(async {
+        async_pull_samples(
             client,
             samples_meta_rx,
             samples_tx,
@@ -397,16 +394,9 @@ pub fn pull_samples(
             cancel,
         )
         .await
-        {
-            Ok(_) => {
-                debug!("http_worker: all samples pulled successfully");
-            }
-            Err(e) => {
-                error!("http_worker: error pulling samples: {e}");
-            }
-        }
     });
     runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    result
 }
 
 #[cfg(test)]

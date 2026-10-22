@@ -5,6 +5,7 @@ from datago import DatagoClient
 from PIL import Image
 import threading
 import time
+import pytest
 
 
 def create_test_image(path, size=(100, 100), color="red"):
@@ -239,10 +240,12 @@ class TestDatagoEdgeCases:
                 "samples_buffer_size": 10,
             }
 
-            # Should flag that the config is not correct
             client = DatagoClient(json.dumps(config))
-            sample = client.get_sample()
-            assert sample is None
+            try:
+                with pytest.raises(ValueError, match="configuration"):
+                    client.get_sample()
+            finally:
+                client.stop()
 
     def test_very_large_buffer_sizes(self):
         """Test with very large buffer sizes."""

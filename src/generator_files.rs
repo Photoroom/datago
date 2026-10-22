@@ -5,7 +5,6 @@ use kanal::bounded;
 use log::{debug, info};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::thread;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,12 +45,13 @@ fn enumerate_files(
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceFileConfig,
     limit: usize,
-) {
+) -> Result<(), String> {
     // Get an iterator over regular files only. Besides skipping directories with
     // image-like names, this avoids opening FIFOs/devices in the blocking decoder.
     let supported_extensions = ["jpg", "jpeg", "png", "bmp", "gif", "webp"];
 
     // Use streaming walkdir to avoid loading all files into memory at once
+    let mut walk_error = None;
     let walker = walkdir::WalkDir::new(&source_config.root_path)
         .follow_links(false)
         .into_iter()
@@ -59,7 +59,13 @@ fn enumerate_files(
         // unrelated files does not require a complete walk after stop().
         .take_while(|_| !samples_metadata_tx.is_disconnected())
         .filter_map(|entry| {
-            let entry = entry.ok()?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    walk_error = Some(error.to_string());
+                    return None;
+                }
+            };
             // Follow symlinks for the type check: curated subsets are often
             // symlink farms. FIFOs, devices and directories are still skipped.
             let file_type = entry.file_type();
@@ -84,6 +90,9 @@ fn enumerate_files(
     // Collect some of the files, over sample to increase randomness or allow for faulty files
     let mut files_list = Vec::new();
     files_list.extend(walker.take(limit.saturating_mul(2)));
+    if let Some(error) = walk_error {
+        return Err(error);
+    }
 
     // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
     if source_config.world_size > 1 {
@@ -136,6 +145,7 @@ fn enumerate_files(
             debug!("ping_pages: stream already closed, wrapping up");
         }
     };
+    Ok(())
 }
 
 pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
@@ -150,6 +160,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Allocate all the message passing pipes
     let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
+    let cancel = CancellationToken::new();
+    let control = crate::pipeline::PipelineControl::new(
+        samples_rx.clone(),
+        MetadataReceiver::Json(samples_metadata_rx.clone()),
+        cancel.clone(),
+    );
 
     // Convert the source_config to a SourceFileConfig
     let source_config: SourceFileConfig =
@@ -160,9 +176,8 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // and send the filepaths to the worker pool as we go
     let limit = client.limit;
 
-    let feeder = Some(thread::spawn(move || {
-        enumerate_files(samples_metadata_tx, source_config, limit);
-        debug!("Feeder thread completed");
+    let feeder = Some(control.spawn_feeder(samples_metadata_tx.clone(), move || {
+        enumerate_files(samples_metadata_tx, source_config, limit)
     }));
 
     // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
@@ -175,10 +190,9 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     };
     let limit = client.limit;
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
-    let cancel = CancellationToken::new();
     let cancel_worker = cancel.clone();
 
-    let worker = Some(thread::spawn(move || {
+    let worker = Some(control.spawn_worker(samples_tx.clone(), move || {
         worker_files::pull_samples(
             samples_metadata_rx_worker,
             samples_tx,
@@ -186,11 +200,11 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             encoding,
             limit,
             cancel_worker,
-        );
-        debug!("Worker thread completed");
+        )
     }));
 
     DatagoEngine {
+        control,
         samples_rx,
         metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
         cancel,
@@ -325,7 +339,7 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx, config, 10);
+            enumerate_files(tx, config, 10).unwrap();
         });
 
         let mut received_files = Vec::new();
@@ -376,7 +390,8 @@ mod tests {
                 world_size: 1,
             },
             10,
-        );
+        )
+        .unwrap();
         assert_eq!(
             receiver.recv().unwrap(),
             serde_json::Value::String(image_link.to_string_lossy().into_owned())
@@ -401,7 +416,7 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx, config, limit);
+            enumerate_files(tx, config, limit).unwrap();
         });
 
         let mut received_files = Vec::new();
@@ -445,11 +460,11 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx1, config1, limit);
+            enumerate_files(tx1, config1, limit).unwrap();
         });
 
         std::thread::spawn(move || {
-            enumerate_files(tx2, config2, limit);
+            enumerate_files(tx2, config2, limit).unwrap();
         });
 
         let mut files_rank0 = Vec::new();
@@ -508,11 +523,11 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx1, config1, limit);
+            enumerate_files(tx1, config1, limit).unwrap();
         });
 
         std::thread::spawn(move || {
-            enumerate_files(tx2, config2, limit);
+            enumerate_files(tx2, config2, limit).unwrap();
         });
 
         let mut files1 = Vec::new();
@@ -558,7 +573,7 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx, config, 10);
+            enumerate_files(tx, config, 10).unwrap();
         });
 
         let mut received_files = Vec::new();

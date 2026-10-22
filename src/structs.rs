@@ -8,13 +8,20 @@ use std::collections::HashMap;
 use std::thread;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum MetadataReceiver {
     Json(kanal::Receiver<serde_json::Value>),
     Tarball(kanal::Receiver<TarballSample>),
 }
 
 impl MetadataReceiver {
+    pub(crate) fn is_disconnected(&self) -> bool {
+        match self {
+            Self::Json(receiver) => receiver.is_disconnected(),
+            Self::Tarball(receiver) => receiver.is_disconnected(),
+        }
+    }
+
     pub fn close(&self) {
         match self {
             Self::Json(receiver) => {
@@ -29,6 +36,7 @@ impl MetadataReceiver {
 
 #[derive(Debug)]
 pub struct DatagoEngine {
+    pub(crate) control: crate::pipeline::PipelineControl,
     pub samples_rx: kanal::Receiver<Option<Sample>>,
     pub metadata_rx: MetadataReceiver,
     /// Flipped when the engine is torn down (stop, end-of-stream, or interrupt)
