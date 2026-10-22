@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::Arc;
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const DEFAULT_JPEG_QUALITY: u8 = 92;
@@ -148,7 +149,11 @@ fn image_to_dyn_image(dst_image: &Image) -> image::DynamicImage {
             image::DynamicImage::ImageRgba8(img_buffer)
         }
 
-        fr::PixelType::U8 | fr::PixelType::U8x2 => {
+        fr::PixelType::U8x2 => {
+            let img_buffer = image::GrayAlphaImage::from_raw(width, height, pixels).unwrap();
+            image::DynamicImage::ImageLumaA8(img_buffer)
+        }
+        fr::PixelType::U8 => {
             let img_buffer = image::GrayImage::from_raw(width, height, pixels).unwrap();
             image::DynamicImage::ImageLuma8(img_buffer)
         }
@@ -419,7 +424,7 @@ pub async fn image_to_payload(
     }
 
     Ok(ImagePayload {
-        data: image_bytes,
+        data: Arc::from(image_bytes),
         original_height,
         original_width,
         height,

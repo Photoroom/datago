@@ -1,74 +1,85 @@
+//! Convert native samples to Python objects, preserving Python exceptions.
+
+use crate::config::ImageFormat;
+use crate::image_payload::PythonImagePayload;
 use crate::structs::Sample;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
-pub fn sample_to_python_types(sample: Sample, py: Python<'_>) -> Option<Py<PyAny>> {
-    // Convert the sample to a Python dict with PIL images
+/// Convert an image payload to the requested Python representation.
+fn image_to_python(
+    payload: &PythonImagePayload,
+    py: Python<'_>,
+    image_format: ImageFormat,
+) -> PyResult<Py<PyAny>> {
+    match image_format {
+        ImageFormat::Pil => payload.to_pil_image(py),
+        ImageFormat::Numpy => payload.to_numpy_array(py),
+    }
+}
+
+pub fn sample_to_python_types(
+    sample: Sample,
+    py: Python<'_>,
+    image_format: ImageFormat,
+) -> PyResult<Py<PyAny>> {
+    // Convert the sample to a Python dict, using PIL images or zero-copy arrays
+    // depending on the requested format.
     let sample_dict = PyDict::new(py);
 
     // Add basic fields
-    sample_dict.set_item("id", sample.id).unwrap();
-    sample_dict.set_item("source", sample.source).unwrap();
-    sample_dict
-        .set_item("duplicate_state", sample.duplicate_state)
-        .unwrap();
+    sample_dict.set_item("id", sample.id)?;
+    sample_dict.set_item("source", sample.source)?;
+    sample_dict.set_item("duplicate_state", sample.duplicate_state)?;
 
     // Convert attributes to python dict
     let attributes_dict = PyDict::new(py);
     for (key, value) in sample.attributes {
-        // If value is a string it can be passed as is, else we pass the json-encoded version
-        let value_serialized: String = if value.is_string() {
-            value.to_string()
+        // String values are passed through as-is; everything else is JSON-encoded.
+        if let Some(text) = value.as_str() {
+            attributes_dict.set_item(key, text)?;
         } else {
-            serde_json::to_string(&value).unwrap_or("{}".to_string())
-        };
-        attributes_dict.set_item(key, value_serialized).unwrap();
+            let encoded = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
+            attributes_dict.set_item(key, encoded)?;
+        }
     }
-    sample_dict.set_item("attributes", attributes_dict).unwrap();
+    sample_dict.set_item("attributes", attributes_dict)?;
 
     // Convert tags
-    let tags_list = PyList::new(py, &sample.tags).unwrap();
-    sample_dict.set_item("tags", tags_list).unwrap();
+    let tags_list = PyList::new(py, &sample.tags)?;
+    sample_dict.set_item("tags", tags_list)?;
 
     // Convert coca_embedding
-    let coca_array = PyList::new(py, &sample.coca_embedding).unwrap();
-    sample_dict.set_item("coca_embedding", coca_array).unwrap();
+    let coca_array = PyList::new(py, &sample.coca_embedding)?;
+    sample_dict.set_item("coca_embedding", coca_array)?;
 
     // Convert latents
     let latents_dict = PyDict::new(py);
     for (key, latent) in sample.latents {
         let latent_dict = PyDict::new(py);
-        latent_dict
-            .set_item("data", PyBytes::new(py, &latent.data))
-            .unwrap();
-        latent_dict.set_item("len", latent.len).unwrap();
-        latents_dict.set_item(key, latent_dict).unwrap();
+        latent_dict.set_item("data", PyBytes::new(py, &latent.data))?;
+        latent_dict.set_item("len", latent.len)?;
+        latents_dict.set_item(key, latent_dict)?;
     }
-    sample_dict.set_item("latents", latents_dict).unwrap();
+    sample_dict.set_item("latents", latents_dict)?;
 
-    // Convert images to PIL images
-    let image_pil = sample.image.to_pil_image(py).unwrap();
-    sample_dict.set_item("image", image_pil).unwrap();
+    // Convert the main, mask and additional images to the requested format.
+    let image = image_to_python(&sample.image, py, image_format)?;
+    sample_dict.set_item("image", image)?;
 
-    // Convert masks to PIL images
     let masks_dict = PyDict::new(py);
     for (key, mask) in sample.masks {
-        let mask_pil = mask.to_pil_image(py).unwrap();
-        masks_dict.set_item(key, mask_pil).unwrap();
+        let mask_obj = image_to_python(&mask, py, image_format)?;
+        masks_dict.set_item(key, mask_obj)?;
     }
-    sample_dict.set_item("masks", masks_dict).unwrap();
+    sample_dict.set_item("masks", masks_dict)?;
 
-    // Convert additional images to PIL images
     let additional_images_dict = PyDict::new(py);
     for (key, additional_image) in sample.additional_images {
-        let additional_image_pil = additional_image.to_pil_image(py).unwrap();
-        additional_images_dict
-            .set_item(key, additional_image_pil)
-            .unwrap();
+        let additional_obj = image_to_python(&additional_image, py, image_format)?;
+        additional_images_dict.set_item(key, additional_obj)?;
     }
-    sample_dict
-        .set_item("additional_images", additional_images_dict)
-        .unwrap();
+    sample_dict.set_item("additional_images", additional_images_dict)?;
 
-    Some(sample_dict.into())
+    Ok(sample_dict.into())
 }
