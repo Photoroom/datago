@@ -1,7 +1,11 @@
 pub mod client;
+mod config;
 pub mod generator_files;
 pub mod generator_http;
 pub mod generator_wds;
+mod http_client;
+mod image_payload;
+mod python_conversion;
 
 pub mod image_processing;
 pub mod structs;

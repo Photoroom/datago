@@ -1,3 +1,7 @@
+mod config;
+mod http_client;
+mod image_payload;
+mod python_conversion;
 use clap::{Arg, Command};
 use log::{error, info};
 use prettytable::{row, Table};
