@@ -302,10 +302,7 @@ impl DatagoClient {
             ClientLifecycle::Idle | ClientLifecycle::Stopped => None,
         };
         if let Some(engine) = &engine {
-            engine.control.mark_stopped();
-            engine.cancel.cancel();
-            engine.metadata_rx.close();
-            let _ = engine.samples_rx.close();
+            engine.close();
         }
         engine
     }
@@ -488,19 +485,25 @@ fn finish_engine(engine: DatagoEngine) {
 }
 
 fn wait_for_engine(engine: &DatagoEngine, grace_period: Duration) -> bool {
+    wait_until_finished(grace_period, || engine_finished(engine))
+}
+
+fn wait_until_finished(grace_period: Duration, finished: impl Fn() -> bool) -> bool {
     let deadline = Instant::now() + grace_period;
-    while !engine_finished(engine) && Instant::now() < deadline {
+    while !finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(2));
     }
-    engine_finished(engine)
+    finished()
 }
 
 fn join_engine(mut engine: DatagoEngine) {
-    for thread in [&mut engine.feeder, &mut engine.worker] {
-        if let Some(handle) = thread.take() {
-            if let Err(error) = handle.join() {
-                error!("Failed to join datago thread: {:?}", error);
-            }
+    join_threads([engine.feeder.take(), engine.worker.take()]);
+}
+
+fn join_threads(threads: [Option<std::thread::JoinHandle<()>>; 2]) {
+    for handle in threads.into_iter().flatten() {
+        if let Err(error) = handle.join() {
+            error!("Failed to join datago thread: {:?}", error);
         }
     }
 }
@@ -509,19 +512,31 @@ fn join_engine(mut engine: DatagoEngine) {
 /// for blocking IO that cannot be cancelled. Drop delegates its grace period
 /// here so it never sleeps while holding the GIL or calls into Python during
 /// interpreter shutdown.
-fn reap_engine(engine: DatagoEngine, grace_period: Duration) {
+fn reap_engine(mut engine: DatagoEngine, grace_period: Duration) {
+    reap_engine_threads([engine.feeder.take(), engine.worker.take()], grace_period);
+}
+
+pub(crate) fn reap_engine_threads(
+    threads: [Option<std::thread::JoinHandle<()>>; 2],
+    grace_period: Duration,
+) {
     LIVE_CLEANUP_THREADS.fetch_add(1, Ordering::SeqCst);
     let spawned = std::thread::Builder::new()
         .name("datago-cleanup".to_string())
         .spawn(move || {
-            if !wait_for_engine(&engine, grace_period) {
+            if !wait_until_finished(grace_period, || {
+                threads
+                    .iter()
+                    .flatten()
+                    .all(std::thread::JoinHandle::is_finished)
+            }) {
                 warn!(
                     "datago: native workers still busy after the stop grace period; joining them \
                      on a background cleanup thread (live cleanup threads: {})",
                     LIVE_CLEANUP_THREADS.load(Ordering::SeqCst)
                 );
             }
-            join_engine(engine);
+            join_threads(threads);
             LIVE_CLEANUP_THREADS.fetch_sub(1, Ordering::SeqCst);
         });
     if let Err(error) = spawned {
