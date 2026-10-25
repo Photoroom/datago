@@ -48,6 +48,29 @@ pub struct DatagoEngine {
     pub worker: Option<thread::JoinHandle<()>>,
 }
 
+impl DatagoEngine {
+    /// Cancel before closing queues so retiring producers cannot record a late
+    /// failure. Closing is explicit because the supervisor retains receivers.
+    pub(crate) fn close(&self) {
+        self.control.mark_stopped();
+        self.cancel.cancel();
+        self.metadata_rx.close();
+        let _ = self.samples_rx.close();
+    }
+}
+
+impl Drop for DatagoEngine {
+    fn drop(&mut self) {
+        self.close();
+        let threads = [self.feeder.take(), self.worker.take()];
+        if threads.iter().any(Option::is_some) {
+            // Dropping an engine is safe even outside DatagoClient. Joining
+            // happens off the caller's thread, including when it holds the GIL.
+            crate::client::reap_engine_threads(threads, std::time::Duration::ZERO);
+        }
+    }
+}
+
 #[pyclass]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LatentPayload {
@@ -162,6 +185,56 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    #[test]
+    fn dropping_engine_releases_producers_blocked_on_full_queues() {
+        let (samples_tx, samples_rx) = kanal::bounded(1);
+        let (metadata_tx, metadata_rx) = kanal::bounded(1);
+        samples_tx.send(None).unwrap();
+        metadata_tx.send(serde_json::Value::Null).unwrap();
+        let metadata_rx = MetadataReceiver::Json(metadata_rx);
+        let cancel = CancellationToken::new();
+        let control = crate::pipeline::PipelineControl::new(
+            samples_rx.clone(),
+            metadata_rx.clone(),
+            cancel.clone(),
+        );
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let feeder_finished = finished_tx.clone();
+        let feeder = control.spawn_feeder(metadata_tx.clone(), move || {
+            assert!(metadata_tx.send(serde_json::Value::Null).is_err());
+            feeder_finished.send(()).unwrap();
+            Ok(())
+        });
+        let worker = control.spawn_worker(samples_tx.clone(), move || {
+            assert!(samples_tx.send(None).is_err());
+            finished_tx.send(()).unwrap();
+            Ok(())
+        });
+        let engine = DatagoEngine {
+            control: control.clone(),
+            samples_rx: samples_rx.clone(),
+            metadata_rx: metadata_rx.clone(),
+            cancel: cancel.clone(),
+            feeder: Some(feeder),
+            worker: Some(worker),
+        };
+        drop(engine);
+        let first = finished_rx.recv_timeout(std::time::Duration::from_secs(5));
+        // Clean up even when running against the broken implementation: this
+        // regression must not leak the deliberately blocked producer threads.
+        control.mark_stopped();
+        cancel.cancel();
+        metadata_rx.close();
+        let _ = samples_rx.close();
+        assert!(
+            first.is_ok(),
+            "dropping the engine did not cancel its producers"
+        );
+        finished_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+    }
 
     #[test]
     fn test_latent_payload_creation() {
