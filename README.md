@@ -272,11 +272,11 @@ config = {
     "source_type": "file",
     "source_config": {
         "root_path": "myPath",
-        "random_sampling": False, # True if used directly for training
+        "random_sampling": False,  # True if used directly for training
     },
     # Optional pre-processing of the images, placing them in an aspect ratio bucket to preserve as much as possible of the original content
     "image_config": {
-        "crop_and_resize": True, # False to turn it off, or just omit this part of the config
+        "crop_and_resize": True,  # False to turn it off, or just omit this part of the config
         "default_image_size": 1024,
         "downsampling_ratio": 32,
         "min_aspect_ratio": 0.5,
