@@ -394,21 +394,17 @@ As usual, benchmarks are a tricky game, and you shouldn't read too much into the
 
 In general, Datago will be impactful if you want to load a lot of images very fast, but if you consume them as you go at a more leisury pace then it's not really needed. The more CPU work there is with the images and the higher quality they are, the more Datago will shine.
 
-## Filesystem throughput: Python and Rust
+## Filesystem throughput: Python
 
 The Python filesystem benchmark reports FPS, MP/s, MB/s, time to first sample,
 and post-start FPS for Datago and optionally Torch. Its returned results and sweep
 JSON include `pixels` and `megapixels_per_second`. Pixels count output spatial
 positions (`width * height`), independent of channel count or bit depth.
 
-The native Rust example consumes the same pipeline without entering Python and
-prints JSON with the same metrics. Compare it against Python's raw stage to assess
-binding and iteration overhead, then add NumPy, PIL, and dictionary conversion:
+Compare Python's raw stage with NumPy, PIL, and dictionary conversion to assess
+conversion and object creation overhead:
 
 ```bash
-# Native raw-sample baseline.
-cargo run --release --example benchmark_filesystem -- /path/to/images --limit 2000 --num-workers 8
-
 # Python raw samples, then image and dictionary conversion.
 uv run --group dev python/bench_stages.py --root-path /path/to/images --limit 2000 --workers 8 --stages raw,numpy,pil,convert
 
@@ -416,18 +412,17 @@ uv run --group dev python/bench_stages.py --root-path /path/to/images --limit 20
 uv run --group dev python/benchmark_filesystem.py --root-path /path/to/images --limit 2000 --num-workers 8 --image-format numpy --no-compare-torch
 ```
 
-All three accept `--crop-and-resize` for 1024 × 1024 output. Resized runs count
+Both accept `--crop-and-resize` for 1024 × 1024 output. Resized runs count
 output pixels. They use a 256-sample buffer, include construction/startup in elapsed
 time, exclude cleanup, and report an error if the source cannot supply the limit.
-The Rust and full Python reports use `startup_seconds` for time to the first sample
+The full Python report uses `startup_seconds` for time to the first sample
 and `steady_fps` for the rate after it (`null` for a single-sample run).
 
-Use release builds for both the extension and native example, identical options
+Use release builds for the extension, identical options
 and an RGB8 corpus, and repeated runs with comparable filesystem cache state.
-Native versus converted Python output includes conversion and object creation,
-so the difference is broader than binding-call overhead. Python progress reporting
-also adds work. `num_workers` controls Datago tasks and Torch processes; native
-thread counts can differ.
+Raw versus converted Python output includes conversion and object creation.
+Python progress reporting also adds work. `num_workers` controls Datago tasks and
+Torch processes; native thread counts can differ.
 
 ## From disk: ImageNet
 

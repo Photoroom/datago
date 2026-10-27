@@ -45,7 +45,7 @@ def measure(
             "min_aspect_ratio": 1.0,
             "max_aspect_ratio": 1.0,
         }
-    # Match the native example: include construction/startup, exclude cleanup.
+    # Include construction/startup, exclude cleanup.
     start = time.perf_counter()
     client = DatagoClient(json.dumps(client_config))
     client.start()
