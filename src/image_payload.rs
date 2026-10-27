@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[pyclass]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ImagePayload {
-    pub data: Arc<[u8]>,
+    pub data: Arc<Vec<u8>>,
     #[pyo3(get, set)]
     pub original_height: usize,
     #[pyo3(get, set)]
@@ -34,6 +34,12 @@ pub struct PythonImagePayload {
     inner: ImagePayload,
 }
 
+impl AsRef<ImagePayload> for PythonImagePayload {
+    fn as_ref(&self) -> &ImagePayload {
+        &self.inner
+    }
+}
+
 #[pymethods]
 impl ImagePayload {
     #[new]
@@ -50,7 +56,7 @@ impl ImagePayload {
 
     #[setter]
     pub fn set_data(&mut self, data: Vec<u8>) {
-        self.data = Arc::from(data);
+        self.data = Arc::new(data);
     }
 
     /// Convert this ImagePayload to a PIL Image directly in Rust
@@ -293,8 +299,11 @@ impl ImagePayload {
     }
 
     fn decode(&self, py: Python<'_>) -> PyResult<Self> {
-        py.detach(|| image::load_from_memory(&self.data).map(Self::from_decoded_image))
-            .map_err(|error| PyValueError::new_err(error.to_string()))
+        py.detach(|| {
+            crate::image_processing::decode_image(|| image::load_from_memory(&self.data))
+                .map(Self::from_decoded_image)
+        })
+        .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     fn from_decoded_image(image: image::DynamicImage) -> Self {
@@ -309,7 +318,7 @@ impl ImagePayload {
             channels: color.channel_count() as i8,
             bit_depth: (color.bits_per_pixel() / color.channel_count() as u16) as usize,
             is_encoded: false,
-            data: Arc::from(image.into_bytes()),
+            data: Arc::new(image.into_bytes()),
         }
     }
 }

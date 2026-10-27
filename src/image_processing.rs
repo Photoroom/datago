@@ -10,6 +10,19 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
+
+/// A malformed image may panic inside a decoder. Treat it as an unreadable
+/// image, without hiding panics in the surrounding worker or transformation code.
+pub(crate) fn decode_image(
+    decode: impl FnOnce() -> image::ImageResult<image::DynamicImage> + std::panic::UnwindSafe,
+) -> image::ImageResult<image::DynamicImage> {
+    std::panic::catch_unwind(decode).unwrap_or_else(|panic| {
+        Err(image::ImageError::IoError(std::io::Error::other(format!(
+            "decoder panicked: {}",
+            crate::error::panic_message(panic)
+        ))))
+    })
+}
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const DEFAULT_JPEG_QUALITY: u8 = 92;
@@ -424,7 +437,7 @@ pub async fn image_to_payload(
     }
 
     Ok(ImagePayload {
-        data: Arc::from(image_bytes),
+        data: Arc::new(image_bytes),
         original_height,
         original_width,
         height,
@@ -496,6 +509,19 @@ mod tests {
             assert_eq!(w % 16, 0);
             assert_eq!(h % 16, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn raw_payload_reuses_decoded_allocation_and_clones_share_pixels() {
+        let image = DynamicImage::new_rgb8(16, 16);
+        let pixels = image.as_bytes().as_ptr();
+        let payload = image_to_payload(image, &None, &String::new(), ImageEncoding::default())
+            .await
+            .unwrap();
+
+        assert_eq!(payload.data.as_ptr(), pixels);
+        let cloned = payload.clone();
+        assert!(Arc::ptr_eq(&payload.data, &cloned.data));
     }
 
     #[tokio::test]

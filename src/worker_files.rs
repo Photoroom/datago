@@ -15,14 +15,16 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
         let file = std::fs::File::open(path)
             .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?;
         let reader = std::io::BufReader::new(file);
-        image::ImageReader::new(reader)
-            .with_guessed_format()?
-            .decode()
+        image_processing::decode_image(|| {
+            image::ImageReader::new(reader)
+                .with_guessed_format()?
+                .decode()
+        })
     })
     .await;
     match result {
         Ok(result) => result,
-        // A decoder panic is a worker failure, not an unreadable-file error.
+        // Decoding panics are contained above; unexpected task panics remain fatal.
         Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
         Err(error) => Err(image::ImageError::IoError(std::io::Error::other(error))),
     }
@@ -141,6 +143,29 @@ mod tests {
         // Create a simple 1x1 PNG image
         let img = image::DynamicImage::new_rgb8(1, 1);
         img.save(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn decoder_panic_is_a_bad_image_and_later_images_still_decode() {
+        let task = tokio::spawn(async {
+            let error = tokio::task::spawn_blocking(|| {
+                image_processing::decode_image(|| panic!("injected decoder panic"))
+            })
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("decoder panicked: injected decoder panic"));
+
+            let directory = TempDir::new().unwrap();
+            let path = directory.path().join("good.png");
+            create_test_image(&path);
+            image_from_path(path.to_str().unwrap()).await.unwrap()
+        });
+        // A decoder panic must not escape as a JoinError on the sample task.
+        let image = task.await.unwrap();
+        assert_eq!((image.width(), image.height()), (1, 1));
     }
 
     #[tokio::test]

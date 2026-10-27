@@ -1,4 +1,4 @@
-use crate::error::{panic_message, DatagoError};
+use crate::error::DatagoError;
 use crate::generator_files;
 use crate::generator_http;
 use crate::generator_wds;
@@ -190,6 +190,7 @@ impl DatagoClient {
     }
 
     /// Start streaming. Safe to call again after the stream ends or after `stop()`.
+    /// Raise `ValueError` if the client or source configuration is invalid.
     #[pyo3(name = "start")]
     fn py_start(&self) -> PyResult<()> {
         self.start_result().map_err(Into::into)
@@ -197,6 +198,9 @@ impl DatagoClient {
 
     /// Return the next sample, or `None` once the stream is exhausted or stopped.
     /// Reads do not silently restart: call `start()` again for a new pass.
+    /// Raise `RuntimeError` on a fatal source/worker failure, `ValueError` on
+    /// invalid configuration/arguments, or `TimeoutError` if this read times out.
+    /// A timeout leaves the pass running; retry the read or call `stop()`.
     #[pyo3(name = "get_sample", signature = (*, timeout=None))]
     fn py_get_sample(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Sample>> {
         self.get_sample_python(py, python_timeout(timeout)?)
@@ -247,17 +251,12 @@ impl DatagoClient {
                 "client configuration is invalid".into(),
             ));
         }
-        // Source setup previously panicked for invalid source configuration.
-        // Keep the legacy constructor while exposing setup failures to readers.
-        let engine =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match self.source_type {
-                SourceType::File => Some(generator_files::orchestrate(self)),
-                SourceType::Db => Some(generator_http::orchestrate(self)),
-                SourceType::WebDataset => Some(generator_wds::orchestrate(self)),
-                SourceType::Invalid => None,
-            }))
-            .map_err(|panic| DatagoError::Configuration(panic_message(panic)))?
-            .ok_or_else(|| DatagoError::Configuration("invalid source type".into()))?;
+        let engine = match self.source_type {
+            SourceType::File => generator_files::orchestrate(self),
+            SourceType::Db => generator_http::orchestrate(self),
+            SourceType::WebDataset => generator_wds::orchestrate(self),
+            SourceType::Invalid => Err(DatagoError::Configuration("invalid source type".into())),
+        }?;
         state.generation = state.generation.wrapping_add(1);
         state.lifecycle = ClientLifecycle::Running(engine);
         Ok(())
@@ -323,16 +322,16 @@ impl DatagoClient {
         }
     }
 
-    /// Return a sample, clean exhaustion/explicit stop, or a fatal pipeline error.
-    /// Unreadable individual samples remain skippable. Failure ends this pass;
-    /// call [`start`](Self::start) to explicitly begin another.
+    /// Return a sample, clean exhaustion/explicit stop, or a read/pipeline error.
+    /// Unreadable individual samples remain skippable. Fatal failure ends this
+    /// pass; call [`start`](Self::start) to explicitly begin another.
     pub fn try_get_sample(&self) -> Result<Option<Sample>, DatagoError> {
         self.try_get_sample_timeout(TIMEOUT)
     }
 
     /// As [`try_get_sample`](Self::try_get_sample), with a per-read timeout.
-    /// A timeout cancels the pass. Cleanup has a short grace period; stalled
-    /// native operations are reaped in the background rather than delaying errors.
+    /// A timeout leaves the pass running, including at the default 300s deadline.
+    /// Retry the read to continue, or call [`stop`](Self::stop) to cancel the pass.
     pub fn try_get_sample_timeout(&self, timeout: Duration) -> Result<Option<Sample>, DatagoError> {
         let deadline = Instant::now()
             .checked_add(timeout)
@@ -354,9 +353,11 @@ impl DatagoClient {
             if let Ok(Some(sample)) = result {
                 return Ok(Some(sample));
             }
+            if matches!(result, Err(ReceiveFailure::Timeout)) {
+                return Err(DatagoError::Timeout);
+            }
         }
         let engine = self.take_engine_for(reader.generation);
-        let owned_engine = engine.is_some();
         if let Some(engine) = engine {
             finish_engine(engine);
         }
@@ -364,7 +365,6 @@ impl DatagoClient {
             return Err(error);
         }
         match result {
-            Err(ReceiveFailure::Timeout) if owned_engine => Err(DatagoError::Timeout),
             Err(ReceiveFailure::Interrupted(never)) => match never {},
             _ => Ok(None),
         }
@@ -410,9 +410,11 @@ impl DatagoClient {
             if let Ok(Some(sample)) = result {
                 return Ok(Some(sample));
             }
+            if matches!(result, Err(ReceiveFailure::Timeout)) {
+                return Err(DatagoError::Timeout.into());
+            }
         }
         let engine = self.take_engine_for(reader.generation);
-        let owned_engine = engine.is_some();
         if let Some(engine) = engine {
             wait_or_reap_engine(py, engine);
         }
@@ -423,10 +425,7 @@ impl DatagoClient {
         if let Some(error) = reader.control.error() {
             return Err(error.into());
         }
-        match result {
-            Err(ReceiveFailure::Timeout) if owned_engine => Err(DatagoError::Timeout.into()),
-            _ => Ok(None),
-        }
+        Ok(None)
     }
 
     fn stop_python(&self, py: Python<'_>) {
@@ -630,8 +629,6 @@ mod tests {
                 tokio_util::sync::CancellationToken::new(),
             ),
             samples_rx,
-            metadata_rx: crate::structs::MetadataReceiver::Json(metadata_rx),
-            cancel: tokio_util::sync::CancellationToken::new(),
             feeder: None,
             worker: Some(worker),
         });
@@ -663,8 +660,6 @@ mod tests {
                     tokio_util::sync::CancellationToken::new(),
                 ),
                 samples_rx,
-                metadata_rx: crate::structs::MetadataReceiver::Json(metadata_rx),
-                cancel: tokio_util::sync::CancellationToken::new(),
                 feeder: None,
                 worker: None,
             });
@@ -1192,8 +1187,6 @@ mod error_contract_tests {
         client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
             control,
             samples_rx,
-            metadata_rx,
-            cancel,
             feeder: None,
             worker,
         });
@@ -1262,25 +1255,28 @@ mod error_contract_tests {
     }
 
     #[test]
-    fn timeout_reaps_stalled_work_and_ignores_its_late_failure() {
+    fn read_timeout_preserves_the_generation_and_its_later_failure() {
         let client = DatagoClient::new("{}".into());
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         install_worker(&client, move || {
             release_rx.recv().unwrap();
-            finished_tx.send(()).unwrap();
-            Err("late failure after cancellation".into())
+            Err("failure after a read timeout".into())
         });
-        let start = Instant::now();
-        assert_eq!(
-            client
-                .try_get_sample_timeout(Duration::from_millis(5))
-                .unwrap_err(),
-            DatagoError::Timeout
-        );
-        assert!(start.elapsed() < Duration::from_secs(2));
+        let generation = client.state().generation;
+        for timeout in [Duration::ZERO, Duration::from_millis(5)] {
+            assert_eq!(
+                client.try_get_sample_timeout(timeout).unwrap_err(),
+                DatagoError::Timeout
+            );
+            let state = client.state();
+            assert_eq!(state.generation, generation);
+            assert!(matches!(state.lifecycle, ClientLifecycle::Running(_)));
+        }
         release_tx.send(()).unwrap();
-        finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(
+            client.try_get_sample_timeout(Duration::from_secs(2)),
+            Err(DatagoError::Worker(message)) if message.contains("failure after a read timeout")
+        ));
         assert!(client.try_get_sample().unwrap().is_none());
     }
 

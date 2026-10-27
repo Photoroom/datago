@@ -1,8 +1,9 @@
 use crate::client::DatagoClient;
+use crate::error::DatagoError;
 use crate::structs::{DatagoEngine, MetadataReceiver};
 use crate::worker_files;
 use kanal::bounded;
-use log::{debug, info};
+use log::{debug, info, warn};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -61,8 +62,12 @@ fn enumerate_files(
         .filter_map(|entry| {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(error) => {
+                Err(error) if error.depth() == 0 => {
                     walk_error = Some(error.to_string());
+                    return None;
+                }
+                Err(error) => {
+                    warn!("Skipping unreadable filesystem entry: {error}");
                     return None;
                 }
             };
@@ -148,7 +153,10 @@ fn enumerate_files(
     Ok(())
 }
 
-pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
+    // Validate before creating any queues or starting producer threads.
+    let source_config: SourceFileConfig = serde_json::from_value(client.source_config.clone())
+        .map_err(|error| DatagoError::Configuration(format!("file source: {error}")))?;
     // Start pulling the samples, which spread across two steps. The samples will land in the last kanal,
     // all the threads pausing when the required buffer depth is reached.
     // - A first thread will query the filesystem and get pages of filepaths back. It will dispatch the filepaths
@@ -167,9 +175,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         cancel.clone(),
     );
 
-    // Convert the source_config to a SourceFileConfig
-    let source_config: SourceFileConfig =
-        serde_json::from_value(client.source_config.clone()).unwrap();
     info!("Using file as source {}", source_config.root_path);
 
     // Create a thread which will generate work as it goes. We'll query the filesystem
@@ -203,14 +208,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         )
     }));
 
-    DatagoEngine {
+    Ok(DatagoEngine {
         control,
         samples_rx,
-        metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
-        cancel,
         feeder,
         worker,
-    }
+    })
 }
 
 #[cfg(test)]

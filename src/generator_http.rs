@@ -1,4 +1,5 @@
 use crate::client::DatagoClient;
+use crate::error::DatagoError;
 use crate::worker_http;
 use log::{debug, info, warn};
 use reqwest::header::HeaderMap;
@@ -427,7 +428,9 @@ pub fn pull_and_dispatch_pages(
         })
 }
 
-pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
+    let source_db_config: SourceDBConfig = serde_json::from_value(client.source_config.clone())
+        .map_err(|error| DatagoError::Configuration(format!("DB source: {error}")))?;
     // Start pulling the samples, which spread across two steps. The samples will land in the last kanal,
     // all the threads pausing when the required buffer depth is reached.
 
@@ -446,10 +449,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         MetadataReceiver::Json(samples_metadata_rx.clone()),
         cancel.clone(),
     );
-
-    // Convert the source_config to a SourceDBConfig
-    let source_db_config: SourceDBConfig =
-        serde_json::from_value(client.source_config.clone()).unwrap();
 
     info!("Using DB as source");
     let limit = client.limit;
@@ -493,14 +492,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         )
     }));
 
-    DatagoEngine {
+    Ok(DatagoEngine {
         control,
         samples_rx,
-        metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
-        cancel,
         feeder,
         worker,
-    }
+    })
 }
 
 #[cfg(test)]

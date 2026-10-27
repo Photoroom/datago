@@ -25,7 +25,7 @@ async fn image_payload_from_file(
     aspect_ratio: &String,
     encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, ()> {
-    let result = match image::load_from_memory(&file.buffer) {
+    let result = match image_processing::decode_image(|| image::load_from_memory(&file.buffer)) {
         Ok(image) => {
             image_processing::image_to_payload(image, image_transform, aspect_ratio, encoding).await
         }

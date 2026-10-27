@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// invalidate outstanding memoryviews or NumPy arrays.
 #[pyclass(frozen)]
 pub(crate) struct SharedImageBuffer {
-    pub(crate) data: Arc<[u8]>,
+    pub(crate) data: Arc<Vec<u8>>,
 }
 
 #[pymethods]
@@ -29,7 +29,7 @@ impl SharedImageBuffer {
 /// Safety: `view` must point to a writable CPython buffer descriptor.
 pub(crate) unsafe fn export_bytes(
     py: Python<'_>,
-    data: Arc<[u8]>,
+    data: Arc<Vec<u8>>,
     view: *mut ffi::Py_buffer,
     flags: c_int,
 ) -> PyResult<()> {
