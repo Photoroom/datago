@@ -1,7 +1,9 @@
+use crate::error::DatagoError;
 use crate::generator_files;
 use crate::generator_http;
 use crate::generator_wds;
 use crate::image_processing::ARAwareTransform;
+use crate::pipeline::PipelineControl;
 use crate::structs::{DatagoClientConfig, Sample, SourceType};
 
 use crate::structs::sample_to_python_types;
@@ -33,6 +35,12 @@ enum ReceiveFailure<E> {
 struct ClientState {
     lifecycle: ClientLifecycle,
     generation: u64,
+}
+
+struct SampleReader {
+    samples_rx: kanal::Receiver<Option<Sample>>,
+    generation: u64,
+    control: PipelineControl,
 }
 
 enum ClientLifecycle {
@@ -179,23 +187,31 @@ impl DatagoClient {
     }
 
     /// Start streaming. Safe to call again after the stream ends or after `stop()`.
+    /// Raise `ValueError` if the client or source configuration is invalid.
     #[pyo3(name = "start")]
-    fn py_start(&self) {
-        self.start();
+    fn py_start(&self) -> PyResult<()> {
+        self.start_result().map_err(Into::into)
     }
 
     /// Return the next sample, or `None` once the stream is exhausted or stopped.
     /// Reads do not silently restart: call `start()` again for a new pass.
-    #[pyo3(name = "get_sample")]
-    fn py_get_sample(&self, py: Python<'_>) -> PyResult<Option<Sample>> {
-        self.get_sample_python(py)
+    /// Raise `RuntimeError` on a fatal source/worker failure, `ValueError` on
+    /// invalid configuration/arguments, or `TimeoutError` if this read times out.
+    /// A timeout leaves the pass running; retry the read or call `stop()`.
+    #[pyo3(name = "get_sample", signature = (*, timeout=None))]
+    fn py_get_sample(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Sample>> {
+        self.get_sample_python(py, python_timeout(timeout)?)
     }
 
     /// Return the next sample using native Python types, with the same semantics
     /// as `get_sample()`.
-    #[pyo3(name = "get_sample_auto_convert")]
-    fn py_get_sample_auto_convert(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.get_sample_auto_convert(py)
+    #[pyo3(name = "get_sample_auto_convert", signature = (*, timeout=None))]
+    fn py_get_sample_auto_convert(
+        &self,
+        py: Python<'_>,
+        timeout: Option<f64>,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self.get_sample_auto_convert(py, python_timeout(timeout)?)
     }
 
     /// Stop streaming and release the worker threads.
@@ -214,51 +230,52 @@ impl DatagoClient {
 
     /// Explicit start permits an intentional restart after stop/EOS.
     pub fn start(&self) {
-        let mut state = self.state();
-        self.start_locked(&mut state);
+        if let Err(error) = self.start_result() {
+            error!("{error}");
+        }
     }
 
-    fn start_locked(&self, state: &mut ClientState) {
+    fn start_result(&self) -> Result<(), DatagoError> {
+        self.start_locked(&mut self.state())
+    }
+
+    fn start_locked(&self, state: &mut ClientState) -> Result<(), DatagoError> {
         if matches!(state.lifecycle, ClientLifecycle::Running(_)) {
-            return;
+            return Ok(());
         }
-        state.lifecycle = ClientLifecycle::Idle;
         if !self.is_valid {
-            return;
+            return Err(DatagoError::Configuration(
+                "client configuration is invalid".into(),
+            ));
         }
-        initialize_logging(Some("warn".to_string()));
-        let engine = match &self.source_type {
-            SourceType::Db => Some(generator_http::orchestrate(self)),
-            SourceType::File => Some(generator_files::orchestrate(self)),
-            SourceType::WebDataset => {
-                warn!("WebDataset source type is new and experimental, use with caution!\nPlease report any issues you encounter to https://github.com/Photoroom/datago/issues.");
-                Some(generator_wds::orchestrate(self))
-            }
-            SourceType::Invalid => {
-                error!("Client ill-defined, probably a config error. Cannot start");
-                None
-            }
-        };
-        if let Some(engine) = engine {
-            state.generation = state.generation.wrapping_add(1);
-            state.lifecycle = ClientLifecycle::Running(engine);
-        }
+        let engine = match self.source_type {
+            SourceType::File => generator_files::orchestrate(self),
+            SourceType::Db => generator_http::orchestrate(self),
+            SourceType::WebDataset => generator_wds::orchestrate(self),
+            SourceType::Invalid => Err(DatagoError::Configuration("invalid source type".into())),
+        }?;
+        state.generation = state.generation.wrapping_add(1);
+        state.lifecycle = ClientLifecycle::Running(engine);
+        Ok(())
     }
 
-    /// Clone the channel under a short lock. The receiver is shared; stop() can
-    /// close it while Python or Rust waits without this lock held.
-    fn sample_receiver(&self) -> Option<(kanal::Receiver<Option<Sample>>, u64)> {
+    /// Snapshot one engine generation; stale readers cannot stop a newer pass.
+    fn sample_receiver(&self) -> Result<Option<SampleReader>, DatagoError> {
         let mut state = self.state();
         if matches!(state.lifecycle, ClientLifecycle::Stopped) {
-            return None;
+            return Ok(None);
         }
         if matches!(state.lifecycle, ClientLifecycle::Idle) {
-            self.start_locked(&mut state);
+            self.start_locked(&mut state)?;
         }
-        match &state.lifecycle {
-            ClientLifecycle::Running(engine) => Some((engine.samples_rx.clone(), state.generation)),
-            ClientLifecycle::Idle | ClientLifecycle::Stopped => None,
-        }
+        Ok(match &state.lifecycle {
+            ClientLifecycle::Running(engine) => Some(SampleReader {
+                samples_rx: engine.samples_rx.clone(),
+                generation: state.generation,
+                control: engine.control.clone(),
+            }),
+            _ => None,
+        })
     }
 
     fn take_engine(&self) -> Option<DatagoEngine> {
@@ -284,47 +301,78 @@ impl DatagoClient {
             ClientLifecycle::Idle | ClientLifecycle::Stopped => None,
         };
         if let Some(engine) = &engine {
-            let _ = engine.samples_rx.close();
-            engine.metadata_rx.close();
-            engine.cancel.cancel();
+            engine.close();
         }
         engine
     }
 
-    /// Blocking sample read used by the Rust API and the CLI. Waits up to
-    /// [`TIMEOUT`] and joins the worker threads before returning `None`. Unlike
-    /// the Python binding it applies neither a stop grace period nor a background
-    /// reaper. After end-of-stream or [`stop`](Self::stop), call
-    /// [`start`](Self::start) to begin a new pass.
+    /// Compatibility read. Logs fatal errors and returns `None` on failure.
+    /// Prefer [`try_get_sample`](Self::try_get_sample) to distinguish failure from
+    /// exhaustion. Reads after exhaustion or stop do not restart the engine.
     pub fn get_sample(&self) -> Option<Sample> {
-        let (samples_rx, generation) = self.sample_receiver()?;
-        match receive_until::<std::convert::Infallible>(
-            &samples_rx,
-            Instant::now() + TIMEOUT,
-            |timeout| {
-                samples_rx
+        match self.try_get_sample() {
+            Ok(sample) => sample,
+            Err(error) => {
+                error!("{error}");
+                None
+            }
+        }
+    }
+
+    /// Return a sample, clean exhaustion/explicit stop, or a read/pipeline error.
+    /// Unreadable individual samples remain skippable. Fatal failure ends this
+    /// pass; call [`start`](Self::start) to explicitly begin another.
+    pub fn try_get_sample(&self) -> Result<Option<Sample>, DatagoError> {
+        self.try_get_sample_timeout(TIMEOUT)
+    }
+
+    /// As [`try_get_sample`](Self::try_get_sample), with a per-read timeout.
+    /// A timeout leaves the pass running, including at the default 300s deadline.
+    /// Retry the read to continue, or call [`stop`](Self::stop) to cancel the pass.
+    pub fn try_get_sample_timeout(&self, timeout: Duration) -> Result<Option<Sample>, DatagoError> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| DatagoError::Configuration("timeout is too large".into()))?;
+        let Some(reader) = self.sample_receiver()? else {
+            return Ok(None);
+        };
+        let result =
+            receive_until::<std::convert::Infallible>(&reader.samples_rx, deadline, |timeout| {
+                reader
+                    .samples_rx
                     .recv_timeout(timeout)
                     .map_err(|error| match error {
                         kanal::ReceiveErrorTimeout::Timeout => ReceiveFailure::Timeout,
                         _ => ReceiveFailure::Closed,
                     })
-            },
-        ) {
-            Ok(Some(sample)) => Some(sample),
-            Ok(None) | Err(ReceiveFailure::Timeout | ReceiveFailure::Closed) => {
-                if let Some(engine) = self.take_engine_for(generation) {
-                    join_engine(engine);
-                }
-                None
+            });
+        if reader.control.error().is_none() {
+            if let Ok(Some(sample)) = result {
+                return Ok(Some(sample));
             }
+            if matches!(result, Err(ReceiveFailure::Timeout)) {
+                return Err(DatagoError::Timeout);
+            }
+        }
+        let engine = self.take_engine_for(reader.generation);
+        if let Some(engine) = engine {
+            finish_engine(engine);
+        }
+        if let Some(error) = reader.control.error() {
+            return Err(error);
+        }
+        match result {
             Err(ReceiveFailure::Interrupted(never)) => match never {},
+            _ => Ok(None),
         }
     }
 
-    /// Read and convert using the signal-aware Python wait strategy, including
-    /// when called directly from Rust with an attached Python token.
-    fn get_sample_auto_convert(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let sample = match self.get_sample_python(py)? {
+    fn get_sample_auto_convert(
+        &self,
+        py: Python<'_>,
+        timeout: Duration,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        let sample = match self.get_sample_python(py, timeout)? {
             Some(sample) => sample,
             None => return Ok(None),
         };
@@ -340,39 +388,41 @@ impl DatagoClient {
         }
     }
 
-    fn get_sample_python(&self, py: Python<'_>) -> PyResult<Option<Sample>> {
-        let Some((samples_rx, generation)) = self.sample_receiver() else {
+    fn get_sample_python(&self, py: Python<'_>, timeout: Duration) -> PyResult<Option<Sample>> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("timeout is too large"))?;
+        let Some(reader) = self.sample_receiver()? else {
             return Ok(None);
         };
-        let result = receive_until::<PyErr>(&samples_rx, Instant::now() + TIMEOUT, |timeout| {
-            if let Err(error) = py.check_signals() {
-                return Err(ReceiveFailure::Interrupted(error));
-            }
-            py.detach(|| samples_rx.recv_timeout(timeout))
+        let result = receive_until::<PyErr>(&reader.samples_rx, deadline, |timeout| {
+            py.check_signals().map_err(ReceiveFailure::Interrupted)?;
+            py.detach(|| reader.samples_rx.recv_timeout(timeout))
                 .map_err(|error| match error {
                     kanal::ReceiveErrorTimeout::Timeout => ReceiveFailure::Timeout,
                     _ => ReceiveFailure::Closed,
                 })
         });
-        match result {
-            Ok(Some(sample)) => Ok(Some(sample)),
-            Ok(None) | Err(ReceiveFailure::Timeout | ReceiveFailure::Closed) => {
-                self.stop_python_for(py, generation);
-                Ok(None)
+        if reader.control.error().is_none() {
+            if let Ok(Some(sample)) = result {
+                return Ok(Some(sample));
             }
-            Err(ReceiveFailure::Interrupted(error)) => {
-                // Cancel and reap without calling back into Python: the error is
-                // already set, and stop_python_for never runs signal checks.
-                self.stop_python_for(py, generation);
-                Err(error)
+            if matches!(result, Err(ReceiveFailure::Timeout)) {
+                return Err(DatagoError::Timeout.into());
             }
         }
-    }
-
-    fn stop_python_for(&self, py: Python<'_>, generation: u64) {
-        if let Some(engine) = self.take_engine_for(generation) {
+        let engine = self.take_engine_for(reader.generation);
+        if let Some(engine) = engine {
             wait_or_reap_engine(py, engine);
         }
+        // Preserve Python interrupts even if a producer failed concurrently.
+        if let Err(ReceiveFailure::Interrupted(error)) = result {
+            return Err(error);
+        }
+        if let Some(error) = reader.control.error() {
+            return Err(error.into());
+        }
+        Ok(None)
     }
 
     fn stop_python(&self, py: Python<'_>) {
@@ -400,7 +450,6 @@ fn receive_until<E>(
             Ok(None) => return Ok(None),
             Err(ReceiveFailure::Timeout) if Instant::now() < deadline => continue,
             Err(ReceiveFailure::Timeout) => {
-                warn!("Timeout waiting for sample after {TIMEOUT:?}");
                 return Err(ReceiveFailure::Timeout);
             }
             Err(error) => return Err(error),
@@ -413,28 +462,47 @@ fn receive_until<E>(
 /// and joining so other Python threads keep running.
 fn wait_or_reap_engine(py: Python<'_>, engine: DatagoEngine) {
     py.detach(move || {
-        if wait_for_engine(&engine, STOP_GRACE_PERIOD) {
-            join_engine(engine);
-        } else {
-            reap_engine(engine, Duration::ZERO);
-        }
+        finish_engine(engine);
     });
 }
 
+fn python_timeout(timeout: Option<f64>) -> PyResult<Duration> {
+    match timeout {
+        None => Ok(TIMEOUT),
+        Some(seconds) => Duration::try_from_secs_f64(seconds).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("timeout must be finite and nonnegative")
+        }),
+    }
+}
+
+fn finish_engine(engine: DatagoEngine) {
+    if wait_for_engine(&engine, STOP_GRACE_PERIOD) {
+        join_engine(engine);
+    } else {
+        reap_engine(engine, Duration::ZERO);
+    }
+}
+
 fn wait_for_engine(engine: &DatagoEngine, grace_period: Duration) -> bool {
+    wait_until_finished(grace_period, || engine_finished(engine))
+}
+
+fn wait_until_finished(grace_period: Duration, finished: impl Fn() -> bool) -> bool {
     let deadline = Instant::now() + grace_period;
-    while !engine_finished(engine) && Instant::now() < deadline {
+    while !finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(2));
     }
-    engine_finished(engine)
+    finished()
 }
 
 fn join_engine(mut engine: DatagoEngine) {
-    for thread in [&mut engine.feeder, &mut engine.worker] {
-        if let Some(handle) = thread.take() {
-            if let Err(error) = handle.join() {
-                error!("Failed to join datago thread: {:?}", error);
-            }
+    join_threads([engine.feeder.take(), engine.worker.take()]);
+}
+
+fn join_threads(threads: [Option<std::thread::JoinHandle<()>>; 2]) {
+    for handle in threads.into_iter().flatten() {
+        if let Err(error) = handle.join() {
+            error!("Failed to join datago thread: {:?}", error);
         }
     }
 }
@@ -443,19 +511,31 @@ fn join_engine(mut engine: DatagoEngine) {
 /// for blocking IO that cannot be cancelled. Drop delegates its grace period
 /// here so it never sleeps while holding the GIL or calls into Python during
 /// interpreter shutdown.
-fn reap_engine(engine: DatagoEngine, grace_period: Duration) {
+fn reap_engine(mut engine: DatagoEngine, grace_period: Duration) {
+    reap_engine_threads([engine.feeder.take(), engine.worker.take()], grace_period);
+}
+
+pub(crate) fn reap_engine_threads(
+    threads: [Option<std::thread::JoinHandle<()>>; 2],
+    grace_period: Duration,
+) {
     LIVE_CLEANUP_THREADS.fetch_add(1, Ordering::SeqCst);
     let spawned = std::thread::Builder::new()
         .name("datago-cleanup".to_string())
         .spawn(move || {
-            if !wait_for_engine(&engine, grace_period) {
+            if !wait_until_finished(grace_period, || {
+                threads
+                    .iter()
+                    .flatten()
+                    .all(std::thread::JoinHandle::is_finished)
+            }) {
                 warn!(
                     "datago: native workers still busy after the stop grace period; joining them \
                      on a background cleanup thread (live cleanup threads: {})",
                     LIVE_CLEANUP_THREADS.load(Ordering::SeqCst)
                 );
             }
-            join_engine(engine);
+            join_threads(threads);
             LIVE_CLEANUP_THREADS.fetch_sub(1, Ordering::SeqCst);
         });
     if let Err(error) = spawned {
@@ -512,6 +592,8 @@ mod tests {
     use crate::client::{ClientLifecycle, DatagoClient};
 
     #[cfg(test)]
+    use crate::pipeline::PipelineControl;
+    #[cfg(test)]
     use crate::structs::DatagoEngine;
 
     #[cfg(test)]
@@ -538,9 +620,12 @@ mod tests {
             finished_tx.send(()).unwrap();
         });
         client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
+            control: PipelineControl::new(
+                samples_rx.clone(),
+                crate::structs::MetadataReceiver::Json(metadata_rx.clone()),
+                tokio_util::sync::CancellationToken::new(),
+            ),
             samples_rx,
-            metadata_rx: crate::structs::MetadataReceiver::Json(metadata_rx),
-            cancel: tokio_util::sync::CancellationToken::new(),
             feeder: None,
             worker: Some(worker),
         });
@@ -566,9 +651,12 @@ mod tests {
         {
             let mut state = client.state();
             state.lifecycle = ClientLifecycle::Running(DatagoEngine {
+                control: PipelineControl::new(
+                    samples_rx.clone(),
+                    crate::structs::MetadataReceiver::Json(metadata_rx.clone()),
+                    tokio_util::sync::CancellationToken::new(),
+                ),
                 samples_rx,
-                metadata_rx: crate::structs::MetadataReceiver::Json(metadata_rx),
-                cancel: tokio_util::sync::CancellationToken::new(),
                 feeder: None,
                 worker: None,
             });
@@ -1063,5 +1151,146 @@ mod tests {
 
         // Check that the two sets are completely different
         assert!(sample_set_1.intersection(&sample_set_2).count() == 0);
+    }
+}
+
+#[cfg(test)]
+mod error_contract_tests {
+    use super::*;
+    use crate::structs::MetadataReceiver;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    fn file_client(path: &std::path::Path) -> DatagoClient {
+        DatagoClient::new(
+            json!({
+                "source_type": "file", "source_config": {"root_path": path},
+                "limit": 10, "samples_buffer_size": 8,
+            })
+            .to_string(),
+        )
+    }
+
+    fn install_worker(
+        client: &DatagoClient,
+        work: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) {
+        let (samples_tx, samples_rx) = kanal::bounded(1);
+        let (_metadata_tx, metadata_rx) = kanal::bounded(1);
+        let metadata_rx = MetadataReceiver::Json(metadata_rx);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = PipelineControl::new(samples_rx.clone(), metadata_rx.clone(), cancel.clone());
+        let worker = Some(control.spawn_worker(samples_tx, work));
+        client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
+            control,
+            samples_rx,
+            feeder: None,
+            worker,
+        });
+    }
+
+    #[test]
+    fn exhaustion_and_bad_individual_images_are_not_failures() {
+        let directory = TempDir::new().unwrap();
+        std::fs::write(directory.path().join("bad.png"), b"corrupt").unwrap();
+        image::RgbImage::new(2, 2)
+            .save(directory.path().join("good.png"))
+            .unwrap();
+        let client = file_client(directory.path());
+        assert!(client.try_get_sample().unwrap().is_some());
+        assert!(client.try_get_sample().unwrap().is_none());
+        assert!(client.try_get_sample().unwrap().is_none());
+        let empty = TempDir::new().unwrap();
+        assert!(file_client(empty.path())
+            .try_get_sample()
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn source_failure_ends_one_generation_and_explicit_restart_recovers() {
+        let directory = TempDir::new().unwrap();
+        let missing = directory.path().join("missing");
+        let client = file_client(&missing);
+        assert!(matches!(
+            client.try_get_sample(),
+            Err(DatagoError::Source(_))
+        ));
+        assert!(client.try_get_sample().unwrap().is_none());
+        std::fs::create_dir(&missing).unwrap();
+        image::RgbImage::new(2, 2)
+            .save(missing.join("good.png"))
+            .unwrap();
+        client.start();
+        assert!(client.try_get_sample().unwrap().is_some());
+        assert!(client.try_get_sample().unwrap().is_none());
+    }
+
+    #[test]
+    fn compatibility_read_returns_none_on_failure() {
+        let directory = TempDir::new().unwrap();
+        assert!(file_client(&directory.path().join("missing"))
+            .get_sample()
+            .is_none());
+    }
+
+    #[test]
+    fn worker_panics_and_returned_errors_are_observable() {
+        for panic in [true, false] {
+            let client = DatagoClient::new("{}".into());
+            install_worker(&client, move || {
+                if panic {
+                    panic!("injected worker panic");
+                }
+                Err("injected worker error".into())
+            });
+            let error = client.try_get_sample().unwrap_err();
+            assert!(matches!(error, DatagoError::Worker(_)));
+            assert!(error.to_string().contains("injected worker"));
+            assert!(client.try_get_sample().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn read_timeout_preserves_the_generation_and_its_later_failure() {
+        let client = DatagoClient::new("{}".into());
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        install_worker(&client, move || {
+            release_rx.recv().unwrap();
+            Err("failure after a read timeout".into())
+        });
+        let generation = client.state().generation;
+        for timeout in [Duration::ZERO, Duration::from_millis(5)] {
+            assert_eq!(
+                client.try_get_sample_timeout(timeout).unwrap_err(),
+                DatagoError::Timeout
+            );
+            let state = client.state();
+            assert_eq!(state.generation, generation);
+            assert!(matches!(state.lifecycle, ClientLifecycle::Running(_)));
+        }
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            client.try_get_sample_timeout(Duration::from_secs(2)),
+            Err(DatagoError::Worker(message)) if message.contains("failure after a read timeout")
+        ));
+        assert!(client.try_get_sample().unwrap().is_none());
+    }
+
+    #[test]
+    fn explicit_stop_wakes_a_reader_without_an_error() {
+        let client = std::sync::Arc::new(DatagoClient::new("{}".into()));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        install_worker(&client, move || {
+            release_rx.recv().unwrap();
+            Ok(())
+        });
+        let reader = client.clone();
+        let reader = std::thread::spawn(move || reader.try_get_sample());
+        let stop_client = client.clone();
+        let stop = std::thread::spawn(move || stop_client.stop());
+        assert!(reader.join().unwrap().unwrap().is_none());
+        release_tx.send(()).unwrap();
+        stop.join().unwrap();
     }
 }

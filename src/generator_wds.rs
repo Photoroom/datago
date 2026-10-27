@@ -1,4 +1,5 @@
 use crate::client::DatagoClient;
+use crate::error::DatagoError;
 use crate::structs::{
     new_shared_client, BinaryFile, DatagoEngine, MetadataReceiver, SharedClient, TarballSample,
 };
@@ -11,7 +12,6 @@ use rand::seq::SliceRandom;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::thread;
 
 use bracoxide::explode;
 use futures::AsyncReadExt;
@@ -214,6 +214,7 @@ async fn pull_tarballs_task(
     config: SourceWebDatasetConfig,
 ) -> Result<(), String> {
     let mut attempt = 0;
+    let mut last_error = String::new();
 
     while attempt < retries {
         match pull_tarballs(
@@ -230,6 +231,7 @@ async fn pull_tarballs_task(
             Err(e) => {
                 attempt += 1;
                 debug!("Error pulling TarballSample: {e}. Attempt {attempt}/{retries}");
+                last_error = e;
                 if samples_metadata_tx.is_disconnected() {
                     debug!(
                         "dispatch_shards: samples_metadata_tx channel closed, stopping retries."
@@ -240,7 +242,7 @@ async fn pull_tarballs_task(
         }
     }
     Err(format!(
-        "Failed to pull TarballSample after {retries} attempts"
+        "Failed to pull TarballSample {url} after {retries} attempts: {last_error}"
     ))
 }
 
@@ -258,15 +260,14 @@ async fn get_url_list(
         // for instance https://storage.googleapis.com/webdataset/testdata/publaynet-train-000000.tar
 
         // Extract the pattern within curly braces
-        let urls = explode(&config.url).unwrap_or_default();
+        let urls =
+            explode(&config.url).map_err(|error| format!("invalid shard pattern: {error}"))?;
 
         Ok(urls
             .iter()
             .map(|url| serde_json::Value::String(url.clone()))
             .collect())
     } else {
-        assert!(config.url.contains("https://storage.googleapis.com/"));
-
         // Given the url, list all the available webdataset files
         let request = reqwest::Request::new(
             reqwest::Method::GET,
@@ -277,27 +278,33 @@ async fn get_url_list(
             .client
             .execute(request)
             .await
-            .map_err(|e| format!("Failed parsing reply: {e}"))?;
+            .map_err(|e| format!("Failed parsing reply: {e}"))?
+            .error_for_status()
+            .map_err(|e| e.to_string())?;
 
         let response_text = response
             .text()
             .await
             .map_err(|e| format!("Failed parsing reply: {e}"))?;
-        let response_json: serde_json::Value =
-            serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
+        let response_json: serde_json::Value = serde_json::from_str(&response_text)
+            .map_err(|error| format!("invalid shard listing: {error}"))?;
 
         // Parse all the "items" in the response
         if let Some(items) = response_json.get("items") {
             Ok(items
                 .as_array()
-                .unwrap()
+                .ok_or("shard listing items must be an array")?
                 .iter()
                 .filter_map(|item| item.get("mediaLink").cloned())
                 .collect())
+        } else if response_json
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("storage#objects")
+        {
+            Ok(Vec::new()) // GCS omits items for an empty listing.
         } else {
-            // If the response is empty, return an empty vector
-            warn!("dispatch_shards: no items found in the response");
-            Err("dispatch_shards: no items found in the response".into())
+            Err("shard listing must contain an items array".into())
         }
     }
 }
@@ -319,7 +326,6 @@ async fn tasks_from_shards(
             let mut tasks = tokio::task::JoinSet::new();
             let response_json = serde_json::Value::Null;
             let mut count = 0;
-            let mut join_error: Option<String> = None;
 
             info!("WDS: Using {} download tasks", config.concurrent_downloads);
 
@@ -346,7 +352,7 @@ async fn tasks_from_shards(
                 if tasks.len() >= config.concurrent_downloads {
                     match tasks.join_next().await {
                         Some(res) => {
-                            match res.unwrap() {
+                            match res.map_err(|error| format!("shard task failed: {error}"))? {
                                 Ok(_) => {
                                     debug!("dispatch_shards: task completed successfully");
                                     count += 1;
@@ -354,8 +360,7 @@ async fn tasks_from_shards(
                                 Err(e) => {
                                     // Logging as debug, could be that channels are closed
                                     debug!("dispatch_shards: task returned error: {e:?}");
-                                    join_error = Some(e);
-                                    break;
+                                    return Err(e);
                                 }
                             }
                         }
@@ -371,25 +376,16 @@ async fn tasks_from_shards(
 
             // Consume all the remaining tasks
             while let Some(result) = tasks.join_next().await {
-                match result.unwrap() {
+                match result.map_err(|error| format!("shard task failed: {error}"))? {
                     Ok(_) => {
                         debug!("dispatch_shards: task completed successfully");
                         count += 1;
                     }
                     Err(e) => {
                         debug!("dispatch_shards: task returned error: {e}");
-                        // Note that we only keep the first error, which is probably the most relevant
-                        if join_error.is_none() {
-                            join_error = Some(e);
-                        }
+                        return Err(e);
                     }
                 }
-            }
-
-            if let Some(error) = join_error {
-                // If we had an error, we log it and return an error
-                warn!("dispatch_shards: one of the tasks failed: {error:?}");
-                return Err(error.to_string());
             }
 
             // Bookkeeping and report
@@ -420,7 +416,7 @@ fn query_shards_and_dispatch(
     samples_metadata_tx: kanal::Sender<TarballSample>,
     source_config: SourceWebDatasetConfig,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     // List all the shards from the bucket
     // for each of them, start an async task to download the TarballSample and unpack it in memory
     // Then, for each sample in the tarball (multiple payloads typically), send it to the processing channel
@@ -441,34 +437,37 @@ fn query_shards_and_dispatch(
         .block_on(async {
             tokio::select! {
                 biased;
-                _ = cancel.cancelled() => {}
+                _ = cancel.cancelled() => Ok(()),
                 result = tasks_from_shards(
                     shared_client.clone(),
                     samples_metadata_tx,
                     &source_config,
                     max_retries,
                 ) => {
-                    match result {
-                        Ok(_) => debug!("query_shards_and_dispatch: finished processing all shards"),
-                        Err(error) => debug!("query_shards_and_dispatch: ended with : {error:?}"),
-                    }
+                    result.map(|_| ())
                 }
             }
-        });
+        })
 }
 
 // ---- Global orchestration ---------
-pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
+    let mut source_config: SourceWebDatasetConfig =
+        serde_json::from_value(client.source_config.clone())
+            .map_err(|error| DatagoError::Configuration(format!("WebDataset source: {error}")))?;
     // Allocate all the message passing pipes
     let metadata_buffer_size = std::cmp::max(128, client.samples_buffer * 2);
     let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(metadata_buffer_size);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
+    let cancel = CancellationToken::new();
+    let control = crate::pipeline::PipelineControl::new(
+        samples_rx.clone(),
+        MetadataReceiver::Tarball(samples_metadata_rx.clone()),
+        cancel.clone(),
+    );
 
     info!("Using webdataset as source");
 
-    // Convert the source_config to a SourceWebDatasetConfig
-    let mut source_config: SourceWebDatasetConfig =
-        serde_json::from_value(client.source_config.clone()).unwrap();
     let extension_reference_image_type: String = source_config.reference_image_type.clone();
 
     if source_config.concurrent_downloads == 0 {
@@ -478,16 +477,15 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     // List the contents of the bucket and feed the workers
     let http_client = Arc::new(new_shared_client(client.max_connections));
-    let cancel = CancellationToken::new();
     let cancel_feeder = cancel.clone();
 
-    let feeder = Some(thread::spawn(move || {
+    let feeder = Some(control.spawn_feeder(samples_metadata_tx.clone(), move || {
         query_shards_and_dispatch(
             http_client,
             samples_metadata_tx,
             source_config,
             cancel_feeder,
-        );
+        )
     }));
 
     // Kick the workers which deserialize all the payloads
@@ -502,7 +500,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let samples_tx_worker = samples_tx.clone();
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
     let cancel_worker = cancel.clone();
-    let worker = Some(thread::spawn(move || {
+    let worker = Some(control.spawn_worker(samples_tx.clone(), move || {
         worker_wds::deserialize_samples(
             samples_metadata_rx_worker,
             samples_tx_worker,
@@ -511,218 +509,252 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             limit,
             extension_reference_image_type,
             cancel_worker,
-        );
+        )
     }));
 
-    DatagoEngine {
+    Ok(DatagoEngine {
+        control,
         samples_rx,
-        metadata_rx: MetadataReceiver::Tarball(samples_metadata_rx),
-        cancel,
         feeder,
         worker,
-    }
+    })
 }
 
 // -------- Unit tests --------
 
+#[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
+    use crate::structs::Sample;
+    use serde_json::json;
+    use std::collections::HashSet;
+    use std::io::Cursor;
+    use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const SAMPLE_COUNT: usize = 16;
+    const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn shard(start: usize, end: usize) -> Vec<u8> {
+        let mut jpeg = Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(4, 3, image::Rgb([11, 22, 33]))
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let mut archive = tar::Builder::new(Vec::new());
+        for id in start..end {
+            for (extension, bytes) in [("jpg", jpeg.get_ref().as_slice()), ("cls", b"1".as_slice())]
+            {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                archive
+                    .append_data(&mut header, format!("{id:04}.{extension}"), bytes)
+                    .unwrap();
+            }
+        }
+        archive.into_inner().unwrap()
+    }
+
+    async fn fixture(fail_second_shard: bool) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/listing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [
+                    {"mediaLink": format!("{}/first.tar", server.uri())},
+                    {"mediaLink": format!("{}/second.tar", server.uri())},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/first.tar"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(shard(0, SAMPLE_COUNT / 2)))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/second.tar"))
+            .respond_with(if fail_second_shard {
+                ResponseTemplate::new(404)
+            } else {
+                ResponseTemplate::new(200).set_body_bytes(shard(SAMPLE_COUNT / 2, SAMPLE_COUNT))
+            })
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn client(url: String, random_sampling: bool, rank: usize, world_size: usize) -> DatagoClient {
+        DatagoClient::new(
+            json!({
+                "source_type": "webdataset",
+                "source_config": {
+                    "url": url, "random_sampling": random_sampling,
+                    "concurrent_downloads": 2, "rank": rank, "world_size": world_size,
+                },
+                // Consume the finite fixture through EOS, not an early-limit exit.
+                "limit": SAMPLE_COUNT * 2, "samples_buffer_size": 1,
+            })
+            .to_string(),
+        )
+    }
+
+    fn collect(client: &DatagoClient) -> Vec<Sample> {
+        let mut samples = Vec::new();
+        while let Some(sample) = client
+            .try_get_sample_timeout(READ_TIMEOUT)
+            .expect("WebDataset fixture pipeline failed")
+        {
+            let payload = sample.image.get_payload();
+            assert_eq!(
+                (
+                    payload.width,
+                    payload.height,
+                    payload.channels,
+                    payload.bit_depth
+                ),
+                (4, 3, 3, 8)
+            );
+            assert!(!payload.data.is_empty());
+            samples.push(sample);
+            assert!(
+                samples.len() <= SAMPLE_COUNT,
+                "fixture delivered duplicate samples"
+            );
+        }
+        samples
+    }
+
+    fn ids(samples: &[Sample]) -> HashSet<String> {
+        let ids: HashSet<_> = samples.iter().map(|sample| sample.id.clone()).collect();
+        assert_eq!(ids.len(), samples.len(), "duplicate sample IDs");
+        ids
+    }
 
     #[test]
     fn test_urls_from_pattern() {
-        let url = "https://storage.googleapis.com/webdataset/testdata/publaynet-train-{000000..000009}.tar";
-        let urls = explode(url).unwrap();
-        print!("URLs: {:?}", urls.clone());
+        let urls = explode("https://example.com/train-{000000..000009}.tar").unwrap();
         assert_eq!(urls.len(), 10);
-        assert_eq!(
-            urls[0],
-            "https://storage.googleapis.com/webdataset/testdata/publaynet-train-000000.tar"
-        );
-        assert_eq!(
-            urls[9],
-            "https://storage.googleapis.com/webdataset/testdata/publaynet-train-000009.tar"
-        );
+        assert_eq!(urls[0], "https://example.com/train-000000.tar");
+        assert_eq!(urls[9], "https://example.com/train-000009.tar");
     }
 
-    #[test]
-    fn test_webdataset_dispatch() {
-        let random_sampling = [false, true];
-
-        for s in random_sampling {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webdataset_dispatch() {
+        let server = fixture(false).await;
+        for random_sampling in [false, true] {
             let config = SourceWebDatasetConfig {
-                url:
-                    "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/"
-                        .into(),
-                auth_token: "".into(),
+                url: format!("{}/listing", server.uri()),
                 reference_image_type: "jpg".into(),
-                random_sampling: s,
+                random_sampling,
                 concurrent_downloads: 2,
                 rank: 0,
                 world_size: 1,
+                auth_token: String::new(),
             };
-
-            // Query the bucket, pull the workload
-            let http_client = Arc::new(new_shared_client(2));
-            let (samples_meta_tx, samples_meta_rx) = bounded::<TarballSample>(2);
-
-            let mut count = 0;
-            let limit = 2;
-            let feeder = thread::spawn(move || {
-                query_shards_and_dispatch(
-                    http_client,
-                    samples_meta_tx,
-                    config,
-                    CancellationToken::new(),
-                );
+            let http = Arc::new(new_shared_client(2));
+            let (sender, receiver) = bounded(2);
+            let cancel = CancellationToken::new();
+            let feeder_cancel = cancel.clone();
+            let feeder = std::thread::spawn(move || {
+                query_shards_and_dispatch(http, sender, config, feeder_cancel)
             });
-
-            while count < limit {
-                if let Ok(sample) = samples_meta_rx.recv() {
-                    count += 1;
-
-                    // Check that we got something
-                    assert!(!sample.is_empty(), "Sample is empty");
-                    for s in sample.iter() {
-                        assert!(!s.filename.is_empty(), "Filename is empty");
-                        assert!(!s.buffer.is_empty(), "Buffer is empty");
-                    }
-                } else {
-                    debug!("No more items to receive");
-                    break;
-                }
-            }
-
-            debug!("Received {count} items");
-            let _ = samples_meta_rx.close();
-            feeder.join().expect("Feeder thread panicked");
-
-            assert!(count >= limit, "Not enough items found in the bucket");
-        }
-    }
-
-    #[cfg(test)]
-    use crate::structs::Sample;
-
-    #[cfg(test)]
-    use serde_json::json;
-    #[test]
-    fn test_webdataset_orchestrate() {
-        fn get_samples(do_random_sampling: bool, n_samples: usize) -> Vec<Sample> {
-            let client_config = json!({
-                "source_config": {
-                    "url": "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/",
-                    "random_sampling": do_random_sampling,
-                    "concurrent_downloads": 2
-                },
-                "limit": n_samples,
-                "num_threads": 1,
-                "max_connections": 1,
-                "samples_buffer_size": 1
-            });
-
-            let client = DatagoClient::new(client_config.to_string());
-            let engine = orchestrate(&client);
-            let mut count = 0;
-            let limit: i32 = 2;
-
-            let mut samples = Vec::new();
-
-            while let Ok(sample) = engine.samples_rx.recv() {
-                assert!(sample.is_some(), "Sample is None");
-                let sample = sample.unwrap();
-                let payload = sample.image.get_payload();
-                assert!(!payload.data.is_empty(), "Image data is empty");
-                assert!(payload.original_height > 0, "Original height is 0");
-                assert!(payload.original_width > 0, "Original width is 0");
-                assert!(payload.height > 0, "Height is 0");
-                assert!(payload.width > 0, "Width is 0");
-                assert!(payload.channels > 0, "Channels is 0");
-                assert!(payload.bit_depth > 0, "Bit depth is 0");
-                count += 1;
-                samples.push(sample);
-                if count >= limit {
-                    break;
-                }
-            }
-            info!("Received {count} items");
-            assert!(count >= limit, "Not enough items found in the bucket");
-            client.stop();
-
-            samples
-        }
-
-        let random_sampling = [false, true];
-        for s in random_sampling {
-            let samples_1 = get_samples(s, 10);
-            let samples_2 = get_samples(s, 10);
-            assert_eq!(samples_1.len(), samples_2.len(), "Samples length mismatch");
-
-            if s {
-                let sample_ids_1 = samples_1.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-                let sample_ids_2 = samples_2.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-                assert_ne!(
-                    sample_ids_1, sample_ids_2,
-                    "Samples should not be in the same order"
-                );
+            let received = (0..SAMPLE_COUNT)
+                .map(|_| receiver.recv_timeout(READ_TIMEOUT))
+                .collect::<Result<Vec<_>, _>>();
+            let end = received
+                .as_ref()
+                .ok()
+                .map(|_| receiver.recv_timeout(READ_TIMEOUT));
+            // Always shut down and join before asserting, including on failure.
+            cancel.cancel();
+            receiver.close().unwrap();
+            feeder.join().unwrap().expect("fixture feeder failed");
+            assert!(end
+                .expect("fixture metadata read failed")
+                .unwrap()
+                .is_empty());
+            for sample in received.expect("fixture feeder did not deliver metadata") {
+                assert_eq!(sample.content.len(), 2);
+                assert!(sample.iter().all(|file| !file.buffer.is_empty()));
             }
         }
     }
 
-    #[test]
-    fn test_webdataset_ranks() {
-        fn get_samples(rank: usize, world_size: usize, n_samples: usize) -> Vec<Sample> {
-            let client_config = json!({
-                "source_config": {
-                    "url": "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/",
-                    "random_sampling": false,
-                    "concurrent_downloads": 2,
-                    "rank": rank,
-                    "world_size": world_size,
-                },
-                "limit": n_samples,
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webdataset_orchestrate() {
+        let server = fixture(false).await;
+        let expected: HashSet<_> = (0..SAMPLE_COUNT).map(|id| format!("{id:04}")).collect();
+        for random_sampling in [false, true] {
+            for _ in 0..2 {
+                let client = client(format!("{}/listing", server.uri()), random_sampling, 0, 1);
+                let samples = collect(&client);
+                assert_eq!(ids(&samples), expected);
+            }
+        }
+        // Random sampling and concurrent decoding need not produce different
+        // orders on every run. The contract is complete, unique delivery.
+    }
 
-                "num_threads": 1,
-                "max_connections": 1,
-                "samples_buffer_size": 1
-            });
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webdataset_ranks() {
+        let server = fixture(false).await;
+        let mut all_ids = HashSet::new();
+        for rank in 0..2 {
+            let client = client(format!("{}/listing", server.uri()), false, rank, 2);
+            let samples = collect(&client);
+            let actual = ids(&samples);
+            let expected: HashSet<_> = (0..SAMPLE_COUNT)
+                .map(|id| format!("{id:04}"))
+                .filter(|id| hash_fn(id) % 2 == rank as u64)
+                .collect();
+            assert_eq!(actual, expected);
+            assert!(all_ids.is_disjoint(&actual));
+            all_ids.extend(actual);
+        }
+        assert_eq!(all_ids.len(), SAMPLE_COUNT);
+    }
 
-            let client = DatagoClient::new(client_config.to_string());
-            let engine = orchestrate(&client);
-            let mut count = 0;
-
-            let mut samples = Vec::new();
-
-            while let Ok(sample) = engine.samples_rx.recv() {
-                assert!(sample.is_some(), "Sample is None");
-
-                count += 1;
-                samples.push(sample.unwrap());
-                if count >= n_samples {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_shard_is_reported_as_source_failure_not_exhaustion() {
+        let server = fixture(true).await;
+        let client = client(format!("{}/listing", server.uri()), false, 0, 1);
+        loop {
+            match client.try_get_sample_timeout(READ_TIMEOUT) {
+                Ok(Some(_)) => {} // A successful shard may publish first.
+                Err(DatagoError::Source(message)) => {
+                    assert!(
+                        message.contains("404"),
+                        "missing HTTP failure context: {message}"
+                    );
                     break;
                 }
+                other => panic!("expected a shard failure, got {other:?}"),
             }
-            info!("Received {count} items");
-            client.stop();
-
-            samples
         }
+        assert!(client.try_get_sample().unwrap().is_none());
+    }
 
-        let samples_1 = get_samples(0, 2, 20);
-        let samples_2 = get_samples(1, 2, 20);
-        assert_eq!(samples_1.len(), samples_2.len(), "Samples length mismatch");
-
-        // Check that the samples are all different, as per a set
-        let sample_ids_1 = samples_1.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-        let sample_ids_2 = samples_2.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-        let mut all_samples = sample_ids_1.clone();
-        all_samples.extend(sample_ids_2.clone());
-        all_samples.sort();
-        all_samples.dedup();
-        assert_eq!(
-            all_samples.len(),
-            sample_ids_1.len() + sample_ids_2.len(),
-            "Samples should all be different"
-        );
+    #[test]
+    #[ignore = "opt-in smoke test against the external GCS dataset"]
+    fn public_bucket_smoke() {
+        for random_sampling in [false, true] {
+            let client = client(
+                "https://storage.googleapis.com/storage/v1/b/webdataset/o?prefix=fake-imagenet/"
+                    .into(),
+                random_sampling,
+                0,
+                1,
+            );
+            for _ in 0..2 {
+                assert!(client
+                    .try_get_sample_timeout(Duration::from_secs(30))
+                    .expect("public GCS pipeline failed")
+                    .is_some());
+            }
+            client.stop();
+        }
     }
 }

@@ -9,6 +9,19 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
+
+/// A malformed image may panic inside a decoder. Treat it as an unreadable
+/// image, without hiding panics in the surrounding worker or transformation code.
+pub(crate) fn decode_image(
+    decode: impl FnOnce() -> image::ImageResult<image::DynamicImage> + std::panic::UnwindSafe,
+) -> image::ImageResult<image::DynamicImage> {
+    std::panic::catch_unwind(decode).unwrap_or_else(|panic| {
+        Err(image::ImageError::IoError(std::io::Error::other(format!(
+            "decoder panicked: {}",
+            crate::error::panic_message(panic)
+        ))))
+    })
+}
 // --- Sample data structures - these will be exposed to the Python world ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const DEFAULT_JPEG_QUALITY: u8 = 92;

@@ -52,6 +52,63 @@ the GIL; queued samples still use the fast path without releasing it.
 `live_cleanup_threads()` counts cleanup reapers, not all native threads or
 blocking-pool tasks that outlive runtime shutdown.
 
+### Read results and errors
+
+| Outcome | Rust (`try_get_sample`) | Python (`get_sample` / `get_sample_auto_convert`) |
+|---|---|---|
+| Sample available | `Ok(Some(sample))` | Return the sample |
+| Normal exhaustion or explicit stop | `Ok(None)` | Return `None` |
+| Fatal source or worker failure | `Err(DatagoError::Source(_))` / `Err(DatagoError::Worker(_))` | Raise `RuntimeError` |
+| Read timeout | `Err(DatagoError::Timeout)` | Raise `TimeoutError` |
+| Invalid configuration or timeout argument | `Err(DatagoError::Configuration(_))` | Raise `ValueError` |
+
+Unreadable individual images (including decoder panics) and unreadable nested
+directories are logged and skipped. An unreadable filesystem root, failed
+metadata request/parse, or worker failure ends the pass with an error.
+WDS listing errors and shard download/unpacking errors after retries are fatal:
+Datago does not silently skip a missing or corrupt shard and drop its samples.
+A fatal failure cancels outstanding work and discards queued samples. Concurrent
+stop and failure use the first recorded terminal outcome. After a fatal
+source/worker error, subsequent reads return `None`; call `start()` explicitly to
+begin a new pass. Errors belong to their engine generation and cannot stop a
+restarted pass.
+
+Python reads accept a keyword-only `timeout` in seconds (default: 300). Rust callers
+can use `try_get_sample_timeout(Duration)` for a per-read timeout. A timeout only
+ends that read, including at the default 300-second deadline: retry to keep
+reading the same pass, or call `stop()` to cancel it. Zero returns a ready sample
+or raises `TimeoutError` immediately if the queue is empty and still open; an
+exhausted or stopped stream returns `None`. Cleanup gets a short grace period;
+stalled native operations may finish under a background reaper. Python
+`KeyboardInterrupt` remains an interrupt rather than a pipeline error.
+
+```python
+try:
+    while (sample := client.get_sample(timeout=30.0)) is not None:
+        process(sample)
+finally:
+    client.stop()
+```
+
+The existing Rust `get_sample()` remains a compatibility wrapper: it logs failures
+and returns `None`. Use `try_get_sample()` when failure must be distinguished from
+normal exhaustion. Python propagates failures through its existing read methods.
+
+### Release notes: 2026.10.2
+
+- **Breaking change:** Python `get_sample()` and `get_sample_auto_convert()` now
+  raise `RuntimeError` for fatal source/worker failures instead of returning
+  `None`. This includes DB outages and WDS shard failures after retries.
+- Python `start()` and reads raise `ValueError` for invalid client/source
+  configuration; invalid read timeouts also raise `ValueError`.
+- Reads raise `TimeoutError` on their deadline (300 seconds by default). The pass
+  stays active: retry the read to continue, or call `stop()` to cancel it.
+- Rust callers can use `try_get_sample()` / `try_get_sample_timeout()` for typed
+  errors. The legacy Rust `get_sample()` still logs errors and returns `None`.
+- Low-level Rust source `orchestrate()` functions now return
+  `Result<DatagoEngine, DatagoError>`. Use `engine.close()` or drop the engine to
+  cancel it; its metadata queue and cancellation token are now internal.
+
 ### Release notes: 2026.10.1
 
 - **Breaking change:** reads after end-of-stream or `stop()` return `None` rather

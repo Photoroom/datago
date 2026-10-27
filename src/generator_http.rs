@@ -1,6 +1,7 @@
 use crate::client::DatagoClient;
+use crate::error::DatagoError;
 use crate::worker_http;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
@@ -11,7 +12,6 @@ use std::sync::Arc;
 use crate::structs::{new_shared_client, DatagoEngine, MetadataReceiver, SharedClient};
 use kanal::bounded;
 use kanal::Sender;
-use std::thread;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,22 +335,21 @@ fn build_request(source_config: SourceDBConfig) -> DbRequest {
 async fn get_response(
     shared_client: Arc<SharedClient>,
     request: &reqwest::Request,
-) -> Result<serde_json::Value, reqwest_middleware::Error> {
-    let _permit = shared_client.semaphore.acquire().await;
-
-    match shared_client
+) -> Result<serde_json::Value, String> {
+    let _permit = shared_client
+        .semaphore
+        .acquire()
+        .await
+        .map_err(|error| error.to_string())?;
+    let response = shared_client
         .client
         .execute(request.try_clone().unwrap())
         .await
-    {
-        Ok(response) => match response.text().await {
-            Ok(response_text) => {
-                Ok(serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null))
-            }
-            Err(e) => Err(reqwest_middleware::Error::from(e)),
-        },
-        Err(e) => Err(e),
-    }
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    let text = response.text().await.map_err(|error| error.to_string())?;
+    serde_json::from_str(&text).map_err(|error| format!("invalid metadata JSON: {error}"))
 }
 
 async fn async_pull_and_dispatch_pages(
@@ -358,114 +357,50 @@ async fn async_pull_and_dispatch_pages(
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
     limit: usize,
-) {
-    let api_url = std::env::var("DATAROOM_API_URL").expect("DATAROOM_API_URL not set");
-    let api_key = std::env::var("DATAROOM_API_KEY").expect("DATAROOM_API_KEY not set");
+) -> Result<(), String> {
+    let api_url = std::env::var("DATAROOM_API_URL").map_err(|_| "DATAROOM_API_URL not set")?;
+    let api_key = std::env::var("DATAROOM_API_KEY").map_err(|_| "DATAROOM_API_KEY not set")?;
     let mut headers = HeaderMap::new();
     headers.insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&format!("Token {api_key}")).unwrap(),
+        HeaderValue::from_str(&format!("Token {api_key}")).map_err(|error| error.to_string())?,
     );
-
-    let db_request = build_request(source_config.clone());
-
-    // Send the request and dispatch the response to the channel
-    let mut response_json: serde_json::Value;
-    let mut next_url = &serde_json::Value::Null;
-
-    let initial_request = db_request.get_http_request(&api_url, &api_key).await;
-
-    match get_response(shared_client.clone(), &initial_request).await {
-        Ok(tentative_json) => {
-            response_json = tentative_json.clone();
-            if let Some(next) = response_json.get("next") {
-                next_url = next;
-            } else {
-                debug!("No next URL in the response {response_json:?}");
-            }
-        }
-        Err(e) => {
-            error!(
-                "Failed fetching the first page: {}\nURL: {}",
-                e,
-                initial_request.url()
-            );
-            return;
-        }
-    }
-
-    // Walk the pages and send them to the channel
+    let mut request = build_request(source_config)
+        .get_http_request(&api_url, &api_key)
+        .await;
     let mut count = 0;
     let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
-    'outer: while count < max_submitted_samples {
-        match response_json.get("results") {
-            Some(results) => {
-                // Go over the samples from the current page
-                for sample in results.as_array().unwrap() {
-                    let sample_json = serde_json::from_value(sample.clone()).unwrap();
-
-                    // Push the sample to the channel
-                    if samples_metadata_tx.send(sample_json).is_err() {
-                        break 'outer;
-                    }
-
-                    count += 1;
-
-                    if count >= max_submitted_samples {
-                        // NOTE: This doesn´t count the samples which have actually been processed
-                        debug!(
-                            "dispatch_pages: reached the limit of samples requested. Shutting down"
-                        );
-                        break 'outer;
-                    }
-                }
+    'pages: while count < max_submitted_samples {
+        let response = get_response(shared_client.clone(), &request).await?;
+        let results = response
+            .get("results")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("metadata page must contain a results array")?;
+        for sample in results {
+            if samples_metadata_tx.send(sample.clone()).is_err() {
+                return Ok(());
             }
-            None => {
-                debug!("No results in the response: {response_json:?}");
+            count += 1;
+            if count >= max_submitted_samples {
+                break 'pages;
             }
         }
-
-        // Ask for the next page
-        if next_url == &serde_json::Value::Null {
-            debug!("No more pages, exiting");
-            break;
-        }
-        let mut new_request = reqwest::Request::new(
-            reqwest::Method::GET,
-            reqwest::Url::parse(next_url.as_str().unwrap()).unwrap(),
-        );
-        new_request.headers_mut().extend(headers.clone());
-
-        next_url = &serde_json::Value::Null;
-        match get_response(shared_client.clone(), &new_request).await {
-            Ok(tentative_json) => {
-                response_json = tentative_json.clone();
-                next_url = response_json
-                    .get("next")
-                    .unwrap_or(&serde_json::Value::Null);
-            }
-            Err(e) => {
-                error!(
-                    "Failed fetching a new page: {}\nURL: {}",
-                    e,
-                    new_request.url()
+        match response.get("next") {
+            None | Some(serde_json::Value::Null) => break,
+            Some(next) => {
+                let url = next
+                    .as_str()
+                    .ok_or("metadata next URL must be a string or null")?;
+                request = reqwest::Request::new(
+                    reqwest::Method::GET,
+                    reqwest::Url::parse(url).map_err(|error| error.to_string())?,
                 );
+                request.headers_mut().extend(headers.clone());
             }
         }
     }
-
-    // Either we don't have any more samples or we have reached the limit
-    debug!(
-        "pull_and_dispatch_pages: total samples requested: {limit}. page samples served {count}"
-    );
-
-    // Send an empty value to signal the end of the stream
-    match samples_metadata_tx.send(serde_json::Value::Null) {
-        Ok(_) => {}
-        Err(_) => {
-            debug!("pull_and_dispatch_pages: stream already closed, all good");
-        }
-    }
+    let _ = samples_metadata_tx.send(serde_json::Value::Null);
+    Ok(())
 }
 
 pub fn pull_and_dispatch_pages(
@@ -474,7 +409,7 @@ pub fn pull_and_dispatch_pages(
     source_config: SourceDBConfig,
     limit: usize,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -482,23 +417,20 @@ pub fn pull_and_dispatch_pages(
         .block_on(async {
             tokio::select! {
                 biased;
-                _ = cancel.cancelled() => {}
-                _ = async_pull_and_dispatch_pages(
+                _ = cancel.cancelled() => Ok(()),
+                result = async_pull_and_dispatch_pages(
                     shared_client,
                     samples_metadata_tx.clone(),
                     source_config,
                     limit,
-                ) => {}
+                ) => result
             }
-        });
-
-    // Send an empty value to signal the end of the stream
-    if samples_metadata_tx.send(serde_json::Value::Null).is_err() {
-        debug!("pull_and_dispatch_pages: stream already closed, all good");
-    };
+        })
 }
 
-pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
+    let source_db_config: SourceDBConfig = serde_json::from_value(client.source_config.clone())
+        .map_err(|error| DatagoError::Configuration(format!("DB source: {error}")))?;
     // Start pulling the samples, which spread across two steps. The samples will land in the last kanal,
     // all the threads pausing when the required buffer depth is reached.
 
@@ -511,27 +443,28 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     // Allocate all the message passing pipes
     let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
     let (samples_tx, samples_rx) = bounded(client.samples_buffer);
-
-    // Convert the source_config to a SourceDBConfig
-    let source_db_config: SourceDBConfig =
-        serde_json::from_value(client.source_config.clone()).unwrap();
+    let cancel = CancellationToken::new();
+    let control = crate::pipeline::PipelineControl::new(
+        samples_rx.clone(),
+        MetadataReceiver::Json(samples_metadata_rx.clone()),
+        cancel.clone(),
+    );
 
     info!("Using DB as source");
     let limit = client.limit;
     let source_config = source_db_config.clone();
     let shared_client = http_client.clone();
-    let cancel = CancellationToken::new();
     let cancel_feeder = cancel.clone();
 
     // Spawn a thread which will ping the DB
-    let feeder = Some(thread::spawn(move || {
+    let feeder = Some(control.spawn_feeder(samples_metadata_tx.clone(), move || {
         pull_and_dispatch_pages(
             &shared_client,
             samples_metadata_tx,
             source_config,
             limit,
             cancel_feeder,
-        );
+        )
     }));
 
     // Spawn a thread which will handle the async workers
@@ -547,7 +480,7 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
     let samples_metadata_rx_worker = samples_metadata_rx.clone();
     let cancel_worker = cancel.clone();
 
-    let worker = Some(thread::spawn(move || {
+    let worker = Some(control.spawn_worker(samples_tx.clone(), move || {
         worker_http::pull_samples(
             &http_client,
             samples_metadata_rx_worker,
@@ -556,16 +489,15 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
             encoding,
             limit,
             cancel_worker,
-        );
+        )
     }));
 
-    DatagoEngine {
+    Ok(DatagoEngine {
+        control,
         samples_rx,
-        metadata_rx: MetadataReceiver::Json(samples_metadata_rx),
-        cancel,
         feeder,
         worker,
-    }
+    })
 }
 
 #[cfg(test)]

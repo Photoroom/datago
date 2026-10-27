@@ -11,16 +11,23 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
     // The image decoder and std file reads are blocking. Keep them off Tokio's
     // async worker threads so cancellation/channel handling can still progress.
     let path = path.to_owned();
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let file = std::fs::File::open(path)
             .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?;
         let reader = std::io::BufReader::new(file);
-        image::ImageReader::new(reader)
-            .with_guessed_format()?
-            .decode()
+        image_processing::decode_image(|| {
+            image::ImageReader::new(reader)
+                .with_guessed_format()?
+                .decode()
+        })
     })
-    .await
-    .map_err(|error| image::ImageError::IoError(std::io::Error::other(error)))?
+    .await;
+    match result {
+        Ok(result) => result,
+        // Decoding panics are contained above; unexpected task panics remain fatal.
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => Err(image::ImageError::IoError(std::io::Error::other(error))),
+    }
 }
 
 async fn image_payload_from_path(
@@ -85,13 +92,14 @@ async fn async_pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     // We use async-await here, to better use IO stalls
     // We'll issue N async tasks in parallel, and wait for them to finish
     // Number of CPUs is a good heuristic for a small machine; DATAGO_MAX_TASKS overrides it.
     let max_tasks = min(max_tasks_from_env(num_cpus::get()), limit);
     let mut tasks = tokio::task::JoinSet::new();
     let mut count = 0;
+    let mut failure = None;
     let shareable_img_tfm = Arc::new(image_transform);
 
     while let Ok(received) = samples_metadata_rx.recv() {
@@ -106,11 +114,13 @@ async fn async_pull_samples(
             // Wait for some tasks to complete before adding more
             match join_next_or_cancelled(&mut tasks, &cancel).await {
                 NextTask::Cancelled => break,
-                NextTask::Completed(Some(result)) => {
-                    if result.is_ok() {
-                        count += 1;
+                NextTask::Completed(Some(result)) => match result {
+                    Ok(_) => count += 1,
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
                     }
-                }
+                },
                 NextTask::Completed(None) => {}
             }
         }
@@ -134,7 +144,7 @@ async fn async_pull_samples(
 
     // A client stop flips the cancel token. Cancel queued async work rather
     // than waiting for its result to be sent into a closed channel.
-    if cancel.is_cancelled() {
+    if cancel.is_cancelled() || failure.is_some() {
         tasks.abort_all();
     }
 
@@ -145,13 +155,14 @@ async fn async_pull_samples(
         match result {
             Ok(_) => count += 1, // task completed: same counting rule as the main loop
             Err(e) if e.is_cancelled() => {} // expected after abort_all(), not an error
-            Err(e) => error!("file_worker: task failed: {e}"), // task panicked
+            Err(e) => {
+                failure.get_or_insert_with(|| e.to_string());
+            }
         }
     }
     debug!("file_worker: total samples sent: {count}\n");
 
-    // Signal the end of the stream
-    if samples_tx.send(None).is_ok() {};
+    failure.map_or(Ok(()), Err)
 }
 
 pub fn pull_samples(
@@ -161,13 +172,13 @@ pub fn pull_samples(
     encoding: image_processing::ImageEncoding,
     limit: usize,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get())
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         async_pull_samples(
             samples_metadata_rx,
             samples_tx,
@@ -176,11 +187,12 @@ pub fn pull_samples(
             limit,
             cancel,
         )
-        .await;
+        .await
     });
     // A blocking filesystem syscall already in progress is not cancellable.
     // Do not make this worker's join wait indefinitely for Tokio's blocking pool.
     runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    result
 }
 
 #[cfg(test)]
@@ -194,6 +206,29 @@ mod tests {
         // Create a simple 1x1 PNG image
         let img = image::DynamicImage::new_rgb8(1, 1);
         img.save(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn decoder_panic_is_a_bad_image_and_later_images_still_decode() {
+        let task = tokio::spawn(async {
+            let error = tokio::task::spawn_blocking(|| {
+                image_processing::decode_image(|| panic!("injected decoder panic"))
+            })
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("decoder panicked: injected decoder panic"));
+
+            let directory = TempDir::new().unwrap();
+            let path = directory.path().join("good.png");
+            create_test_image(&path);
+            image_from_path(path.to_str().unwrap()).await.unwrap()
+        });
+        // A decoder panic must not escape as a JoinError on the sample task.
+        let image = task.await.unwrap();
+        assert_eq!((image.width(), image.height()), (1, 1));
     }
 
     #[tokio::test]
@@ -550,7 +585,8 @@ mod tests {
             10,
             CancellationToken::new(),
         )
-        .await;
+        .await
+        .unwrap();
 
         // Check received samples
         let mut received_samples = Vec::new();
@@ -604,7 +640,8 @@ mod tests {
             limit,
             CancellationToken::new(),
         )
-        .await;
+        .await
+        .unwrap();
 
         // Count received samples
         let mut count = 0;
@@ -771,7 +808,8 @@ mod tests {
             image_processing::ImageEncoding::default(),
             1,
             CancellationToken::new(),
-        );
+        )
+        .unwrap();
 
         // Check that a sample was received
         let sample_opt = samples_rx.recv().unwrap();
@@ -780,8 +818,7 @@ mod tests {
         let sample = sample_opt.unwrap();
         assert_eq!(sample.source, "filesystem");
 
-        // Should receive end marker
-        let end_marker = samples_rx.recv().unwrap();
-        assert!(end_marker.is_none());
+        // A clean producer exit closes the output after its last sample.
+        assert!(samples_rx.recv().is_err());
     }
 }

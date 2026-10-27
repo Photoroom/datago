@@ -44,7 +44,9 @@ async fn process_sample(
                         debug!("wds_worker: unsupported file type: {}", item.filename);
                     } else if IMG_TYPES.contains(&ext) {
                         // Load the image in to a buffer
-                        match image::load_from_memory(&item.buffer) {
+                        match image_processing::decode_image(|| {
+                            image::load_from_memory(&item.buffer)
+                        }) {
                             Ok(raw_image) => {
                                 let image = image_processing::image_to_payload(
                                     raw_image,
@@ -232,7 +234,7 @@ async fn async_deserialize_samples(
 
     // A client stop flips the cancel token. Abort queued async work rather than
     // waiting for a stalled task to finish.
-    if cancel.is_cancelled() {
+    if cancel.is_cancelled() || join_error.is_some() {
         tasks.abort_all();
     }
 
@@ -255,9 +257,6 @@ async fn async_deserialize_samples(
 
     info!("wds_worker: total samples sent: {count}\n");
 
-    // Signal the end of the stream
-    let _ = shareable_channel_tx.send(None); // Channel could have been closed by a .stop() call
-
     if let Some(error) = join_error {
         error!("wds_worker: encountered an error while processing samples: {error}");
         return Err(error);
@@ -273,14 +272,14 @@ pub fn deserialize_samples(
     limit: usize,
     extension_reference_image: String,
     cancel: CancellationToken,
-) {
+) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus::get()) // Tasks in flight are limited by DATAGO_MAX_TASKS env
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        match async_deserialize_samples(
+    let result = runtime.block_on(async {
+        async_deserialize_samples(
             samples_metadata_rx,
             samples_tx,
             image_transform,
@@ -290,10 +289,7 @@ pub fn deserialize_samples(
             cancel,
         )
         .await
-        {
-            Ok(_) => debug!("wds_worker: all samples processed successfully"),
-            Err(e) => error!("wds_worker: error processing samples : {e}"),
-        }
     });
     runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    result
 }

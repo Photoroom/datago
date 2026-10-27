@@ -3,6 +3,7 @@ import tempfile
 import os
 from datago import DatagoClient, initialize_logging
 from PIL import Image
+import pytest
 
 
 def create_test_images(directory, count=5):
@@ -353,10 +354,11 @@ class TestDatagoClient:
         }
 
         client = DatagoClient(json.dumps(config))
-        sample = client.get_sample()
-
-        # Should handle gracefully and return None
-        assert sample is None
+        try:
+            with pytest.raises(RuntimeError, match="source failed"):
+                client.get_sample()
+        finally:
+            client.stop()
 
     def test_client_drop_cleanup(self):
         """Test that client cleans up properly when dropped."""
