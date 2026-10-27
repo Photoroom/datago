@@ -6,7 +6,6 @@ use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::thread;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug)]
 pub enum MetadataReceiver {
@@ -38,10 +37,6 @@ impl MetadataReceiver {
 pub struct DatagoEngine {
     pub(crate) control: crate::pipeline::PipelineControl,
     pub samples_rx: kanal::Receiver<Option<Sample>>,
-    pub metadata_rx: MetadataReceiver,
-    /// Flipped when the engine is torn down (stop, end-of-stream, or interrupt)
-    /// so workers can abort in-flight tasks promptly.
-    pub cancel: CancellationToken,
     pub feeder: Option<thread::JoinHandle<()>>,
     pub worker: Option<thread::JoinHandle<()>>,
 }
@@ -49,11 +44,8 @@ pub struct DatagoEngine {
 impl DatagoEngine {
     /// Cancel before closing queues so retiring producers cannot record a late
     /// failure. Closing is explicit because the supervisor retains receivers.
-    pub(crate) fn close(&self) {
-        self.control.mark_stopped();
-        self.cancel.cancel();
-        self.metadata_rx.close();
-        let _ = self.samples_rx.close();
+    pub fn close(&self) {
+        self.control.stop();
     }
 }
 
@@ -182,6 +174,7 @@ impl TarballSample {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn dropping_engine_releases_producers_blocked_on_full_queues() {
@@ -211,8 +204,6 @@ mod tests {
         let engine = DatagoEngine {
             control: control.clone(),
             samples_rx: samples_rx.clone(),
-            metadata_rx: metadata_rx.clone(),
-            cancel: cancel.clone(),
             feeder: Some(feeder),
             worker: Some(worker),
         };
@@ -220,10 +211,7 @@ mod tests {
         let first = finished_rx.recv_timeout(std::time::Duration::from_secs(5));
         // Clean up even when running against the broken implementation: this
         // regression must not leak the deliberately blocked producer threads.
-        control.mark_stopped();
-        cancel.cancel();
-        metadata_rx.close();
-        let _ = samples_rx.close();
+        control.stop();
         assert!(
             first.is_ok(),
             "dropping the engine did not cancel its producers"

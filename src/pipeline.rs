@@ -44,11 +44,12 @@ impl PipelineControl {
         }
     }
 
-    pub(crate) fn mark_stopped(&self) {
+    pub(crate) fn stop(&self) {
         let mut outcome = self.outcome.lock().unwrap();
         if matches!(*outcome, Outcome::Running) {
             *outcome = Outcome::Stopped;
         }
+        self.close();
     }
 
     fn fail(&self, error: DatagoError) {
@@ -147,9 +148,43 @@ mod tests {
     #[test]
     fn explicit_stop_wins_over_a_later_failure() {
         let (control, metadata_tx, _samples_tx) = control();
-        control.mark_stopped();
+        control.stop();
         let feeder = control.spawn_feeder(metadata_tx, || Err("late feeder failure".into()));
         feeder.join().unwrap();
         assert!(control.error().is_none());
+    }
+
+    #[test]
+    fn feeder_error_after_worker_limit_is_not_a_failure() {
+        let (control, metadata_tx, samples_tx) = control();
+        // Model the worker reaching its delivery limit while the feeder is
+        // still preparing its next metadata item. Synchronize without sleeps.
+        let (retired_tx, retired_rx) = std::sync::mpsc::channel();
+        let metadata_rx = control.metadata_rx.clone();
+        let feeder = control.spawn_feeder(metadata_tx.clone(), move || {
+            retired_rx.recv().unwrap();
+            assert!(metadata_tx.send(serde_json::Value::Null).is_err());
+            Err("metadata queue closed after worker limit".into())
+        });
+        let worker = control.spawn_worker(samples_tx, move || {
+            metadata_rx.close();
+            retired_tx.send(()).unwrap();
+            Ok(())
+        });
+        feeder.join().unwrap();
+        worker.join().unwrap();
+        assert!(control.error().is_none());
+        assert!(!control.cancel.is_cancelled());
+        assert!(control.samples_rx.recv().is_err());
+    }
+
+    #[test]
+    fn feeder_error_before_worker_limit_is_a_failure() {
+        let (control, metadata_tx, _samples_tx) = control();
+        let feeder = control.spawn_feeder(metadata_tx, || Err("metadata request failed".into()));
+        feeder.join().unwrap();
+        assert!(matches!(control.error(), Some(DatagoError::Source(message))
+            if message == "metadata request failed"));
+        assert!(control.cancel.is_cancelled());
     }
 }

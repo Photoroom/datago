@@ -1,4 +1,4 @@
-//! Errors which end a streaming pass. Bad individual samples remain skippable.
+//! Read and pipeline errors. Bad individual samples remain skippable.
 
 use std::fmt;
 
@@ -11,7 +11,7 @@ pub enum DatagoError {
     Source(String),
     /// A processing task failed or panicked.
     Worker(String),
-    /// No sample arrived before the read deadline; the pass is cancelled.
+    /// No sample arrived before the read deadline; the pass remains running.
     Timeout,
 }
 

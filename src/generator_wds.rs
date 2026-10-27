@@ -1,4 +1,5 @@
 use crate::client::DatagoClient;
+use crate::error::DatagoError;
 use crate::structs::{
     new_shared_client, BinaryFile, DatagoEngine, MetadataReceiver, SharedClient, TarballSample,
 };
@@ -450,7 +451,10 @@ fn query_shards_and_dispatch(
 }
 
 // ---- Global orchestration ---------
-pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
+pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
+    let mut source_config: SourceWebDatasetConfig =
+        serde_json::from_value(client.source_config.clone())
+            .map_err(|error| DatagoError::Configuration(format!("WebDataset source: {error}")))?;
     // Allocate all the message passing pipes
     let metadata_buffer_size = std::cmp::max(128, client.samples_buffer * 2);
     let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(metadata_buffer_size);
@@ -464,9 +468,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 
     info!("Using webdataset as source");
 
-    // Convert the source_config to a SourceWebDatasetConfig
-    let mut source_config: SourceWebDatasetConfig =
-        serde_json::from_value(client.source_config.clone()).unwrap();
     let extension_reference_image_type: String = source_config.reference_image_type.clone();
 
     if source_config.concurrent_downloads == 0 {
@@ -511,14 +512,12 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
         )
     }));
 
-    DatagoEngine {
+    Ok(DatagoEngine {
         control,
         samples_rx,
-        metadata_rx: MetadataReceiver::Tarball(samples_metadata_rx),
-        cancel,
         feeder,
         worker,
-    }
+    })
 }
 
 // -------- Unit tests --------
@@ -526,7 +525,6 @@ pub fn orchestrate(client: &DatagoClient) -> DatagoEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::DatagoError;
     use crate::structs::Sample;
     use serde_json::json;
     use std::collections::HashSet;

@@ -44,7 +44,9 @@ async fn process_sample(
                         debug!("wds_worker: unsupported file type: {}", item.filename);
                     } else if IMG_TYPES.contains(&ext) {
                         // Load the image in to a buffer
-                        match image::load_from_memory(&item.buffer) {
+                        match image_processing::decode_image(|| {
+                            image::load_from_memory(&item.buffer)
+                        }) {
                             Ok(raw_image) => {
                                 let image = image_processing::image_to_payload(
                                     raw_image,
