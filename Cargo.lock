@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "datago"
-version = "2026.10.2"
+version = "2026.10.3"
 dependencies = [
  "async-compression",
  "async-tar",

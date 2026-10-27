@@ -1,6 +1,6 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
-use crate::worker_utils::{join_next_or_cancelled, max_tasks_from_env, NextTask};
+use crate::worker_utils::{max_tasks_from_env, run_worker};
 use log::{debug, error};
 use std::cmp::min;
 use std::collections::HashMap;
@@ -47,8 +47,7 @@ async fn pull_sample(
     sample_json: serde_json::Value,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encoding: image_processing::ImageEncoding,
-    samples_tx: kanal::Sender<Option<Sample>>,
-) -> Result<(), ()> {
+) -> Result<Sample, ()> {
     let path = sample_json.as_str().unwrap();
     debug!("Starting to process file: {}", path);
 
@@ -68,11 +67,7 @@ async fn pull_sample(
                 duplicate_state: 0,
             };
 
-            if samples_tx.send(Some(sample)).is_err() {
-                // Channel is closed, wrapping up
-                return Err(());
-            }
-            Ok(())
+            Ok(sample)
         }
         Err(e) => {
             error!("Failed to load image from path {}: {}", path, e);
@@ -93,76 +88,18 @@ async fn async_pull_samples(
     limit: usize,
     cancel: CancellationToken,
 ) -> Result<(), String> {
-    // We use async-await here, to better use IO stalls
-    // We'll issue N async tasks in parallel, and wait for them to finish
-    // Number of CPUs is a good heuristic for a small machine; DATAGO_MAX_TASKS overrides it.
-    let max_tasks = min(max_tasks_from_env(num_cpus::get()), limit);
-    let mut tasks = tokio::task::JoinSet::new();
-    let mut count = 0;
-    let mut failure = None;
-    let shareable_img_tfm = Arc::new(image_transform);
-
-    while let Ok(received) = samples_metadata_rx.recv() {
-        if received == serde_json::Value::Null {
-            debug!("file_worker: end of stream received, stopping there");
-            let _ = samples_metadata_rx.close();
-            break;
-        }
-
-        // Check if we have capacity before spawning new tasks
-        if tasks.len() >= max_tasks {
-            // Wait for some tasks to complete before adding more
-            match join_next_or_cancelled(&mut tasks, &cancel).await {
-                NextTask::Cancelled => break,
-                NextTask::Completed(Some(result)) => match result {
-                    Ok(_) => count += 1,
-                    Err(error) => {
-                        failure = Some(error.to_string());
-                        break;
-                    }
-                },
-                NextTask::Completed(None) => {}
-            }
-        }
-
-        // Append a new task to the queue
-        tasks.spawn(pull_sample(
-            received,
-            shareable_img_tfm.clone(),
-            encoding,
-            samples_tx.clone(),
-        ));
-
-        if count >= limit {
-            break;
-        }
-    }
-
-    // Early limit exit must release the feeder even though DatagoEngine retains
-    // its own receiver clone for explicit shutdown.
-    let _ = samples_metadata_rx.close();
-
-    // A client stop flips the cancel token. Cancel queued async work rather
-    // than waiting for its result to be sent into a closed channel.
-    if cancel.is_cancelled() || failure.is_some() {
-        tasks.abort_all();
-    }
-
-    // Make sure to wait for all the remaining tasks. Tasks aborted above come
-    // back from join_next() as a cancelled JoinError, which join_all() would
-    // panic on — so drain with join_next() instead.
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(_) => count += 1, // task completed: same counting rule as the main loop
-            Err(e) if e.is_cancelled() => {} // expected after abort_all(), not an error
-            Err(e) => {
-                failure.get_or_insert_with(|| e.to_string());
-            }
-        }
-    }
-    debug!("file_worker: total samples sent: {count}\n");
-
-    failure.map_or(Ok(()), Err)
+    let image_transform = Arc::new(image_transform);
+    let result = run_worker(
+        samples_metadata_rx,
+        samples_tx,
+        min(max_tasks_from_env(num_cpus::get()), limit),
+        limit,
+        cancel,
+        |item| *item == serde_json::Value::Null,
+        move |item| pull_sample(item, image_transform.clone(), encoding),
+    )
+    .await;
+    result.map(|count| debug!("file_worker: samples delivered: {count}"))
 }
 
 pub fn pull_samples(
@@ -503,24 +440,18 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
-        let (tx, rx) = kanal::bounded(10);
         let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
 
         let result = pull_sample(
             sample_json,
             Arc::new(None),
             image_processing::ImageEncoding::default(),
-            tx,
         )
         .await;
 
         assert!(result.is_ok());
 
-        // Check that a sample was sent
-        let received = rx.recv().unwrap();
-        assert!(received.is_some());
-
-        let sample = received.unwrap();
+        let sample = result.unwrap();
         assert_eq!(sample.source, "filesystem");
         assert!(!sample.id.is_empty());
         let payload = sample.image.get_payload();
@@ -537,21 +468,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_sample_invalid_path() {
-        let (tx, rx) = kanal::bounded(10);
         let sample_json = serde_json::Value::String("/nonexistent/path.png".to_string());
 
         let result = pull_sample(
             sample_json,
             Arc::new(None),
             image_processing::ImageEncoding::default(),
-            tx,
         )
         .await;
 
         assert!(result.is_err());
-
-        // No sample should be sent on error
-        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -653,14 +579,7 @@ mod tests {
             }
         }
 
-        // Should respect the limit (might be slightly more due to async processing)
-        // With our improved task management, we should be more precise about limits
-        debug!(
-            "test_async_pull_samples_with_limit: count={}, limit={}",
-            count, limit
-        );
-        // For now, let's be more lenient to avoid test failures
-        assert!(count <= limit + 3); // Allow some buffer for async processing
+        assert_eq!(count, limit);
     }
 
     fn create_test_webp_image(path: &std::path::Path) {
@@ -758,24 +677,18 @@ mod tests {
         let image_path = temp_dir.path().join("test.webp");
         create_test_webp_image(&image_path);
 
-        let (tx, rx) = kanal::bounded(10);
         let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
 
         let result = pull_sample(
             sample_json,
             Arc::new(None),
             image_processing::ImageEncoding::default(),
-            tx,
         )
         .await;
 
         assert!(result.is_ok());
 
-        // Check that a sample was sent
-        let received = rx.recv().unwrap();
-        assert!(received.is_some());
-
-        let sample = received.unwrap();
+        let sample = result.unwrap();
         assert_eq!(sample.source, "filesystem");
         assert!(!sample.id.is_empty());
         let payload = sample.image.get_payload();

@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::Arc;
 
 /// A malformed image may panic inside a decoder. Treat it as an unreadable
 /// image, without hiding panics in the surrounding worker or transformation code.
@@ -161,7 +162,11 @@ fn image_to_dyn_image(dst_image: &Image) -> image::DynamicImage {
             image::DynamicImage::ImageRgba8(img_buffer)
         }
 
-        fr::PixelType::U8 | fr::PixelType::U8x2 => {
+        fr::PixelType::U8x2 => {
+            let img_buffer = image::GrayAlphaImage::from_raw(width, height, pixels).unwrap();
+            image::DynamicImage::ImageLumaA8(img_buffer)
+        }
+        fr::PixelType::U8 => {
             let img_buffer = image::GrayImage::from_raw(width, height, pixels).unwrap();
             image::DynamicImage::ImageLuma8(img_buffer)
         }
@@ -432,7 +437,7 @@ pub async fn image_to_payload(
     }
 
     Ok(ImagePayload {
-        data: image_bytes,
+        data: Arc::new(image_bytes),
         original_height,
         original_width,
         height,
@@ -504,6 +509,19 @@ mod tests {
             assert_eq!(w % 16, 0);
             assert_eq!(h % 16, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn raw_payload_reuses_decoded_allocation_and_clones_share_pixels() {
+        let image = DynamicImage::new_rgb8(16, 16);
+        let pixels = image.as_bytes().as_ptr();
+        let payload = image_to_payload(image, &None, &String::new(), ImageEncoding::default())
+            .await
+            .unwrap();
+
+        assert_eq!(payload.data.as_ptr(), pixels);
+        let cloned = payload.clone();
+        assert!(Arc::ptr_eq(&payload.data, &cloned.data));
     }
 
     #[tokio::test]
