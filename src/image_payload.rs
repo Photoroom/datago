@@ -28,6 +28,12 @@ pub struct PythonImagePayload {
     inner: ImagePayload,
 }
 
+impl AsRef<ImagePayload> for PythonImagePayload {
+    fn as_ref(&self) -> &ImagePayload {
+        &self.inner
+    }
+}
+
 impl Default for ImagePayload {
     fn default() -> Self {
         Self::new()

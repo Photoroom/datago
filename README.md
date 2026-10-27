@@ -249,6 +249,25 @@ rustflags = [
 
 `cargo run --release --  -h` to get all the information, should be fairly straightforward
 
+### Native filesystem benchmark
+
+Run the filesystem pipeline directly from Rust, including image decoding and
+optional preprocessing, without Python conversion:
+
+```bash
+cargo run --release --example benchmark_filesystem -- /path/to/images --limit 10000 --num-workers 16
+```
+
+Add `--crop-and-resize` for a 1024 × 1024 center crop. `--num-workers` controls
+in-flight tasks and defaults to CPU count; `0` means serial processing. The
+benchmark uses a 256-sample buffer and requires the requested number of samples.
+Image payloads are borrowed when collecting metrics, avoiding a pixel-buffer copy.
+
+The JSON report includes FPS, output MP/s and MB/s, time to the first sample,
+and FPS after the first sample (`steady_fps`, or `null` for one sample).
+Elapsed time includes construction and startup and excludes cleanup. Compare
+repeated release runs with identical options and comparable filesystem cache state.
+
 ## Run the rust test suite
 
 From the datago folder
