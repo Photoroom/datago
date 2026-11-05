@@ -131,7 +131,6 @@ def benchmark(
             "concurrent_downloads": num_downloads,  # Number of concurrent TarballSample downloads and dispatch
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
-        "prefetch_buffer_size": 256,
         "samples_buffer_size": 256,
         "limit": limit,
     }
@@ -164,9 +163,9 @@ def benchmark(
 
     # Let's compare against a classic webdataset dataloader
     if compare_wds:
-        import webdataset as wds
         from torch.utils.data import DataLoader
         from torchvision import transforms
+        from webdataset import WebDataset
 
         print("\nBenchmarking webdataset library dataloader")
         # Define the transformations to apply to each image
@@ -193,7 +192,7 @@ def benchmark(
             custom_transform = lambda x: x  # noqa: E731
         # Create a WebDataset instance
         dataset = (
-            wds.WebDataset(url, shardshuffle=False)
+            WebDataset(url, shardshuffle=False)
             .shuffle(256)  # Optional: shuffle with buffer
             .decode("pil")  # Decode images using PIL
             .map(custom_transform)

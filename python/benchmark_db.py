@@ -4,7 +4,7 @@ import time
 import numpy as np
 import typer
 from benchmark_defaults import IMAGE_CONFIG
-from datago import DatagoClient  # type: ignore
+from datago import DatagoClient
 from PIL import Image
 from raw_types import raw_array_to_numpy
 from tqdm import tqdm
@@ -33,7 +33,6 @@ def benchmark(
             "rank": 0,
             "world_size": 1,
         },
-        "prefetch_buffer_size": 128,
         "samples_buffer_size": 64,
         "limit": limit,
     }

@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (mut count, mut pixels, mut bytes) = (0_u64, 0_u64, 0_u64);
     let mut first_sample = None;
     for _ in 0..limit {
-        let Some(sample) = client.get_sample() else {
+        let Some(sample) = client.try_get_sample()? else {
             break;
         };
         first_sample.get_or_insert_with(|| start.elapsed().as_secs_f64());

@@ -300,6 +300,8 @@ name = "datago"
 source = { editable = "." }
 dependencies = [
     { name = "fonttools" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pillow" },
 ]
 
@@ -316,8 +318,6 @@ dev = [
     { name = "webdataset" },
 ]
 test = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "prek" },
     { name = "pytest" },
 ]
@@ -325,6 +325,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "fonttools", specifier = ">=4.60.2" },
+    { name = "numpy" },
     { name = "pillow" },
 ]
 
@@ -340,7 +341,6 @@ dev = [
     { name = "webdataset" },
 ]
 test = [
-    { name = "numpy" },
     { name = "prek", specifier = ">=0.2.29" },
     { name = "pytest" },
 ]

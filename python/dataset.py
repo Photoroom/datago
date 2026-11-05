@@ -70,7 +70,6 @@ if __name__ == "__main__":
             # "encode_format": "jpeg",  # or "png"
             # "jpeg_quality": 92,  # 0-100, only used when encode_format is "jpeg"
         },
-        "prefetch_buffer_size": 64,
         "samples_buffer_size": 128,
         "limit": 10,
     }
