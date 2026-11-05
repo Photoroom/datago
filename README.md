@@ -52,18 +52,30 @@ configured `image_format`.
 Set `"image_format": "numpy"` in the client configuration to avoid materializing
 PIL images. Raw arrays are read-only views over shared Rust pixels and remain valid
 after the sample or client is dropped. Use `array.copy()` for writable storage.
+For PyTorch, use `torch.from_numpy(array.copy())` before any tensor mutation:
+`torch.from_numpy(array)` shares the read-only Rust storage, and writing through
+that tensor is unsupported. `torch.tensor(array)` also makes an independent copy.
 Single-channel arrays have shape `(H, W)`; multi-channel arrays use `(H, W, C)`.
 Their dtype preserves the source: `uint8`, `uint16`, or `float32`.
 
 `sample.image.to_numpy_array()` and `sample.image.to_pil_image()` also convert
 individual images. PIL supports 16-bit grayscale, but wider multi-channel images
-raise `ValueError`; use NumPy to preserve their precision. Invalid pixel layouts
-and unsupported conversions propagate ordinary Python exceptions.
+raise `ValueError`; use NumPy to preserve their precision, or explicitly set
+`"image_config": {"crop_and_resize": false, "image_to_rgb8": true}` to convert
+to 8-bit RGB. PIL results have independent writable storage. Missing images in
+metadata-only samples become `None` in either output format; malformed image
+payloads and unsupported conversions raise ordinary Python exceptions.
+
+`image_format` accepts `pil` and `numpy` case-insensitively. Invalid configuration
+errors identify the field; unknown top-level keys remain accepted but are logged
+as warnings when logging is enabled (`initialize_logging("warn")`).
 
 Cloning a sample or calling `get_payload()` shares its immutable pixels. Reading
 `payload.data` returns an owned byte copy; assigning to it replaces that wrapper's
 storage without invalidating existing views. Raw metadata properties (`width`,
-`height`, `size`, `mode`, `palette`) avoid constructing a PIL image.
+`height`, `size`, `mode`, `palette`) avoid constructing a PIL image. For encoded
+PNG/JPEG, `mode` inspects the decoder header without materializing pixels; it raises
+the same error as PIL conversion if the pixel type cannot be represented in PIL.
 
 Decoded buffers are retained in `Arc<Vec<u8>>`: sharing ownership moves the
 existing allocation rather than copying pixels into a new reference-counted slice.
@@ -72,6 +84,8 @@ With `pre_encode_images=True`, the buffer protocol exposes compressed bytes.
 Use `to_numpy_array()` or `to_pil_image()` to decode them. Decoding runs natively
 outside the GIL and preserves channels and precision; decoded output requires a
 new allocation rather than a view over the compressed stream.
+PIL output is an eagerly decoded plain `Image`, without the former lazy
+`JpegImageFile`/`PngImageFile` type or its `.format`/`.info` metadata contract.
 
 ### Lifecycle and cancellation
 
@@ -98,11 +112,20 @@ blocking-pool tasks that outlive runtime shutdown.
 
 Workers count successfully published samples: `limit` is an upper bound on delivery,
 including under concurrency. Unreadable items do not consume that budget, although
-a finite source may end before reaching the limit. In-flight tasks are also capped
+a finite source may end before reaching the limit. File and DB feeders keep
+supplying candidates until that limit is satisfied or their source is exhausted;
+there is no fixed allowance for bad images. In-flight tasks are also capped
 by the remaining delivery budget, so a small limit does not start a full worker pool.
 WebDataset samples require a readable reference image (`reference_image_type`);
 missing or corrupt references are skipped. Additional images use the reference
 image's target aspect ratio, regardless of their order in the archive.
+
+Sequential single-rank filesystem reads stream paths in sorted directory order.
+Global shuffling and distributed filesystem reads enumerate all candidate paths
+before delivering samples. Distributed ranks take balanced, disjoint contiguous
+slices of this deterministic ordering, then shuffle within their slice if requested.
+Enumeration remains cancellable, but these modes need memory proportional to the
+number of candidate paths and have a longer startup on large trees.
 
 ### Read results and errors
 
@@ -145,6 +168,32 @@ finally:
 The existing Rust `get_sample()` remains a compatibility wrapper: it logs failures
 and returns `None`. Use `try_get_sample()` when failure must be distinguished from
 normal exhaustion. Python propagates failures through its existing read methods.
+
+### Release notes: 2026.11.1
+
+- **Breaking change:** encoded image conversion now produces an eagerly decoded
+  plain PIL `Image`, without the previous lazy file subclasses or their
+  `.format`/`.info` metadata contract. Native decoding preserves pixel precision.
+- **Breaking change:** PIL conversion rejects multichannel `uint16`/`float32`
+  images, including pre-encoded RGB16 PNGs, instead of silently narrowing them.
+  Use `image_format="numpy"` to retain precision, or explicitly enable
+  `image_config.image_to_rgb8` for 8-bit RGB output.
+- **Breaking change:** single-channel NumPy arrays use `(H, W)` rather than
+  `(H, W, 1)`. Use `array[..., None]` to restore the singleton channel axis.
+- Raw NumPy arrays and memoryviews share immutable Rust pixels and retain their
+  allocation after sample destruction or payload reassignment. Copy before
+  writing, including through `torch.from_numpy(array.copy())`. PIL images have
+  independent writable storage, including 16-bit grayscale.
+- File and DB candidate enumeration no longer stops at a fixed multiple of
+  `limit`. Failed items are replaced until the successful-delivery limit or true
+  source exhaustion. Filesystem rank partitions now cover the complete sorted
+  candidate list; shuffle/distributed modes enumerate that list before delivery.
+- Metadata-only samples convert missing images to `None`. Invalid image payloads
+  still raise conversion errors. `mode` agrees with PIL representability, and
+  encoded PNG/JPEG mode inspection does not decode pixel data.
+- `image_format` is case-insensitive; configuration failures retain field details.
+  Unknown top-level keys are logged and ignored for compatibility. Obsolete
+  `prefetch_buffer_size` examples and the temporary stage benchmark were removed.
 
 ### Release notes: 2026.10.2
 
@@ -266,7 +315,6 @@ client_config = {
         "rank": 0,
         "world_size": 1,
     },
-    "prefetch_buffer_size": 128,
     "samples_buffer_size": 64,
     "limit": 1_000_000,  # Dummy example, max number of samples you would like to serve
 }
@@ -444,20 +492,20 @@ and post-start FPS for Datago and optionally Torch. Its returned results and swe
 JSON include `pixels` and `megapixels_per_second`. Pixels count output spatial
 positions (`width * height`), independent of channel count or bit depth.
 
-Compare Python's raw stage with NumPy, PIL, and dictionary conversion to assess
-conversion and object creation overhead:
+Compare NumPy and PIL output with the native Rust filesystem benchmark
+(`examples/benchmark_filesystem.rs`) to assess Python conversion overhead:
 
 ```bash
-# Python raw samples, then image and dictionary conversion.
-uv run --group dev python/bench_stages.py --root-path /path/to/images --limit 2000 --workers 8 --stages raw,numpy,pil,convert
-
 # Full Python NumPy output; remove --no-compare-torch to include Torch.
 uv run --group dev python/benchmark_filesystem.py --root-path /path/to/images --limit 2000 --num-workers 8 --image-format numpy --no-compare-torch
+# PIL output with the same pipeline settings.
+uv run --group dev python/benchmark_filesystem.py --root-path /path/to/images --limit 2000 --num-workers 8 --image-format pil --no-compare-torch
 ```
 
-Both accept `--crop-and-resize` for 1024 × 1024 output. Resized runs count
-output pixels. They use a 256-sample buffer, include construction/startup in elapsed
-time, exclude cleanup, and report an error if the source cannot supply the limit.
+The Python benchmark accepts `--crop-and-resize` for 1024 × 1024 output. Resized
+runs count output pixels. It uses a 256-sample buffer, includes construction/startup
+in elapsed time, excludes cleanup, and reports an error if the source cannot supply
+the limit.
 The full Python report uses `startup_seconds` for time to the first sample
 and `steady_fps` for the rate after it (`null` for a single-sample run).
 

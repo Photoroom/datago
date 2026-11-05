@@ -69,7 +69,7 @@ pub struct DatagoClient {
 
     state: Mutex<ClientState>,
 
-    is_valid: bool,
+    config_error: Option<String>,
 }
 
 /// Number of cleanup threads waiting for or joining native workers, including
@@ -82,54 +82,12 @@ pub fn live_cleanup_threads() -> usize {
     LIVE_CLEANUP_THREADS.load(Ordering::SeqCst)
 }
 
-fn check_config(str_config: &str) -> Option<DatagoClientConfig> {
-    match serde_json::from_str::<DatagoClientConfig>(str_config) {
-        Ok(config) => {
-            if config.samples_buffer_size == 0 {
-                error!("Samples buffer size must be greater than 0");
-                return None;
-            }
-
-            if config.limit == 0 {
-                error!("Limit must be greater than 0");
-                return None;
-            }
-
-            // Check that a distributed config is valid, and error out early if not
-            let world_size = config
-                .source_config
-                .get("world_size")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1) as usize;
-            let rank = config
-                .source_config
-                .get("rank")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
-            if world_size == 0 {
-                error!("World size must be greater than 0");
-                return None;
-            }
-
-            if rank >= world_size {
-                error!("Rank must be less than world size");
-                return None;
-            }
-            Some(config)
-        }
-        Err(e) => {
-            error!("Failed to parse config: {e}");
-            None
-        }
-    }
-}
-
 #[pymethods]
 impl DatagoClient {
     #[new]
     pub fn new(str_config: String) -> Self {
-        match check_config(&str_config) {
-            Some(config) => {
+        match DatagoClientConfig::parse(&str_config) {
+            Ok(config) => {
                 let mut image_transform: Option<ARAwareTransform> = None;
                 let mut encode_images = false;
                 let mut img_to_rgb8 = false;
@@ -162,30 +120,27 @@ impl DatagoClient {
                         lifecycle: ClientLifecycle::Idle,
                         generation: 0,
                     }),
-                    is_valid: true,
+                    config_error: None,
                 }
             }
-            None => {
-                error!("Failed to parse config");
-                DatagoClient {
-                    source_type: SourceType::Invalid,
-                    source_config: serde_json::Value::Null,
-                    samples_buffer: 0,
-                    limit: 0,
-                    max_connections: 0,
-                    image_transform: None,
-                    encode_images: false,
-                    img_to_rgb8: false,
-                    encode_format: crate::image_processing::EncodeFormat::default(),
-                    jpeg_quality: 92,
-                    image_format: ImageFormat::default(),
-                    state: Mutex::new(ClientState {
-                        lifecycle: ClientLifecycle::Idle,
-                        generation: 0,
-                    }),
-                    is_valid: false,
-                }
-            }
+            Err(error) => DatagoClient {
+                source_type: SourceType::Invalid,
+                source_config: serde_json::Value::Null,
+                samples_buffer: 0,
+                limit: 0,
+                max_connections: 0,
+                image_transform: None,
+                encode_images: false,
+                img_to_rgb8: false,
+                encode_format: crate::image_processing::EncodeFormat::default(),
+                jpeg_quality: 92,
+                image_format: ImageFormat::default(),
+                state: Mutex::new(ClientState {
+                    lifecycle: ClientLifecycle::Idle,
+                    generation: 0,
+                }),
+                config_error: Some(error),
+            },
         }
     }
 
@@ -246,10 +201,8 @@ impl DatagoClient {
         if matches!(state.lifecycle, ClientLifecycle::Running(_)) {
             return Ok(());
         }
-        if !self.is_valid {
-            return Err(DatagoError::Configuration(
-                "client configuration is invalid".into(),
-            ));
+        if let Some(error) = &self.config_error {
+            return Err(DatagoError::Configuration(error.clone()));
         }
         let engine = match self.source_type {
             SourceType::File => generator_files::orchestrate(self),

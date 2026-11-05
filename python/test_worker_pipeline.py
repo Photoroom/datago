@@ -16,18 +16,24 @@ from PIL import Image
 
 
 @pytest.mark.parametrize("tasks", ["0", "1", "4"])
+@pytest.mark.parametrize("random_sampling", [False, True])
 def test_raw_client_enforces_exact_limit_with_failed_items(
-    tmp_path, monkeypatch, tasks
+    tmp_path, monkeypatch, tasks, random_sampling
 ):
     monkeypatch.setenv("DATAGO_MAX_TASKS", tasks)
-    (tmp_path / "broken.png").write_bytes(b"not an image")
+    # The good images are beyond both the old 2x scan and 1.1x submit caps.
+    for i in range(40):
+        (tmp_path / f"broken_{i:03}.png").write_bytes(b"not an image")
     for i in range(30):
-        Image.new("RGB", (3, 2)).save(tmp_path / f"{i}.png")
+        Image.new("RGB", (3, 2)).save(tmp_path / f"good_{i:03}.png")
     client = DatagoClient(
         json.dumps(
             {
                 "source_type": "file",
-                "source_config": {"root_path": str(tmp_path)},
+                "source_config": {
+                    "root_path": str(tmp_path),
+                    "random_sampling": random_sampling,
+                },
                 "limit": 10,
                 "samples_buffer_size": 2,
             }
@@ -35,10 +41,70 @@ def test_raw_client_enforces_exact_limit_with_failed_items(
     )
     try:
         ids = []
-        while (sample := client.get_sample()) is not None:
+        while (sample := client.get_sample(timeout=5)) is not None:
             ids.append(sample.id)
         assert len(ids) == len(set(ids)) == 10
         assert client.get_sample() is None
+    finally:
+        client.stop()
+
+
+@pytest.mark.parametrize("random_sampling", [False, True])
+def test_file_ranks_have_disjoint_complete_partitions(tmp_path, random_sampling):
+    for i in range(48):
+        Image.new("RGB", (3, 2)).save(tmp_path / f"{i:03}.png")
+    partitions = []
+    for rank in range(4):
+        client = DatagoClient(
+            json.dumps(
+                {
+                    "source_type": "file",
+                    "source_config": {
+                        "root_path": str(tmp_path),
+                        "rank": rank,
+                        "world_size": 4,
+                        "random_sampling": random_sampling,
+                    },
+                    "limit": 12,
+                    "samples_buffer_size": 1,
+                }
+            )
+        )
+        try:
+            ids = set()
+            while (sample := client.get_sample(timeout=5)) is not None:
+                assert sample.id not in ids
+                ids.add(sample.id)
+            assert len(ids) == 12
+            partitions.append(ids)
+        finally:
+            client.stop()
+    assert len(set.union(*partitions)) == 48
+
+
+@pytest.mark.parametrize("good_count", [0, 3])
+def test_file_exhaustion_after_bad_images_returns_available_samples(
+    tmp_path, good_count
+):
+    for i in range(30):
+        (tmp_path / f"bad_{i:03}.png").write_bytes(b"broken")
+    for i in range(good_count):
+        Image.new("RGB", (3, 2)).save(tmp_path / f"good_{i:03}.png")
+    client = DatagoClient(
+        json.dumps(
+            {
+                "source_type": "file",
+                "source_config": {"root_path": str(tmp_path)},
+                "limit": 10,
+                "samples_buffer_size": 1,
+            }
+        )
+    )
+    try:
+        count = 0
+        while client.get_sample(timeout=5) is not None:
+            count += 1
+        assert count == good_count
     finally:
         client.stop()
 

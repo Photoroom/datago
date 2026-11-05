@@ -103,7 +103,6 @@ def benchmark(
             "rank": 0,
             "world_size": 1,
         },
-        "prefetch_buffer_size": 256,
         "samples_buffer_size": 256,
         "limit": limit,
         # "pil" (default) or "numpy", which hands back a zero-copy read-only ndarray

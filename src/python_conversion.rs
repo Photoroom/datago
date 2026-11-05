@@ -12,6 +12,9 @@ fn image_to_python(
     py: Python<'_>,
     image_format: ImageFormat,
 ) -> PyResult<Py<PyAny>> {
+    if payload.as_ref().is_absent() {
+        return Ok(py.None());
+    }
     match image_format {
         ImageFormat::Pil => payload.to_pil_image(py),
         ImageFormat::Numpy => payload.to_numpy_array(py),

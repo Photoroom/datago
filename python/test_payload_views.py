@@ -2,6 +2,9 @@
 
 import json
 import os
+import subprocess
+import sys
+import textwrap
 
 import numpy as np
 import pytest
@@ -158,6 +161,23 @@ def test_encoded_to_numpy_array_decodes(tmp_path):
     client.stop()
 
 
+def test_encoded_mode_reads_header_without_decoding_pixels(tmp_path):
+    client = client_for(tmp_path, Image.new("RGBA", (4, 3)))
+    try:
+        original = client.get_sample().image
+        payload = original.get_payload()
+        # The PNG header is intact, but the IDAT pixel stream is truncated.
+        encoded = (tmp_path / "sample.png").read_bytes()
+        payload.data = encoded[: encoded.index(b"IDAT") + 4]
+        payload.is_encoded = True
+        wrapper = type(original)(payload)
+        assert wrapper.mode == "RGBA"
+        with pytest.raises(ValueError):
+            wrapper.to_numpy_array()
+    finally:
+        client.stop()
+
+
 def _file_client(directory, image, **extra):
     directory.mkdir(parents=True, exist_ok=True)
     image.save(directory / "sample.png")
@@ -208,6 +228,47 @@ def test_image_format_numpy_returns_zero_copy_ndarray(tmp_path):
     client.stop()
 
 
+def test_numpy_import_failure_can_be_retried(tmp_path):
+    Image.new("RGB", (4, 3)).save(tmp_path / "sample.png")
+    script = textwrap.dedent("""
+        import builtins, json, sys
+        from datago import DatagoClient
+        client = DatagoClient(json.dumps({
+            "source_type": "file", "source_config": {"root_path": sys.argv[1]},
+            "limit": 1, "samples_buffer_size": 1,
+        }))
+        try:
+            image = client.get_sample().image
+            original_import = builtins.__import__
+            def fail_numpy(name, *args, **kwargs):
+                if name == "numpy":
+                    raise ImportError("injected numpy import failure")
+                return original_import(name, *args, **kwargs)
+            builtins.__import__ = fail_numpy
+            try:
+                image.to_numpy_array()
+            except ImportError as error:
+                assert "injected numpy import failure" in str(error)
+            else:
+                raise AssertionError("NumPy import failure was swallowed")
+            finally:
+                builtins.__import__ = original_import
+            array = image.to_numpy_array()
+            assert array.shape == (3, 4, 3)
+            assert not array.flags.writeable
+        finally:
+            client.stop()
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_grayscale_numpy_matches_pil_shape(tmp_path):
     pixels = (np.arange(4 * 6, dtype=np.uint8) % 250).reshape(4, 6)
     client = _file_client(
@@ -229,15 +290,20 @@ def test_image_format_defaults_to_pil(tmp_path):
     client.stop()
 
 
-def test_image_format_pil_alias(tmp_path):
+@pytest.mark.parametrize(
+    "image_format",
+    ["pil", "PIL", "Pil", "pIl", "numpy", "NumPy", "Numpy", "NUMPY", "nUmPy"],
+)
+def test_image_format_is_case_insensitive(tmp_path, image_format):
     client = _file_client(
         tmp_path / "pil_alias",
         Image.new("RGB", (4, 3), (1, 2, 3)),
-        image_format="PIL",
+        image_format=image_format,
     )
     sample = client.get_sample_auto_convert()
     assert sample is not None
-    assert isinstance(sample["image"], Image.Image)
+    expected = Image.Image if image_format.lower() == "pil" else np.ndarray
+    assert isinstance(sample["image"], expected)
     client.stop()
 
 
@@ -289,6 +355,87 @@ def test_pil_16bit_grayscale_uses_i16(tmp_path):
     assert pil.mode == "I;16"
     np.testing.assert_array_equal(np.asarray(pil), pixels)
     client.stop()
+
+
+@pytest.mark.parametrize("mode", ["L", "LA", "RGB", "RGBA", "I;16", "F"])
+def test_pil_owns_writable_storage_without_mutating_shared_pixels(tmp_path, mode):
+    # PNG cannot store F; use a grayscale payload and explicitly set its layout.
+    image = Image.new("I;16" if mode == "F" else mode, (4, 3))
+    client = client_for(tmp_path, image)
+    try:
+        payload = client.get_sample().image.get_payload()
+        if mode == "F":
+            payload.data = np.zeros((3, 4), dtype=np.float32).tobytes()
+            payload.bit_depth = 32
+        shared = payload.to_numpy_array()
+        expected = shared.copy()
+        pil = payload.to_pil_image()
+        assert pil.mode == mode
+        assert not pil.readonly
+        pil.putpixel(
+            (0, 0), (100,) * len(pil.getbands()) if len(pil.getbands()) > 1 else 100
+        )
+        np.testing.assert_array_equal(shared, expected)
+    finally:
+        client.stop()
+
+
+@pytest.mark.parametrize("pre_encode", [False, True])
+def test_pil_mode_and_conversion_reject_same_wide_layout(tmp_path, pre_encode):
+    _write_rgb16_png(tmp_path / "sample.png", np.zeros((3, 4, 3), dtype=np.uint16))
+    client = DatagoClient(
+        json.dumps(
+            {
+                "source_type": "file",
+                "source_config": {"root_path": str(tmp_path)},
+                "limit": 1,
+                "samples_buffer_size": 1,
+                "image_config": {
+                    "crop_and_resize": False,
+                    "pre_encode_images": pre_encode,
+                },
+            }
+        )
+    )
+    try:
+        image = client.get_sample().image
+        with pytest.raises(ValueError, match="PIL cannot represent"):
+            _ = image.mode
+        with pytest.raises(ValueError, match="PIL cannot represent"):
+            image.to_pil_image()
+        assert image.to_numpy_array().dtype == np.uint16
+    finally:
+        client.stop()
+
+
+@pytest.mark.parametrize("pre_encode", [False, True])
+def test_rgb8_conversion_is_explicit_opt_in(tmp_path, pre_encode):
+    _write_rgb16_png(
+        tmp_path / "sample.png", np.full((3, 4, 3), 65535, dtype=np.uint16)
+    )
+    client = DatagoClient(
+        json.dumps(
+            {
+                "source_type": "file",
+                "source_config": {"root_path": str(tmp_path)},
+                "limit": 1,
+                "samples_buffer_size": 1,
+                "image_config": {
+                    "crop_and_resize": False,
+                    "pre_encode_images": pre_encode,
+                    "image_to_rgb8": True,
+                },
+            }
+        )
+    )
+    try:
+        image = client.get_sample_auto_convert(timeout=5)["image"]
+        assert image.mode == "RGB"
+        np.testing.assert_array_equal(
+            np.asarray(image), np.full((3, 4, 3), 255, dtype=np.uint8)
+        )
+    finally:
+        client.stop()
 
 
 def test_pil_16bit_rgb_raises(tmp_path):

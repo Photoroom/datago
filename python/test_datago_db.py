@@ -34,7 +34,6 @@ def get_json_config():
             "max_aspect_ratio": 2.0,
             "pre_encode_images": False,
         },
-        "prefetch_buffer_size": 64,
         "samples_buffer_size": 10,
         "limit": 10,
     }

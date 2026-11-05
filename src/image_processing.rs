@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 /// A malformed image may panic inside a decoder. Treat it as an unreadable
 /// image, without hiding panics in the surrounding worker or transformation code.
-pub(crate) fn decode_image(
-    decode: impl FnOnce() -> image::ImageResult<image::DynamicImage> + std::panic::UnwindSafe,
-) -> image::ImageResult<image::DynamicImage> {
+pub(crate) fn decode_image<T>(
+    decode: impl FnOnce() -> image::ImageResult<T> + std::panic::UnwindSafe,
+) -> image::ImageResult<T> {
     std::panic::catch_unwind(decode).unwrap_or_else(|panic| {
         Err(image::ImageError::IoError(std::io::Error::other(format!(
             "decoder panicked: {}",

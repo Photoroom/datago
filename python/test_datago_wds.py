@@ -37,7 +37,6 @@ def test_wds_basic_functionality():
             "concurrent_downloads": 4,  # Reduced for testing
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
-        "prefetch_buffer_size": 32,
         "samples_buffer_size": 32,
         "limit": limit,
     }
@@ -99,7 +98,6 @@ def test_wds_image_properties():
             "concurrent_downloads": 4,
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
-        "prefetch_buffer_size": 32,
         "samples_buffer_size": 32,
         "limit": limit,
     }
@@ -154,7 +152,6 @@ def test_wds_with_image_processing():
             "min_aspect_ratio": 0.5,
             "max_aspect_ratio": 2.0,
         },
-        "prefetch_buffer_size": 32,
         "samples_buffer_size": 32,
         "limit": limit,
     }
@@ -194,7 +191,6 @@ def test_wds_attributes_structure():
             "concurrent_downloads": 4,
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
-        "prefetch_buffer_size": 32,
         "samples_buffer_size": 32,
         "limit": limit,
     }
@@ -235,7 +231,6 @@ def test_wds_sample_consistency():
             "concurrent_downloads": 4,
             "auth_token": os.environ.get("HF_TOKEN", default=""),
         },
-        "prefetch_buffer_size": 32,
         "samples_buffer_size": 32,
         "limit": limit,
     }

@@ -3,7 +3,7 @@ use crate::error::DatagoError;
 use crate::structs::{DatagoEngine, MetadataReceiver};
 use crate::worker_files;
 use kanal::bounded;
-use log::{debug, info, warn};
+use log::{info, warn};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -18,8 +18,12 @@ pub struct SourceFileConfig {
     #[serde(default)]
     pub rank: usize,
 
-    #[serde(default)]
+    #[serde(default = "default_world_size")]
     pub world_size: usize,
+}
+
+fn default_world_size() -> usize {
+    1
 }
 
 fn get_data_slice_multirank(quorum: usize, rank: usize, world_size: usize) -> (usize, usize) {
@@ -45,7 +49,6 @@ fn get_data_slice_multirank(quorum: usize, rank: usize, world_size: usize) -> (u
 fn enumerate_files(
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceFileConfig,
-    limit: usize,
 ) -> Result<(), String> {
     // Get an iterator over regular files only. Besides skipping directories with
     // image-like names, this avoids opening FIFOs/devices in the blocking decoder.
@@ -55,6 +58,8 @@ fn enumerate_files(
     let mut walk_error = None;
     let walker = walkdir::WalkDir::new(&source_config.root_path)
         .follow_links(false)
+        // All ranks must enumerate the same order before taking disjoint slices.
+        .sort_by_file_name()
         .into_iter()
         // Test cancellation before filtering extensions so a tree full of
         // unrelated files does not require a complete walk after stop().
@@ -81,10 +86,10 @@ fn enumerate_files(
                 return None;
             }
             let path = entry.path();
-            let file_name = path.to_string_lossy().to_lowercase();
+            let extension = path.extension()?.to_str()?;
             if supported_extensions
                 .iter()
-                .any(|&ext| file_name.ends_with(ext))
+                .any(|ext| extension.eq_ignore_ascii_case(ext))
             {
                 Some(entry)
             } else {
@@ -92,64 +97,40 @@ fn enumerate_files(
             }
         });
 
-    // Collect some of the files, over sample to increase randomness or allow for faulty files
-    let mut files_list = Vec::new();
-    files_list.extend(walker.take(limit.saturating_mul(2)));
+    // Sequential single-rank reads stream immediately. Global shuffling and
+    // balanced contiguous rank slices require knowing the complete file list.
+    let entries: Box<dyn Iterator<Item = _> + '_> = if source_config.random_sampling
+        || source_config.world_size > 1
+    {
+        let mut files: Vec<_> = walker.collect();
+        if source_config.world_size > 1 {
+            let (start, end) =
+                get_data_slice_multirank(files.len(), source_config.rank, source_config.world_size);
+            files = files.drain(start..end).collect();
+        }
+        if source_config.random_sampling {
+            files.shuffle(&mut rand::rng());
+        }
+        Box::new(files.into_iter())
+    } else {
+        Box::new(walker)
+    };
+
+    // The worker alone counts successful samples and closes this queue when
+    // satisfied. Candidate failures must never exhaust an arbitrary allowance.
+    for entry in entries {
+        let path = entry.path().to_string_lossy().into_owned();
+        if samples_metadata_tx
+            .send(serde_json::Value::String(path))
+            .is_err()
+        {
+            return Ok(());
+        }
+    }
     if let Some(error) = walk_error {
         return Err(error);
     }
-
-    // If world_size > 1, we need to split the files list into chunks and only process the chunk corresponding to the rank
-    if source_config.world_size > 1 {
-        let quorum = files_list.len();
-        let (start, end) =
-            get_data_slice_multirank(quorum, source_config.rank, source_config.world_size);
-        files_list = files_list[start..end].to_vec();
-    }
-
-    // If shuffle is set, shuffle the files
-    if source_config.random_sampling {
-        let mut rng = rand::rng(); // Get a random number generator, thread local. We don't seed, so typically won't be reproducible
-        files_list.shuffle(&mut rng); // This happens in place
-    }
-
-    // Iterate over the files and send the paths as they come
-    // We oversubmit arbitrarily by 10% to account for the fact that some files might be corrupted or unreadable.
-    // There's another mechanism to limit the number of samples processed as requested by the user, so this is just a buffer.
-    let mut count = 0;
-    let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
-
-    // Build a page from the files iterator
-    for entry in files_list.into_iter() {
-        let file_name: String = entry.path().to_str().unwrap().to_string();
-
-        if samples_metadata_tx
-            .send(serde_json::Value::String(file_name))
-            .is_err()
-        {
-            // Channel is closed, we can't send any more samples
-            break;
-        }
-
-        count += 1;
-
-        if count >= max_submitted_samples {
-            // NOTE: This doesn't count the samples which have actually been processed
-            debug!("ping_pages: reached the limit of samples requested. Shutting down");
-            break;
-        }
-    }
-
-    // Either we don't have any more samples or we have reached the limit
-    debug!("ping_pages: total samples requested: {limit}. page samples served {count}");
-
-    // Send an empty value to signal the end of the stream
-    match samples_metadata_tx.send(serde_json::Value::Null) {
-        Ok(_) => {}
-        Err(_) => {
-            debug!("ping_pages: stream already closed, wrapping up");
-        }
-    };
+    let _ = samples_metadata_tx.send(serde_json::Value::Null);
     Ok(())
 }
 
@@ -179,10 +160,8 @@ pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
 
     // Create a thread which will generate work as it goes. We'll query the filesystem
     // and send the filepaths to the worker pool as we go
-    let limit = client.limit;
-
     let feeder = Some(control.spawn_feeder(samples_metadata_tx.clone(), move || {
-        enumerate_files(samples_metadata_tx, source_config, limit)
+        enumerate_files(samples_metadata_tx, source_config)
     }));
 
     // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
@@ -285,7 +264,7 @@ mod tests {
         assert_eq!(config.root_path, "/tmp/test");
         assert!(!config.random_sampling);
         assert_eq!(config.rank, 0);
-        assert_eq!(config.world_size, 0);
+        assert_eq!(config.world_size, 1);
     }
 
     #[test]
@@ -342,7 +321,7 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx, config, 10).unwrap();
+            enumerate_files(tx, config).unwrap();
         });
 
         let mut received_files = Vec::new();
@@ -392,7 +371,6 @@ mod tests {
                 rank: 0,
                 world_size: 1,
             },
-            10,
         )
         .unwrap();
         assert_eq!(
@@ -404,11 +382,11 @@ mod tests {
     }
 
     #[test]
-    fn test_enumerate_files_with_limit() {
+    fn test_enumerate_files_does_not_cap_candidates() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
         let limit = 10;
-        create_test_images(temp_path, limit);
+        let created = create_test_images(temp_path, limit * 4);
 
         let (tx, rx) = kanal::bounded(100);
         let config = SourceFileConfig {
@@ -419,7 +397,7 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx, config, limit).unwrap();
+            enumerate_files(tx, config).unwrap();
         });
 
         let mut received_files = Vec::new();
@@ -432,8 +410,7 @@ mod tests {
             }
         }
 
-        // Should respect the limit (plus 10% buffer)
-        assert!(received_files.len() <= ((limit as f64 * 1.1).ceil() as usize));
+        assert_eq!(received_files.len(), created.len());
     }
 
     #[test]
@@ -463,11 +440,11 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx1, config1, limit).unwrap();
+            enumerate_files(tx1, config1).unwrap();
         });
 
         std::thread::spawn(move || {
-            enumerate_files(tx2, config2, limit).unwrap();
+            enumerate_files(tx2, config2).unwrap();
         });
 
         let mut files_rank0 = Vec::new();
@@ -526,11 +503,11 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx1, config1, limit).unwrap();
+            enumerate_files(tx1, config1).unwrap();
         });
 
         std::thread::spawn(move || {
-            enumerate_files(tx2, config2, limit).unwrap();
+            enumerate_files(tx2, config2).unwrap();
         });
 
         let mut files1 = Vec::new();
@@ -576,7 +553,7 @@ mod tests {
         };
 
         std::thread::spawn(move || {
-            enumerate_files(tx, config, 10).unwrap();
+            enumerate_files(tx, config).unwrap();
         });
 
         let mut received_files = Vec::new();

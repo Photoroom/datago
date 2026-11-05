@@ -149,7 +149,9 @@ mod tests {
     async fn decoder_panic_is_a_bad_image_and_later_images_still_decode() {
         let task = tokio::spawn(async {
             let error = tokio::task::spawn_blocking(|| {
-                image_processing::decode_image(|| panic!("injected decoder panic"))
+                image_processing::decode_image::<image::DynamicImage>(|| {
+                    panic!("injected decoder panic")
+                })
             })
             .await
             .unwrap()
