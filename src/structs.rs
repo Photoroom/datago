@@ -1,4 +1,6 @@
-pub use crate::config::{DatagoClientConfig, SourceType};
+//! Pipeline data types. Image/configuration types are re-exported for compatibility.
+
+pub use crate::config::{DatagoClientConfig, ImageFormat, SourceType};
 pub use crate::http_client::{new_shared_client, SharedClient};
 pub use crate::image_payload::{ImagePayload, PythonImagePayload};
 pub use crate::python_conversion::sample_to_python_types;
@@ -174,6 +176,7 @@ impl TarballSample {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
     #[test]
@@ -236,7 +239,7 @@ mod tests {
     #[test]
     fn test_image_payload_creation() {
         let payload = ImagePayload {
-            data: vec![255, 0, 128],
+            data: Arc::new(vec![255, 0, 128]),
             original_height: 100,
             original_width: 100,
             height: 50,
@@ -254,6 +257,32 @@ mod tests {
         assert_eq!(payload.bit_depth, 8);
         assert_eq!(payload.data.len(), 3);
         assert!(!payload.is_encoded);
+        let serialized = serde_json::to_value(&payload).unwrap();
+        assert_eq!(serialized["data"], serde_json::json!([255, 0, 128]));
+        let restored: ImagePayload = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.data, payload.data);
+    }
+
+    #[test]
+    fn test_image_payload_clones_share_pixels_and_serde_keeps_byte_array_format() {
+        let payload = ImagePayload {
+            data: Arc::new(vec![1, 2, 3]),
+            original_height: 1,
+            original_width: 1,
+            height: 1,
+            width: 1,
+            channels: 3,
+            bit_depth: 8,
+            is_encoded: false,
+        };
+        let clone = payload.clone();
+        assert!(Arc::ptr_eq(&payload.data, &clone.data));
+
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["data"], serde_json::json!([1, 2, 3]));
+        let restored: ImagePayload = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.data.as_ref(), &[1, 2, 3]);
+        assert!(!Arc::ptr_eq(&payload.data, &restored.data));
     }
 
     #[test]
@@ -274,7 +303,7 @@ mod tests {
             attributes,
             duplicate_state: 0,
             image: to_python_image_payload(ImagePayload {
-                data: vec![],
+                data: Arc::new(Vec::<u8>::new()),
                 original_height: 100,
                 original_width: 100,
                 height: 100,
@@ -305,7 +334,7 @@ mod tests {
             attributes: HashMap::new(),
             duplicate_state: 0,
             image: to_python_image_payload(ImagePayload {
-                data: vec![],
+                data: Arc::new(Vec::<u8>::new()),
                 original_height: 100,
                 original_width: 100,
                 height: 100,

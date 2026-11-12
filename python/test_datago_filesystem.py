@@ -48,7 +48,6 @@ def test_get_sample_filesystem(pre_encode_images: bool, rgb16: bool, rgba: bool)
                 "image_to_rgb8": rgb16 or rgba,
             },
             "limit": limit,
-            "prefetch_buffer_size": 64,
             "samples_buffer_size": 10,
         }
 
@@ -102,7 +101,6 @@ def test_random_walk():
                 "pre_encode_images": False,
             },
             "limit": limit,
-            "prefetch_buffer_size": 64,
             "samples_buffer_size": 10,
         }
 

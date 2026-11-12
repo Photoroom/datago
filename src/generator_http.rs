@@ -356,7 +356,6 @@ async fn async_pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
-    limit: usize,
 ) -> Result<(), String> {
     let api_url = std::env::var("DATAROOM_API_URL").map_err(|_| "DATAROOM_API_URL not set")?;
     let api_key = std::env::var("DATAROOM_API_KEY").map_err(|_| "DATAROOM_API_KEY not set")?;
@@ -368,9 +367,7 @@ async fn async_pull_and_dispatch_pages(
     let mut request = build_request(source_config)
         .get_http_request(&api_url, &api_key)
         .await;
-    let mut count = 0;
-    let max_submitted_samples = (1.1 * (limit as f64)).ceil() as usize;
-    'pages: while count < max_submitted_samples {
+    while !samples_metadata_tx.is_disconnected() {
         let response = get_response(shared_client.clone(), &request).await?;
         let results = response
             .get("results")
@@ -379,10 +376,6 @@ async fn async_pull_and_dispatch_pages(
         for sample in results {
             if samples_metadata_tx.send(sample.clone()).is_err() {
                 return Ok(());
-            }
-            count += 1;
-            if count >= max_submitted_samples {
-                break 'pages;
             }
         }
         match response.get("next") {
@@ -403,11 +396,13 @@ async fn async_pull_and_dispatch_pages(
     Ok(())
 }
 
+/// Enumerate until exhaustion or queue closure. The legacy `limit` argument is
+/// retained for Rust callers; only the worker counts successful deliveries.
 pub fn pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
     samples_metadata_tx: Sender<serde_json::Value>,
     source_config: SourceDBConfig,
-    limit: usize,
+    _limit: usize,
     cancel: CancellationToken,
 ) -> Result<(), String> {
     tokio::runtime::Builder::new_current_thread()
@@ -422,7 +417,6 @@ pub fn pull_and_dispatch_pages(
                     shared_client,
                     samples_metadata_tx.clone(),
                     source_config,
-                    limit,
                 ) => result
             }
         })
@@ -451,8 +445,8 @@ pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
     );
 
     info!("Using DB as source");
-    let limit = client.limit;
     let source_config = source_db_config.clone();
+    let limit = client.limit;
     let shared_client = http_client.clone();
     let cancel_feeder = cancel.clone();
 

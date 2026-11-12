@@ -1,3 +1,5 @@
+//! Connection pooling and retry policy shared by HTTP sources.
+
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use std::sync::Arc;

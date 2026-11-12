@@ -40,7 +40,7 @@ def serve(handler):
         thread.join(timeout=2)
 
 
-def db_client(monkeypatch, url):
+def db_client(monkeypatch, url, **config):
     monkeypatch.setenv("DATAROOM_API_URL", url + "/")
     monkeypatch.setenv("DATAROOM_API_KEY", "test")
     return DatagoClient(
@@ -50,9 +50,76 @@ def db_client(monkeypatch, url):
                 "source_config": {"sources": "mock", "page_size": 10},
                 "samples_buffer_size": 2,
                 "limit": 10,
+                **config,
             }
         )
     )
+
+
+@pytest.mark.parametrize("image_format", ["pil", "numpy"])
+def test_metadata_only_sample_converts_absent_image_to_none(monkeypatch, image_format):
+    body = json.dumps(
+        {
+            "results": [
+                {"id": "metadata", "source": "mock", "attributes": {"caption": "text"}}
+            ],
+            "next": None,
+        }
+    ).encode()
+    with serve(lambda _: (200, body)) as url:
+        client = db_client(
+            monkeypatch,
+            url,
+            image_format=image_format,
+            source_config={"sources": "mock", "page_size": 10, "require_images": False},
+        )
+        try:
+            sample = client.get_sample_auto_convert(timeout=5)
+            assert sample["id"] == "metadata"
+            assert sample["attributes"]["caption"] == "text"
+            assert sample["image"] is None
+            assert client.get_sample_auto_convert(timeout=5) is None
+        finally:
+            client.stop()
+
+
+def test_db_continues_to_later_pages_after_many_bad_images(monkeypatch):
+    monkeypatch.setenv("DATAGO_MAX_RETRIES", "1")
+    monkeypatch.setenv("DATAGO_MAX_TASKS", "4")
+    image = io.BytesIO()
+    Image.new("RGB", (2, 3)).save(image, format="PNG")
+
+    def response(path):
+        if path == "/bad.png":
+            return 200, b"not an image"
+        if path == "/good.png":
+            return 200, image.getvalue()
+        good = path == "/next"
+        return 200, json.dumps(
+            {
+                "results": [
+                    {
+                        "id": f"{good}-{i}",
+                        "source": "mock",
+                        "attributes": {},
+                        "image_direct_url": url + ("/good.png" if good else "/bad.png"),
+                    }
+                    for i in range(20)
+                ],
+                "next": None if good else url + "/next",
+            }
+        ).encode()
+
+    with serve(response) as url:
+        client = db_client(monkeypatch, url, samples_buffer_size=1)
+        try:
+            ids = []
+            while (sample := client.get_sample(timeout=5)) is not None:
+                ids.append(sample.id)
+            assert len(ids) == len(set(ids)) == 10
+            assert all(identifier.startswith("True-") for identifier in ids)
+        finally:
+            client.stop()
 
 
 @pytest.mark.parametrize("read", ["get_sample", "get_sample_auto_convert"])
