@@ -133,12 +133,16 @@ async fn pull_tarballs(
             .into_owned();
         let filename = header_path.to_string_lossy().into_owned();
 
-        // Simple key extraction: basename without extension
+        // WebDataset key: the file name up to its first "." ("0001.seg.png" -> "0001"),
+        // so that multi-part extensions stay in their sample.
         let entry_key = Path::new(&filename)
-            .file_stem()
+            .file_name()
             .unwrap_or_default()
             .to_string_lossy()
-            .into_owned();
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
 
         // If we have a > 1 world size, we need to dispatch the samples to the correct rank
         // We'll do this by hashing the key and checking if it matches our rank, we skip otherwise
@@ -633,6 +637,54 @@ mod tests {
         ids
     }
 
+    // WebDataset keys run up to the first "." of the file name, so "0000.seg.png"
+    // belongs to sample "0000", next to "0000.jpg".
+    fn compound_extension_shard() -> Vec<u8> {
+        let encode = |format| {
+            let mut bytes = Cursor::new(Vec::new());
+            image::RgbImage::from_pixel(4, 3, image::Rgb([11, 22, 33]))
+                .write_to(&mut bytes, format)
+                .unwrap();
+            bytes.into_inner()
+        };
+        let (jpg, png) = (
+            encode(image::ImageFormat::Jpeg),
+            encode(image::ImageFormat::Png),
+        );
+        let mut archive = tar::Builder::new(Vec::new());
+        for (filename, bytes) in [
+            ("0000.jpg", jpg.as_slice()),
+            ("0000.seg.png", png.as_slice()),
+            ("0001.jpg", jpg.as_slice()),
+            ("0001.cls", b"1".as_slice()),
+            ("0001.depth.png", png.as_slice()),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            archive.append_data(&mut header, filename, bytes).unwrap();
+        }
+        archive.into_inner().unwrap()
+    }
+
+    async fn compound_extension_fixture() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/listing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"mediaLink": format!("{}/compound.tar", server.uri())}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/compound.tar"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(compound_extension_shard()))
+            .mount(&server)
+            .await;
+        server
+    }
+
     #[test]
     fn test_urls_from_pattern() {
         let urls = explode("https://example.com/train-{000000..000009}.tar").unwrap();
@@ -735,6 +787,65 @@ mod tests {
             }
         }
         assert!(client.try_get_sample().unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compound_extensions_stay_in_their_sample() {
+        let server = compound_extension_fixture().await;
+        let config = SourceWebDatasetConfig {
+            url: format!("{}/listing", server.uri()),
+            reference_image_type: "jpg".into(),
+            random_sampling: false,
+            concurrent_downloads: 1,
+            rank: 0,
+            world_size: 1,
+            auth_token: String::new(),
+        };
+        let (sender, receiver) = bounded(8);
+        pull_tarballs(
+            Arc::new(new_shared_client(1)),
+            json!(format!("{}/compound.tar", server.uri())),
+            sender.clone(),
+            config,
+        )
+        .await
+        .unwrap();
+
+        let mut groups = Vec::new();
+        while let Some(sample) = receiver.try_recv().unwrap() {
+            let mut filenames: Vec<_> = sample.iter().map(|file| file.filename.clone()).collect();
+            filenames.sort();
+            groups.push(filenames);
+        }
+        assert_eq!(
+            groups,
+            [
+                vec!["0000.jpg", "0000.seg.png"],
+                vec!["0001.cls", "0001.depth.png", "0001.jpg"],
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compound_extension_images_reach_additional_images() {
+        let server = compound_extension_fixture().await;
+        let client = client(format!("{}/listing", server.uri()), false, 0, 1);
+        let mut additional: Vec<_> = collect(&client)
+            .iter()
+            .map(|sample| {
+                let mut filenames: Vec<_> = sample.additional_images.keys().cloned().collect();
+                filenames.sort();
+                (sample.id.clone(), filenames)
+            })
+            .collect();
+        additional.sort();
+        assert_eq!(
+            additional,
+            [
+                ("0000".to_string(), vec!["0000.seg.png".to_string()]),
+                ("0001".to_string(), vec!["0001.depth.png".to_string()]),
+            ]
+        );
     }
 
     #[test]
