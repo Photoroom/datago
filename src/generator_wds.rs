@@ -56,6 +56,17 @@ fn hash_fn(key: &str) -> u64 {
     hasher.finish()
 }
 
+// Match WebDataset's base_plus_ext: retain directories and split at the first
+// dot in the final path component. Dots in directory names are part of the key.
+pub(crate) fn key_and_field(path: &str) -> Option<(&str, &str)> {
+    let filename = path.rsplit('/').next()?;
+    let (stem, field) = filename.split_once('.')?;
+    if stem.is_empty() {
+        return None;
+    }
+    Some((&path[..path.len() - field.len() - 1], field))
+}
+
 async fn pull_tarballs(
     shared_client: Arc<SharedClient>,
     url: serde_json::Value,
@@ -133,16 +144,10 @@ async fn pull_tarballs(
             .into_owned();
         let filename = header_path.to_string_lossy().into_owned();
 
-        // WebDataset key: the file name up to its first "." ("0001.seg.png" -> "0001"),
-        // so that multi-part extensions stay in their sample.
-        let entry_key = Path::new(&filename)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let Some((entry_key, _)) = key_and_field(&filename) else {
+            continue;
+        };
+        let entry_key = entry_key.to_owned();
 
         // If we have a > 1 world size, we need to dispatch the samples to the correct rank
         // We'll do this by hashing the key and checking if it matches our rank, we skip otherwise
@@ -162,14 +167,10 @@ async fn pull_tarballs(
             // Sort the files in the sample so that the reference image is first
             // This will make sure that it is always processed first, and will serve as a reference
             // for the final aspect ratio bucket
-            current_files_for_sample.content.sort_by(|a, b| {
-                if a.filename.ends_with(&config.reference_image_type) {
-                    std::cmp::Ordering::Less
-                } else if b.filename.ends_with(&config.reference_image_type) {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Equal
-                }
+            current_files_for_sample.content.sort_by_key(|file| {
+                !key_and_field(&file.filename).is_some_and(|(_, field)| {
+                    field.eq_ignore_ascii_case(&config.reference_image_type)
+                })
             });
 
             if samples_metadata_tx.send(current_files_for_sample).is_err() {
@@ -669,6 +670,10 @@ mod tests {
     }
 
     async fn compound_extension_fixture() -> MockServer {
+        shard_fixture(compound_extension_shard()).await
+    }
+
+    async fn shard_fixture(bytes: Vec<u8>) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/listing"))
@@ -679,10 +684,86 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/compound.tar"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(compound_extension_shard()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
             .mount(&server)
             .await;
         server
+    }
+
+    #[test]
+    fn webdataset_keys_preserve_directories() {
+        assert_eq!(key_and_field("0000.jpg"), Some(("0000", "jpg")));
+        assert_eq!(
+            key_and_field("dir.v1/nested/0000.seg.png"),
+            Some(("dir.v1/nested/0000", "seg.png"))
+        );
+        assert_eq!(key_and_field("dir.v1/no_extension"), None);
+        assert_eq!(key_and_field("dir/.hidden.jpg"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn directory_samples_keep_distinct_ids_fields_and_ranks() {
+        let mut png = Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(4, 3, image::Rgb([11, 22, 33]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let keys = ["a.v1/0000", "b/0000"];
+        let mut archive = tar::Builder::new(Vec::new());
+        for key in keys {
+            // Put the auxiliary image first to verify exact reference selection.
+            for (field, bytes) in [
+                ("seg.png", png.get_ref().as_slice()),
+                ("png", png.get_ref().as_slice()),
+                ("json", b"base".as_slice()),
+                ("caption.json", b"caption".as_slice()),
+                ("metadata.json", b"metadata".as_slice()),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                archive
+                    .append_data(&mut header, format!("{key}.{field}"), bytes)
+                    .unwrap();
+            }
+        }
+        let server = shard_fixture(archive.into_inner().unwrap()).await;
+        for world_size in [1, 3] {
+            let mut delivered = HashSet::new();
+            for rank in 0..world_size {
+                let client = DatagoClient::new(
+                    json!({
+                        "source_type": "webdataset",
+                        "source_config": {
+                            "url": format!("{}/listing", server.uri()),
+                            "reference_image_type": "png",
+                            "concurrent_downloads": 1, "rank": rank, "world_size": world_size,
+                        },
+                        "limit": 10, "samples_buffer_size": 1,
+                    })
+                    .to_string(),
+                );
+                let samples = collect(&client);
+                let expected: HashSet<_> = keys
+                    .iter()
+                    .filter(|key| hash_fn(key) % world_size as u64 == rank as u64)
+                    .map(|key| key.to_string())
+                    .collect();
+                assert_eq!(ids(&samples), expected);
+                for sample in samples {
+                    assert!(delivered.insert(sample.id.clone()));
+                    assert_eq!(sample.additional_images.len(), 1);
+                    assert!(sample
+                        .additional_images
+                        .contains_key(&format!("{}.seg.png", sample.id)));
+                    assert_eq!(sample.attributes.len(), 3);
+                    assert_eq!(sample.attributes["json"], "base");
+                    assert_eq!(sample.attributes["caption.json"], "caption");
+                    assert_eq!(sample.attributes["metadata.json"], "metadata");
+                }
+            }
+            assert_eq!(delivered, keys.map(String::from).into_iter().collect());
+        }
     }
 
     #[test]

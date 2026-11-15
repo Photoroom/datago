@@ -1,3 +1,4 @@
+use crate::generator_wds::key_and_field;
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, BinaryFile, ImagePayload, Sample, TarballSample};
 use crate::worker_utils::{max_tasks_from_env, run_worker};
@@ -44,21 +45,24 @@ async fn process_sample(
     // for additional images, or leave the main image as an invalid placeholder.
     let reference = sample
         .iter()
-        .find(|file| extension(&file.filename).eq_ignore_ascii_case(&extension_reference_image))
+        .find(|file| {
+            key_and_field(&file.filename)
+                .is_some_and(|(_, field)| field.eq_ignore_ascii_case(&extension_reference_image))
+        })
         .ok_or_else(|| warn!("wds_worker: no reference image in {}", sample.name))?;
-    let id = Path::new(&reference.filename)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or(())?
-        .to_owned();
+    let id = key_and_field(&reference.filename).ok_or(())?.0.to_owned();
     let image = image_payload_from_file(reference, &img_tfm, &String::new(), encoding).await?;
     let aspect_ratio =
         image_processing::aspect_ratio_to_str((image.width as u32, image.height as u32));
     let mut attributes = HashMap::new();
     let mut additional_images = HashMap::new();
     for file in sample.iter() {
+        let field = key_and_field(&file.filename)
+            .ok_or(())?
+            .1
+            .to_ascii_lowercase();
         let ext = extension(&file.filename).to_ascii_lowercase();
-        if ext.eq_ignore_ascii_case(&extension_reference_image) {
+        if field.eq_ignore_ascii_case(&extension_reference_image) {
             continue;
         }
         if IMG_TYPES.contains(&ext.as_str()) {
@@ -71,7 +75,7 @@ async fn process_sample(
             }
         } else if TEXT_TYPES.contains(&ext.as_str()) {
             let text = String::from_utf8_lossy(&file.buffer).into_owned();
-            attributes.insert(ext, serde_json::Value::String(text));
+            attributes.insert(field, serde_json::Value::String(text));
         } else {
             debug!("wds_worker: unsupported file type: {}", file.filename);
         }
@@ -168,6 +172,33 @@ mod tests {
             filename: filename.into(),
             buffer: buffer.into_inner(),
         }
+    }
+
+    #[tokio::test]
+    async fn compound_reference_field_preserves_other_images() {
+        let sample = process_sample(
+            TarballSample {
+                name: "shard".into(),
+                content: vec![
+                    image_file("dir.v1/sample.left.PNG", [1, 2, 3]),
+                    image_file("dir.v1/sample.right.PNG", [4, 5, 6]),
+                ],
+            },
+            Arc::new(None),
+            image_processing::ImageEncoding::default(),
+            "RIGHT.png".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sample.id, "dir.v1/sample");
+        assert_eq!(sample.image.get_payload().data[0..3], [4, 5, 6]);
+        assert_eq!(sample.additional_images.len(), 1);
+        assert_eq!(
+            sample.additional_images["dir.v1/sample.left.PNG"]
+                .get_payload()
+                .data[0..3],
+            [1, 2, 3]
+        );
     }
 
     #[tokio::test]

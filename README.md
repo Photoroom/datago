@@ -119,6 +119,12 @@ by the remaining delivery budget, so a small limit does not start a full worker 
 WebDataset samples require a readable reference image (`reference_image_type`);
 missing or corrupt references are skipped. Additional images use the reference
 image's target aspect ratio, regardless of their order in the archive.
+WebDataset keys retain directory prefixes (for example, `train/0000.seg.png`
+belongs to `train/0000`). `reference_image_type` selects the full field name,
+case-insensitively: `png` selects `0000.png`, while `right.png` selects
+`0000.right.png`. Other images, including those with the same final extension,
+are returned in `additional_images` under their archive filenames. Text attribute
+keys retain the full field name in lowercase, such as `caption.json` and `json`.
 
 Sequential single-rank filesystem reads stream paths in sorted directory order.
 Global shuffling and distributed filesystem reads enumerate all candidate paths
