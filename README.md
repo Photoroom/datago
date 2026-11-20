@@ -416,17 +416,24 @@ rustflags = [
 ## Code organization
 
 - `client.rs` owns the engine lifecycle, Python signal polling, and cleanup.
-- `generator_*.rs` enumerate source metadata; `worker_*.rs` prepare individual samples.
+- `source.rs` is the seam between front ends and the back end: the `Source` trait a
+  front end implements, and `launch`, which wires any source into the same pipeline.
+- `generator_*.rs` enumerate the work items of a source and implement `Source` for it;
+  `worker_*.rs` prepare individual samples.
 - `worker_utils.rs` coordinates bounded concurrency, publication, sample limits, and cancellation.
+- `pipeline.rs` records how a pass ended, so a failure is never mistaken for exhaustion.
 - `image_payload.rs` owns shared pixels and validates their layout for image access.
 - `python_buffer.rs` contains the buffer protocol boundary and its ownership invariants.
 - `python_conversion.rs` converts samples into Python dictionaries and propagates errors.
 - `config.rs` and `http_client.rs` contain configuration and connection policy.
 - `structs.rs` holds pipeline data types and re-exports the original public type paths.
 
-Tasks return prepared samples to the coordinator. Only the coordinator writes to
-the output queue, so counting, cancellation, and end-of-stream behavior are shared
-by all sources. Encoded bytes and raw pixel layouts are interpreted separately;
+A source only says where samples come from: `enumerate` sends work items from a
+feeder thread and returns when there are no more, and `load` prepares one sample
+per item. Adding a source means implementing `Source` in one file and adding a
+`SourceType` variant. Tasks return prepared samples to the coordinator. Only the
+coordinator writes to the output queue, so counting, cancellation, and
+end-of-stream behavior are shared by all sources. Encoded bytes and raw pixel layouts are interpreted separately;
 public payload fields remain compatible, with validation before pixel conversion.
 
 ## DB benchmark CLI

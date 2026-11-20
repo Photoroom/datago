@@ -2,7 +2,7 @@
 //! close, so readers cannot mistake a failed producer for normal exhaustion.
 
 use crate::error::{panic_message, DatagoError};
-use crate::structs::{MetadataReceiver, Sample};
+use crate::structs::Sample;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -15,24 +15,42 @@ enum Outcome {
     Failed(DatagoError),
 }
 
+/// The queue of work items between the feeder and the worker. Supervision only
+/// closes it and asks whether it is closed, so the item type is erased here:
+/// every source is free to define its own.
+trait ItemQueue: std::fmt::Debug + Send + Sync {
+    fn close(&self);
+    fn is_disconnected(&self) -> bool;
+}
+
+impl<T: Send> ItemQueue for kanal::Receiver<T> {
+    fn close(&self) {
+        let _ = kanal::Receiver::close(self);
+    }
+
+    fn is_disconnected(&self) -> bool {
+        kanal::Receiver::is_disconnected(self)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PipelineControl {
     outcome: Arc<Mutex<Outcome>>,
     samples_rx: kanal::Receiver<Option<Sample>>,
-    metadata_rx: MetadataReceiver,
+    items_rx: Arc<dyn ItemQueue>,
     cancel: CancellationToken,
 }
 
 impl PipelineControl {
-    pub(crate) fn new(
+    pub(crate) fn new<T: Send + 'static>(
         samples_rx: kanal::Receiver<Option<Sample>>,
-        metadata_rx: MetadataReceiver,
+        items_rx: kanal::Receiver<T>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             outcome: Arc::new(Mutex::new(Outcome::Running)),
             samples_rx,
-            metadata_rx,
+            items_rx: Arc::new(items_rx),
             cancel,
         }
     }
@@ -53,9 +71,9 @@ impl PipelineControl {
     }
 
     fn fail(&self, error: DatagoError) {
-        // A worker reaching its limit closes metadata to retire the feeder.
+        // A worker reaching its limit closes the item queue to retire the feeder.
         // A resulting download/send failure is expected, not a failed pass.
-        if matches!(error, DatagoError::Source(_)) && self.metadata_rx.is_disconnected() {
+        if matches!(error, DatagoError::Source(_)) && self.items_rx.is_disconnected() {
             return;
         }
         let mut outcome = self.outcome.lock().unwrap();
@@ -68,7 +86,7 @@ impl PipelineControl {
 
     fn close(&self) {
         self.cancel.cancel();
-        self.metadata_rx.close();
+        self.items_rx.close();
         let _ = self.samples_rx.close();
     }
 
@@ -120,11 +138,7 @@ mod tests {
         let (samples_tx, samples_rx) = kanal::bounded(1);
         let (metadata_tx, metadata_rx) = kanal::bounded(1);
         (
-            PipelineControl::new(
-                samples_rx,
-                MetadataReceiver::Json(metadata_rx),
-                CancellationToken::new(),
-            ),
+            PipelineControl::new(samples_rx, metadata_rx, CancellationToken::new()),
             metadata_tx,
             samples_tx,
         )
@@ -160,7 +174,7 @@ mod tests {
         // Model the worker reaching its delivery limit while the feeder is
         // still preparing its next metadata item. Synchronize without sleeps.
         let (retired_tx, retired_rx) = std::sync::mpsc::channel();
-        let metadata_rx = control.metadata_rx.clone();
+        let metadata_rx = control.items_rx.clone();
         let feeder = control.spawn_feeder(metadata_tx.clone(), move || {
             retired_rx.recv().unwrap();
             assert!(metadata_tx.send(serde_json::Value::Null).is_err());

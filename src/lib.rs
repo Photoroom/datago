@@ -1,8 +1,11 @@
 //! Image data loading with native workers and a Python consumer.
 //!
-//! Source generators enumerate metadata into a bounded input queue. Source
-//! workers prepare samples; `worker_utils` alone publishes them, enforces the
-//! successful-sample limit, and observes cancellation at every asynchronous wait.
+//! `source` is the seam between front ends and the back end. A front end is a
+//! `Source`: its generator enumerates work items and its worker prepares one
+//! sample per item. The back end wires any source into the same pipeline:
+//! bounded queues, a feeder thread and a pool of loading tasks. `worker_utils`
+//! alone publishes samples, enforces the successful-sample limit, and observes
+//! cancellation at every asynchronous wait. `pipeline` records how a pass ended.
 //! `client` owns engine lifecycle and Python signal handling.
 //!
 //! Image pixels live in immutable Arc allocations (`image_payload`). Their
@@ -22,6 +25,7 @@ mod image_payload;
 mod pipeline;
 mod python_buffer;
 mod python_conversion;
+mod source;
 
 pub mod image_processing;
 pub mod structs;

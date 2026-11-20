@@ -1,12 +1,10 @@
-use crate::client::DatagoClient;
-use crate::error::DatagoError;
-use crate::structs::{
-    new_shared_client, BinaryFile, DatagoEngine, MetadataReceiver, SharedClient, TarballSample,
-};
+use crate::image_processing::{ARAwareTransform, ImageEncoding};
+use crate::source::{Source, SourceContext};
+use crate::structs::{new_shared_client, BinaryFile, Sample, SharedClient, TarballSample};
+use crate::worker_utils::{max_retries_from_env, max_tasks_from_env};
 use crate::worker_wds;
 
 use async_tar::Archive;
-use kanal::bounded;
 use log::{debug, error, info, warn};
 use rand::seq::SliceRandom;
 use reqwest::Url;
@@ -399,14 +397,6 @@ async fn tasks_from_shards(
             }
             debug!("Served {count} items from the bucket");
 
-            // Send an empty value to signal the end of the stream
-            if samples_metadata_tx
-                .send(TarballSample::new("done".to_string()))
-                .is_err()
-            {
-                debug!("list_shards: stream already closed, wrapping up");
-            }
-
             Ok(response_json)
         }
         Err(e) => {
@@ -426,11 +416,7 @@ fn query_shards_and_dispatch(
     // for each of them, start an async task to download the TarballSample and unpack it in memory
     // Then, for each sample in the tarball (multiple payloads typically), send it to the processing channel
 
-    // Collect DATAGO_MAX_RETRIES from the environment, default to 3
-    let max_retries = std::env::var("DATAGO_MAX_RETRIES")
-        .ok()
-        .and_then(|v| v.parse::<u8>().ok())
-        .unwrap_or(3);
+    let max_retries = max_retries_from_env();
 
     // Use more threads for the download runtime to handle increased concurrency
     let download_threads = std::cmp::max(4, source_config.concurrent_downloads);
@@ -455,74 +441,67 @@ fn query_shards_and_dispatch(
         })
 }
 
-// ---- Global orchestration ---------
-pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
-    let mut source_config: SourceWebDatasetConfig =
-        serde_json::from_value(client.source_config.clone())
-            .map_err(|error| DatagoError::Configuration(format!("WebDataset source: {error}")))?;
-    // Allocate all the message passing pipes
-    let metadata_buffer_size = std::cmp::max(128, client.samples_buffer * 2);
-    let (samples_metadata_tx, samples_metadata_rx) = bounded::<TarballSample>(metadata_buffer_size);
-    let (samples_tx, samples_rx) = bounded(client.samples_buffer);
-    let cancel = CancellationToken::new();
-    let control = crate::pipeline::PipelineControl::new(
-        samples_rx.clone(),
-        MetadataReceiver::Tarball(samples_metadata_rx.clone()),
-        cancel.clone(),
-    );
+const DEFAULT_CONCURRENT_DOWNLOADS: usize = 8;
 
-    info!("Using webdataset as source");
+/// Samples stored as groups of files in tar shards, streamed over HTTP.
+pub(crate) struct WebDatasetSource {
+    config: SourceWebDatasetConfig,
+    http: Arc<SharedClient>,
+    image_transform: Arc<Option<ARAwareTransform>>,
+    encoding: ImageEncoding,
+}
 
-    let extension_reference_image_type: String = source_config.reference_image_type.clone();
+impl Source for WebDatasetSource {
+    const NAME: &'static str = "WebDataset";
+    type Config = SourceWebDatasetConfig;
+    /// The files of one sample, already downloaded and untarred.
+    type Item = TarballSample;
 
-    if source_config.concurrent_downloads == 0 {
-        info!("WDS: Defaulting to 8 concurrent_downloads");
-        source_config.concurrent_downloads = 8;
+    fn new(mut config: Self::Config, context: &SourceContext) -> Self {
+        if config.concurrent_downloads == 0 {
+            info!("WDS: Defaulting to {DEFAULT_CONCURRENT_DOWNLOADS} concurrent_downloads");
+            config.concurrent_downloads = DEFAULT_CONCURRENT_DOWNLOADS;
+        }
+        Self {
+            config,
+            http: Arc::new(new_shared_client(context.max_connections)),
+            image_transform: context.image_transform.clone(),
+            encoding: context.encoding,
+        }
     }
 
-    // List the contents of the bucket and feed the workers
-    let http_client = Arc::new(new_shared_client(client.max_connections));
-    let cancel_feeder = cancel.clone();
-
-    let feeder = Some(control.spawn_feeder(samples_metadata_tx.clone(), move || {
+    fn enumerate(
+        &self,
+        items: kanal::Sender<Self::Item>,
+        cancel: &CancellationToken,
+    ) -> Result<(), String> {
         query_shards_and_dispatch(
-            http_client,
-            samples_metadata_tx,
-            source_config,
-            cancel_feeder,
+            self.http.clone(),
+            items,
+            self.config.clone(),
+            cancel.clone(),
         )
-    }));
+    }
 
-    // Kick the workers which deserialize all the payloads
-    let image_transform = client.image_transform.clone();
-    let encoding = crate::image_processing::ImageEncoding {
-        encode_images: client.encode_images,
-        img_to_rgb8: client.img_to_rgb8,
-        encode_format: client.encode_format,
-        jpeg_quality: client.jpeg_quality,
-    };
-    let limit = client.limit;
-    let samples_tx_worker = samples_tx.clone();
-    let samples_metadata_rx_worker = samples_metadata_rx.clone();
-    let cancel_worker = cancel.clone();
-    let worker = Some(control.spawn_worker(samples_tx.clone(), move || {
-        worker_wds::deserialize_samples(
-            samples_metadata_rx_worker,
-            samples_tx_worker,
-            image_transform,
-            encoding,
-            limit,
-            extension_reference_image_type,
-            cancel_worker,
+    async fn load(&self, item: Self::Item) -> Result<Sample, ()> {
+        worker_wds::process_sample(
+            item,
+            self.image_transform.clone(),
+            self.encoding,
+            self.config.reference_image_type.clone(),
         )
-    }));
+        .await
+    }
 
-    Ok(DatagoEngine {
-        control,
-        samples_rx,
-        feeder,
-        worker,
-    })
+    fn max_tasks(&self) -> usize {
+        let cpus = num_cpus::get();
+        max_tasks_from_env(cpus).min(cpus * 4)
+    }
+
+    fn queue_capacity(samples_buffer: usize) -> usize {
+        // Shards arrive in bursts: keep room for them even with a small buffer.
+        (samples_buffer * 2).max(128)
+    }
 }
 
 // -------- Unit tests --------
@@ -530,7 +509,8 @@ pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::structs::Sample;
+    use crate::client::DatagoClient;
+    use crate::error::DatagoError;
     use serde_json::json;
     use std::collections::HashSet;
     use std::io::Cursor;
@@ -788,7 +768,7 @@ mod tests {
                 auth_token: String::new(),
             };
             let http = Arc::new(new_shared_client(2));
-            let (sender, receiver) = bounded(2);
+            let (sender, receiver) = kanal::bounded(2);
             let cancel = CancellationToken::new();
             let feeder_cancel = cancel.clone();
             let feeder = std::thread::spawn(move || {
@@ -805,10 +785,13 @@ mod tests {
             cancel.cancel();
             receiver.close().unwrap();
             feeder.join().unwrap().expect("fixture feeder failed");
-            assert!(end
-                .expect("fixture metadata read failed")
-                .unwrap()
-                .is_empty());
+            // The feeder returning drops the last sender, which closes the
+            // queue: there is no marker item, and no wait for the timeout.
+            use kanal::ReceiveErrorTimeout::{Closed, SendClosed};
+            assert!(matches!(
+                end.expect("fixture metadata read failed"),
+                Err(Closed | SendClosed)
+            ));
             for sample in received.expect("fixture feeder did not deliver metadata") {
                 assert_eq!(sample.content.len(), 2);
                 assert!(sample.iter().all(|file| !file.buffer.is_empty()));
@@ -882,7 +865,7 @@ mod tests {
             world_size: 1,
             auth_token: String::new(),
         };
-        let (sender, receiver) = bounded(8);
+        let (sender, receiver) = kanal::bounded(8);
         pull_tarballs(
             Arc::new(new_shared_client(1)),
             json!(format!("{}/compound.tar", server.uri())),

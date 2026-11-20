@@ -9,32 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::thread;
 
-#[derive(Clone, Debug)]
-pub enum MetadataReceiver {
-    Json(kanal::Receiver<serde_json::Value>),
-    Tarball(kanal::Receiver<TarballSample>),
-}
-
-impl MetadataReceiver {
-    pub(crate) fn is_disconnected(&self) -> bool {
-        match self {
-            Self::Json(receiver) => receiver.is_disconnected(),
-            Self::Tarball(receiver) => receiver.is_disconnected(),
-        }
-    }
-
-    pub fn close(&self) {
-        match self {
-            Self::Json(receiver) => {
-                let _ = receiver.close();
-            }
-            Self::Tarball(receiver) => {
-                let _ = receiver.close();
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct DatagoEngine {
     pub(crate) control: crate::pipeline::PipelineControl,
@@ -185,12 +159,10 @@ mod tests {
         let (metadata_tx, metadata_rx) = kanal::bounded(1);
         samples_tx.send(None).unwrap();
         metadata_tx.send(serde_json::Value::Null).unwrap();
-        let metadata_rx = MetadataReceiver::Json(metadata_rx);
-        let cancel = CancellationToken::new();
         let control = crate::pipeline::PipelineControl::new(
             samples_rx.clone(),
-            metadata_rx.clone(),
-            cancel.clone(),
+            metadata_rx,
+            CancellationToken::new(),
         );
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let feeder_finished = finished_tx.clone();

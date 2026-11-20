@@ -1,11 +1,8 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
-use crate::worker_utils::{max_tasks_from_env, run_worker};
 use log::{debug, error};
-use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
     // The image decoder and std file reads are blocking. Keep them off Tokio's
@@ -43,7 +40,7 @@ async fn image_payload_from_path(
     }
 }
 
-async fn pull_sample(
+pub(crate) async fn pull_sample(
     sample_json: serde_json::Value,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encoding: image_processing::ImageEncoding,
@@ -78,58 +75,6 @@ async fn pull_sample(
             Err(())
         }
     }
-}
-
-async fn async_pull_samples(
-    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let image_transform = Arc::new(image_transform);
-    let result = run_worker(
-        samples_metadata_rx,
-        samples_tx,
-        min(max_tasks_from_env(num_cpus::get()), limit),
-        limit,
-        cancel,
-        |item| *item == serde_json::Value::Null,
-        move |item| pull_sample(item, image_transform.clone(), encoding),
-    )
-    .await;
-    result.map(|count| debug!("file_worker: samples delivered: {count}"))
-}
-
-pub fn pull_samples(
-    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
-        .enable_all()
-        .build()
-        .unwrap();
-    let result = runtime.block_on(async {
-        async_pull_samples(
-            samples_metadata_rx,
-            samples_tx,
-            image_transform,
-            encoding,
-            limit,
-            cancel,
-        )
-        .await
-    });
-    // A blocking filesystem syscall already in progress is not cancellable.
-    // Do not make this worker's join wait indefinitely for Tokio's blocking pool.
-    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
-    result
 }
 
 #[cfg(test)]
@@ -482,108 +427,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn test_async_pull_samples_basic() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create multiple test images
-        let mut image_paths = Vec::new();
-        for i in 0..3 {
-            let image_path = temp_dir.path().join(format!("test_{i}.png"));
-            create_test_image(&image_path);
-            image_paths.push(image_path.to_str().unwrap().to_string());
-        }
-
-        let (metadata_tx, metadata_rx) = kanal::bounded(10);
-        let (samples_tx, samples_rx) = kanal::bounded(10);
-
-        // Send image paths
-        for path in &image_paths {
-            metadata_tx
-                .send(serde_json::Value::String(path.clone()))
-                .unwrap();
-        }
-        metadata_tx.send(serde_json::Value::Null).unwrap(); // End marker
-
-        async_pull_samples(
-            metadata_rx,
-            samples_tx,
-            None,
-            image_processing::ImageEncoding::default(),
-            10,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-
-        // Check received samples
-        let mut received_samples = Vec::new();
-        while let Ok(sample_opt) = samples_rx.recv() {
-            if let Some(sample) = sample_opt {
-                received_samples.push(sample);
-            } else {
-                break; // End marker
-            }
-        }
-
-        assert_eq!(received_samples.len(), image_paths.len());
-        for sample in &received_samples {
-            assert_eq!(sample.source, "filesystem");
-            let payload = sample.image.get_payload();
-            assert_eq!(payload.width, 1);
-            assert_eq!(payload.height, 1);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_async_pull_samples_with_limit() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create more images than the limit
-        for i in 0..10 {
-            let image_path = temp_dir.path().join(format!("test_{i}.png"));
-            create_test_image(&image_path);
-        }
-
-        let (metadata_tx, metadata_rx) = kanal::bounded(20);
-        let (samples_tx, samples_rx) = kanal::bounded(20);
-
-        // Send more paths than the limit
-        for i in 0..10 {
-            let path = temp_dir.path().join(format!("test_{i}.png"));
-            metadata_tx
-                .send(serde_json::Value::String(
-                    path.to_str().unwrap().to_string(),
-                ))
-                .unwrap();
-        }
-        metadata_tx.send(serde_json::Value::Null).unwrap();
-
-        let limit = 3;
-        async_pull_samples(
-            metadata_rx,
-            samples_tx,
-            None,
-            image_processing::ImageEncoding::default(),
-            limit,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-
-        // Count received samples
-        let mut count = 0;
-        while let Ok(sample_opt) = samples_rx.recv() {
-            if sample_opt.is_some() {
-                count += 1;
-            } else {
-                break;
-            }
-        }
-
-        assert_eq!(count, limit);
-    }
-
     fn create_test_webp_image(path: &std::path::Path) {
         // Create a simple 2x2 WebP image
         let img = image::DynamicImage::new_rgb8(2, 2);
@@ -696,44 +539,5 @@ mod tests {
         let payload = sample.image.get_payload();
         assert_eq!(payload.width, 2);
         assert_eq!(payload.height, 2);
-    }
-
-    #[test]
-    fn test_pull_samples_sync_wrapper() {
-        let temp_dir = TempDir::new().unwrap();
-        let image_path = temp_dir.path().join("test.png");
-        create_test_image(&image_path);
-
-        let (metadata_tx, metadata_rx) = kanal::bounded(10);
-        let (samples_tx, samples_rx) = kanal::bounded(10);
-
-        // Send one image path
-        metadata_tx
-            .send(serde_json::Value::String(
-                image_path.to_str().unwrap().to_string(),
-            ))
-            .unwrap();
-        metadata_tx.send(serde_json::Value::Null).unwrap();
-
-        // Test the sync wrapper
-        pull_samples(
-            metadata_rx,
-            samples_tx,
-            None,
-            image_processing::ImageEncoding::default(),
-            1,
-            CancellationToken::new(),
-        )
-        .unwrap();
-
-        // Check that a sample was received
-        let sample_opt = samples_rx.recv().unwrap();
-        assert!(sample_opt.is_some());
-
-        let sample = sample_opt.unwrap();
-        assert_eq!(sample.source, "filesystem");
-
-        // A clean producer exit closes the output after its last sample.
-        assert!(samples_rx.recv().is_err());
     }
 }
