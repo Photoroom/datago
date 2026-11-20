@@ -1,13 +1,10 @@
 use crate::generator_wds::key_and_field;
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, BinaryFile, ImagePayload, Sample, TarballSample};
-use crate::worker_utils::{max_tasks_from_env, run_worker};
-use log::{debug, info, warn};
-use std::cmp::min;
+use log::{debug, warn};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
 // List all the types we'll support
 pub const TEXT_TYPES: [&str; 3] = ["cls", "json", "txt"];
@@ -35,7 +32,7 @@ async fn image_payload_from_file(
     result.map_err(|error| warn!("wds_worker: cannot prepare {}: {error}", file.filename))
 }
 
-async fn process_sample(
+pub(crate) async fn process_sample(
     sample: TarballSample,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encoding: image_processing::ImageEncoding,
@@ -92,68 +89,6 @@ async fn process_sample(
         latents: HashMap::new(),
         duplicate_state: 0,
     })
-}
-
-async fn async_deserialize_samples(
-    samples_metadata_rx: kanal::Receiver<TarballSample>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    extension_reference_image: String,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let max_tasks = min(num_cpus::get() * 4, max_tasks_from_env(num_cpus::get()));
-    let image_transform = Arc::new(image_transform);
-    let count = run_worker(
-        samples_metadata_rx,
-        samples_tx,
-        max_tasks,
-        limit,
-        cancel,
-        TarballSample::is_empty,
-        move |item| {
-            process_sample(
-                item,
-                image_transform.clone(),
-                encoding,
-                extension_reference_image.clone(),
-            )
-        },
-    )
-    .await?;
-    info!("wds_worker: samples delivered: {count}");
-    Ok(())
-}
-
-pub fn deserialize_samples(
-    samples_metadata_rx: kanal::Receiver<TarballSample>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    extension_reference_image: String,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get()) // Tasks in flight are limited by DATAGO_MAX_TASKS env
-        .enable_all()
-        .build()
-        .unwrap();
-    let result = runtime.block_on(async {
-        async_deserialize_samples(
-            samples_metadata_rx,
-            samples_tx,
-            image_transform,
-            encoding,
-            limit,
-            extension_reference_image,
-            cancel,
-        )
-        .await
-    });
-    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
-    result
 }
 
 #[cfg(test)]

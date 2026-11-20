@@ -3,13 +3,10 @@ use crate::structs::{
     to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
     LatentPayload, Sample, SharedClient, UrlLatent,
 };
-use crate::worker_utils::{max_tasks_from_env, run_worker};
-use log::{debug, error, warn};
+use log::{error, warn};
 use serde::{Deserialize, Serialize};
-use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 // ------------------------------------------------------------------
 #[derive(Debug, Serialize, Deserialize)]
 struct SampleMetadata {
@@ -109,7 +106,7 @@ async fn image_payload_from_url(
     }
 }
 
-async fn pull_sample(
+pub(crate) async fn pull_sample(
     client: Arc<SharedClient>,
     sample_json: serde_json::Value,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
@@ -248,77 +245,6 @@ async fn pull_sample(
     };
 
     Ok(pulled_sample)
-}
-
-async fn async_pull_samples(
-    client: &Arc<SharedClient>,
-    samples_meta_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let retries = std::env::var("DATAGO_MAX_RETRIES")
-        .ok()
-        .and_then(|value| value.parse::<u8>().ok())
-        .unwrap_or(3);
-    let max_tasks = min(
-        max_tasks_from_env(min(num_cpus::get(), client.max_connections)),
-        limit,
-    );
-    let client = client.clone();
-    let image_transform = Arc::new(image_transform);
-    let count = run_worker(
-        samples_meta_rx,
-        samples_tx,
-        max_tasks,
-        limit,
-        cancel,
-        |item| *item == serde_json::Value::Null,
-        move |item| {
-            pull_sample(
-                client.clone(),
-                item,
-                image_transform.clone(),
-                retries,
-                encoding,
-            )
-        },
-    )
-    .await?;
-    debug!("http_worker: samples delivered: {count}");
-    Ok(())
-}
-
-pub fn pull_samples(
-    client: &Arc<SharedClient>,
-    samples_meta_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
-        .enable_all()
-        .build()
-        .unwrap();
-    let result = runtime.block_on(async {
-        async_pull_samples(
-            client,
-            samples_meta_rx,
-            samples_tx,
-            image_transform,
-            encoding,
-            limit,
-            cancel,
-        )
-        .await
-    });
-    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
-    result
 }
 
 #[cfg(test)]

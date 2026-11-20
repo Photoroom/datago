@@ -13,6 +13,14 @@ pub fn max_tasks_from_env(default: usize) -> usize {
     parse_max_tasks(std::env::var("DATAGO_MAX_TASKS").ok(), default)
 }
 
+/// How many times a failed download is attempted, from `DATAGO_MAX_RETRIES`.
+pub fn max_retries_from_env() -> u8 {
+    std::env::var("DATAGO_MAX_RETRIES")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(3)
+}
+
 fn parse_max_tasks(value: Option<String>, default: usize) -> usize {
     value
         .and_then(|value| value.parse::<usize>().ok())
@@ -21,6 +29,9 @@ fn parse_max_tasks(value: Option<String>, default: usize) -> usize {
 
 /// Process at most `max_tasks` items concurrently and publish at most `limit`
 /// successful samples. Failed items do not consume the delivery budget.
+///
+/// The input ends when its last sender is dropped: items still queued at that
+/// point are processed first, so a feeder signals exhaustion by returning.
 ///
 /// Input, task completion, and output backpressure all observe cancellation.
 /// After input ends we keep selecting task completion against cancellation;
@@ -31,7 +42,6 @@ pub async fn run_worker<M, F, Fut>(
     max_tasks: usize,
     limit: usize,
     cancel: CancellationToken,
-    is_end: impl Fn(&M) -> bool,
     process: F,
 ) -> Result<usize, String>
 where
@@ -81,8 +91,8 @@ where
                 if !input_finished && tasks.len() < max_tasks.min(limit - delivered) => {
                 metadata.set(metadata_rx.as_async().recv());
                 match received {
-                    Ok(item) if !is_end(&item) => { tasks.spawn(process(item)); }
-                    _ => {
+                    Ok(item) => { tasks.spawn(process(item)); }
+                    Err(_) => {
                         input_finished = true;
                         // The engine retains another receiver; explicitly close
                         // this queue so the feeder can always finish.
@@ -138,18 +148,16 @@ mod tests {
         let (metadata_tx, metadata_rx) = kanal::bounded(32);
         let (samples_tx, samples_rx) = kanal::bounded(32);
         for id in 0..20 {
-            metadata_tx.send(Some(id)).unwrap();
+            metadata_tx.send(id).unwrap();
         }
-        metadata_tx.send(None).unwrap();
+        drop(metadata_tx);
         let delivered = run_worker(
             metadata_rx,
             samples_tx,
             4,
             5,
             CancellationToken::new(),
-            Option::is_none,
             |id| async move {
-                let id = id.unwrap();
                 if id % 3 == 0 {
                     Err(())
                 } else {
@@ -176,9 +184,9 @@ mod tests {
         let (metadata_tx, metadata_rx) = kanal::bounded(16);
         let (samples_tx, _samples_rx) = kanal::bounded(16);
         for id in 0..10 {
-            metadata_tx.send(Some(id)).unwrap();
+            metadata_tx.send(id).unwrap();
         }
-        metadata_tx.send(None).unwrap();
+        drop(metadata_tx);
         let started = std::sync::atomic::AtomicUsize::new(0);
         let delivered = run_worker(
             metadata_rx,
@@ -186,10 +194,9 @@ mod tests {
             8,
             2,
             CancellationToken::new(),
-            Option::is_none,
             |id| {
                 started.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                async move { Ok(sample(id.unwrap())) }
+                async move { Ok(sample(id)) }
             },
         )
         .await
@@ -202,25 +209,20 @@ mod tests {
     async fn cancellation_after_end_of_input_aborts_pending_work() {
         let (metadata_tx, metadata_rx) = kanal::bounded(2);
         let (samples_tx, _samples_rx) = kanal::bounded(2);
-        metadata_tx.send(Some(1)).unwrap();
-        metadata_tx.send(None).unwrap();
+        metadata_tx.send(1).unwrap();
+        drop(metadata_tx); // End of input: the queued item is still processed.
+        let observer = metadata_rx.clone();
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let worker = tokio::spawn(async move {
-            run_worker(
-                metadata_rx,
-                samples_tx,
-                4,
-                10,
-                worker_cancel,
-                Option::is_none,
-                |_| std::future::pending::<Result<Sample, ()>>(),
-            )
+            run_worker(metadata_rx, samples_tx, 4, 10, worker_cancel, |_: usize| {
+                std::future::pending::<Result<Sample, ()>>()
+            })
             .await
         });
         // Closing the queue proves the worker entered its final completion phase.
         tokio::time::timeout(Duration::from_secs(2), async {
-            while !metadata_tx.is_disconnected() {
+            while !observer.is_closed() {
                 tokio::task::yield_now().await;
             }
         })
@@ -240,23 +242,15 @@ mod tests {
         let (metadata_tx, metadata_rx) = kanal::bounded(2);
         let (samples_tx, _samples_rx) = kanal::bounded(1);
         samples_tx.send(Some(sample(0))).unwrap(); // Consumer is not draining.
-        metadata_tx.send(Some(1)).unwrap();
+        metadata_tx.send(1).unwrap();
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let (started_tx, started_rx) = kanal::bounded(1);
         let worker = tokio::spawn(async move {
-            run_worker(
-                metadata_rx,
-                samples_tx,
-                1,
-                10,
-                worker_cancel,
-                Option::is_none,
-                move |id| {
-                    started_tx.send(()).unwrap();
-                    async move { Ok(sample(id.unwrap())) }
-                },
-            )
+            run_worker(metadata_rx, samples_tx, 1, 10, worker_cancel, move |id| {
+                started_tx.send(()).unwrap();
+                async move { Ok(sample(id)) }
+            })
             .await
         });
         started_rx.as_async().recv().await.unwrap();
@@ -275,21 +269,20 @@ mod tests {
         let (metadata_tx, metadata_rx) = kanal::bounded(2);
         let (samples_tx, samples_rx) = kanal::bounded(4);
         let prepared = std::sync::Arc::new(tokio::sync::Notify::new());
-        metadata_tx.send(Some(0)).unwrap();
+        metadata_tx.send(0).unwrap();
         let mut worker = Box::pin(run_worker(
             metadata_rx,
             samples_tx,
             2,
             10,
             CancellationToken::new(),
-            Option::is_none,
             |id| {
                 let prepared = prepared.clone();
                 async move {
-                    if id == Some(0) {
+                    if id == 0 {
                         prepared.notify_one();
                     }
-                    Ok(sample(id.unwrap()))
+                    Ok(sample(id))
                 }
             },
         ));
@@ -299,9 +292,9 @@ mod tests {
         prepared.notified().await;
         // Both task completion and the metadata receive are now ready. The
         // biased select handles completion first; the receive must survive it.
-        metadata_tx.send(Some(1)).unwrap();
+        metadata_tx.send(1).unwrap();
         assert!(futures::poll!(worker.as_mut()).is_pending());
-        metadata_tx.send(None).unwrap();
+        drop(metadata_tx);
 
         assert_eq!(worker.await.unwrap(), 2);
         let mut ids = Vec::new();
@@ -324,9 +317,8 @@ mod tests {
             4,
             10,
             CancellationToken::new(),
-            Option::is_none,
-            |id: Option<usize>| {
-                processed.lock().unwrap().push(id.unwrap());
+            |id: usize| {
+                processed.lock().unwrap().push(id);
                 std::future::pending::<Result<Sample, ()>>()
             },
         ));
@@ -334,7 +326,7 @@ mod tests {
         // Force two separate waits on an empty queue. A reused receive signal
         // must not report its previous delivery as another completed receive.
         assert!(futures::poll!(worker.as_mut()).is_pending());
-        metadata_tx.send(Some(7)).unwrap();
+        metadata_tx.send(7).unwrap();
         assert!(futures::poll!(worker.as_mut()).is_pending());
         assert!(futures::poll!(worker.as_mut()).is_pending());
         metadata_tx.close().unwrap();

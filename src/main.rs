@@ -1,29 +1,13 @@
-mod config;
-mod error;
-mod http_client;
-mod image_payload;
-mod pipeline;
-mod python_buffer;
-mod python_conversion;
 use clap::{Arg, Command};
+use datago::image_processing::{EncodeFormat, ImageTransformConfig};
+use datago::{initialize_logging, DatagoClient};
 use log::{error, info};
 use prettytable::{row, Table};
 use serde_json::json;
 use std::collections::HashMap;
-mod client;
-mod generator_files;
-mod generator_http;
-mod generator_wds;
-
-mod image_processing;
-mod structs;
-mod worker_files;
-mod worker_http;
-mod worker_utils;
-mod worker_wds;
 
 fn main() {
-    client::initialize_logging(Some("info".to_string()));
+    initialize_logging(Some("info".to_string()));
 
     // -----------------------------------------------------------------
     // Handle CLI arguments
@@ -101,7 +85,7 @@ fn main() {
     // -----------------------------------------------------------------
     // Get the appropriate image transformation
     let image_transform_config = if crop_and_resize {
-        Some(image_processing::ImageTransformConfig {
+        Some(ImageTransformConfig {
             crop_and_resize: true,
             default_image_size: 1024,
             downsampling_ratio: 32,
@@ -109,7 +93,7 @@ fn main() {
             max_aspect_ratio: 2.0,
             pre_encode_images: true,
             image_to_rgb8: false,
-            encode_format: image_processing::EncodeFormat::default(),
+            encode_format: EncodeFormat::default(),
             jpeg_quality: 92,
         })
     } else {
@@ -131,7 +115,7 @@ fn main() {
 
     info!("{config}");
 
-    let client = client::DatagoClient::new(config.to_string());
+    let client = DatagoClient::new(config.to_string());
 
     // -----------------------------------------------------------------
     let mut size_buckets: HashMap<String, i32> = HashMap::new();
