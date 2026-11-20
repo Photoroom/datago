@@ -528,13 +528,15 @@ The following benchmarks are using ImageNet 1k, which is very low resolution and
 ### AMD Zen3 laptop - IN1k - disk - no processing
 ![AMD Zen3 laptop & M2 SSD](assets/zen3_ssd.png)
 
-### AMD EPYC 9454 - IN1k - disk - no processing
-![AMD EPYC 9454](assets/epyc_vast.png)
+### AMD EPYC 7R13 (2x48 cores) - IN1k - disk - no processing
+![AMD EPYC 7R13](assets/epyc_vast.png)
 
 One liner to repro locally (rebuilding the package):
 ```bash
-DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --reinstall-package datago --python 3.14 --group dev python/benchmark_filesystem.py --sweep --limit 500
+DATAGO_TEST_FILESYSTEM=$PATH_TO_YOUR_TEST_DATA uv run --reinstall-package datago --python 3.14 --group dev python/benchmark_filesystem.py --sweep --limit 5000
 ```
+The EPYC plot starts Torch workers with the `fork` method. Python 3.14 defaults to
+`forkserver`, which re-imports Torch in every worker and adds seconds of startup.
 
 ## Webdataset: FakeIN
 
