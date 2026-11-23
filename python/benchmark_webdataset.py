@@ -1,12 +1,26 @@
 import json
 import os
 import time
+from functools import partial
 from typing import Any
 
 import typer
 from benchmark_defaults import IMAGE_CONFIG
 from dataset import DatagoIterDataset
 from tqdm import tqdm
+
+
+# DataLoader workers pickle these under Python 3.14's default forkserver start
+# method, so they must be importable module-level functions, not lambdas.
+def _passthrough(x):
+    return x
+
+
+def _resize_images(sample, resize):
+    for key in ("jpg", "png"):
+        if key in sample:
+            sample[key] = resize(sample[key])
+    return sample
 
 
 def benchmark(
@@ -168,43 +182,24 @@ def benchmark(
         from webdataset import WebDataset
 
         print("\nBenchmarking webdataset library dataloader")
-        # Define the transformations to apply to each image
-        transform = (
-            transforms.Compose(
-                [
-                    transforms.Resize(
-                        (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
-                    ),
-                ]
-            )
-            if crop_and_resize
-            else lambda x: x
-        )
-        if transform:
-
-            def custom_transform(sample):
-                if "jpg" in sample:
-                    sample["jpg"] = transform(sample["jpg"])
-                if "png" in sample:
-                    sample["png"] = transform(sample["png"])
-                return sample
-        else:
-            custom_transform = lambda x: x  # noqa: E731
         # Create a WebDataset instance
         dataset = (
             WebDataset(url, shardshuffle=False)
             .shuffle(256)  # Optional: shuffle with buffer
             .decode("pil")  # Decode images using PIL
-            .map(custom_transform)
-            # .to_tuple("png", "cls")  # Map keys to output tuple
         )
+        if crop_and_resize:
+            resize = transforms.Resize(
+                (1024, 1024), interpolation=transforms.InterpolationMode.LANCZOS
+            )
+            dataset = dataset.map(partial(_resize_images, resize=resize))
 
         dataloader: DataLoader = DataLoader(
             dataset,
             batch_size=1,
             num_workers=num_workers,
             prefetch_factor=8,  # Didn't sweep on that, but probably not super impactful
-            collate_fn=lambda x: x,
+            collate_fn=_passthrough,
         )
 
         # Iterate over the DataLoader
