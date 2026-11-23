@@ -1,8 +1,10 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
+use crate::worker_utils::{max_tasks_from_env, run_legacy_worker};
 use log::{debug, error};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
     // The image decoder and std file reads are blocking. Keep them off Tokio's
@@ -77,6 +79,27 @@ pub(crate) async fn pull_sample(
     }
 }
 
+/// Run the filesystem worker for Rust callers supplying JSON paths.
+pub fn pull_samples(
+    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
+    samples_tx: kanal::Sender<Option<Sample>>,
+    image_transform: Option<image_processing::ARAwareTransform>,
+    encoding: image_processing::ImageEncoding,
+    limit: usize,
+    cancel: CancellationToken,
+) -> Result<(), String> {
+    let image_transform = Arc::new(image_transform);
+    run_legacy_worker(
+        samples_metadata_rx,
+        samples_tx,
+        max_tasks_from_env(num_cpus::get()),
+        limit,
+        cancel,
+        serde_json::Value::is_null,
+        |item| pull_sample(item, image_transform.clone(), encoding),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +111,30 @@ mod tests {
         // Create a simple 1x1 PNG image
         let img = image::DynamicImage::new_rgb8(1, 1);
         img.save(path).unwrap();
+    }
+
+    #[test]
+    fn legacy_worker_stops_at_the_null_marker_with_the_sender_still_open() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("sample.png");
+        create_test_image(&path);
+        let (items_tx, items_rx) = kanal::bounded(2);
+        let (samples_tx, samples_rx) = kanal::bounded(2);
+        items_tx.send(serde_json::json!(path)).unwrap();
+        items_tx.send(serde_json::Value::Null).unwrap();
+
+        pull_samples(
+            items_rx,
+            samples_tx,
+            None,
+            image_processing::ImageEncoding::default(),
+            10,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(matches!(samples_rx.recv(), Ok(Some(_))));
+        assert!(samples_rx.recv().is_err());
+        assert!(items_tx.is_closed());
     }
 
     #[tokio::test]

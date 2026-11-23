@@ -3,10 +3,12 @@ use crate::structs::{
     to_python_image_payload, to_python_image_payload_map, CocaEmbedding, ImagePayload,
     LatentPayload, Sample, SharedClient, UrlLatent,
 };
+use crate::worker_utils::{max_retries_from_env, max_tasks_from_env, run_legacy_worker};
 use log::{error, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 // ------------------------------------------------------------------
 #[derive(Debug, Serialize, Deserialize)]
 struct SampleMetadata {
@@ -245,6 +247,37 @@ pub(crate) async fn pull_sample(
     };
 
     Ok(pulled_sample)
+}
+
+/// Run the DB worker for Rust callers supplying JSON metadata.
+pub fn pull_samples(
+    client: &Arc<SharedClient>,
+    samples_meta_rx: kanal::Receiver<serde_json::Value>,
+    samples_tx: kanal::Sender<Option<Sample>>,
+    image_transform: Option<image_processing::ARAwareTransform>,
+    encoding: image_processing::ImageEncoding,
+    limit: usize,
+    cancel: CancellationToken,
+) -> Result<(), String> {
+    let image_transform = Arc::new(image_transform);
+    let retries = max_retries_from_env();
+    run_legacy_worker(
+        samples_meta_rx,
+        samples_tx,
+        max_tasks_from_env(num_cpus::get().min(client.max_connections)),
+        limit,
+        cancel,
+        serde_json::Value::is_null,
+        |item| {
+            pull_sample(
+                client.clone(),
+                item,
+                image_transform.clone(),
+                retries,
+                encoding,
+            )
+        },
+    )
 }
 
 #[cfg(test)]

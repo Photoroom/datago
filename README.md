@@ -116,9 +116,13 @@ a finite source may end before reaching the limit. File and DB feeders keep
 supplying candidates until that limit is satisfied or their source is exhausted;
 there is no fixed allowance for bad images. In-flight tasks are also capped
 by the remaining delivery budget, so a small limit does not start a full worker pool.
+Reaching the limit cancels pending source requests and lets readers drain samples
+already in the output queue.
 WebDataset samples require a readable reference image (`reference_image_type`);
 missing or corrupt references are skipped. Additional images use the reference
 image's target aspect ratio, regardless of their order in the archive.
+Failed shards can be retried before they emit a sample. If a shard fails after
+emitting samples, the pass reports a source error to avoid replaying them.
 WebDataset keys retain directory prefixes (for example, `train/0000.seg.png`
 belongs to `train/0000`). `reference_image_type` selects the full field name,
 case-insensitively: `png` selects `0000.png`, while `right.png` selects

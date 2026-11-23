@@ -17,16 +17,14 @@ use crate::error::DatagoError;
 use crate::image_processing::{ARAwareTransform, ImageEncoding};
 use crate::pipeline::PipelineControl;
 use crate::structs::{DatagoEngine, Sample};
-use crate::worker_utils::{max_tasks_from_env, run_worker};
+use crate::worker_utils::{
+    max_tasks_from_env, run_worker, worker_runtime, RUNTIME_SHUTDOWN_TIMEOUT,
+};
 use log::{debug, info};
 use serde::de::DeserializeOwned;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-
-/// Blocking calls which cannot be cancelled may outlive the worker by this long.
-const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// What the client configuration hands to every source.
 pub(crate) struct SourceContext {
@@ -51,9 +49,9 @@ pub(crate) trait Source: Send + Sync + Sized + 'static {
     fn new(config: Self::Config, context: &SourceContext) -> Self;
 
     /// Send every candidate item, then return. Runs on the feeder thread and
-    /// may block. Stop early, without an error, once `items` is closed or
-    /// `cancel` fires: the reader has stopped or has all the samples it wants.
-    /// An error fails the whole pass.
+    /// may block. When `cancel` fires, retire any in-flight work. A failed
+    /// send also means the worker has retired. An enumeration error fails
+    /// the pass while it is still running.
     fn enumerate(
         &self,
         items: kanal::Sender<Self::Item>,
@@ -99,15 +97,14 @@ fn start_engine<S: Source>(source: Arc<S>, samples_buffer: usize, limit: usize) 
     // Both queues are bounded: every stage pauses once the reader stops pulling.
     let (items_tx, items_rx) = kanal::bounded(S::queue_capacity(samples_buffer));
     let (samples_tx, samples_rx) = kanal::bounded(samples_buffer);
-    let cancel = CancellationToken::new();
-    let control = PipelineControl::new(samples_rx.clone(), items_rx.clone(), cancel.clone());
+    let control = PipelineControl::new(samples_rx.clone());
 
-    let feeder = control.spawn_feeder(items_tx.clone(), {
-        let (source, cancel) = (source.clone(), cancel.clone());
-        move || source.enumerate(items_tx, &cancel)
+    let feeder = control.spawn_feeder(items_tx, {
+        let source = source.clone();
+        move |items_tx, cancel| source.enumerate(items_tx, cancel)
     });
-    let worker = control.spawn_worker(samples_tx.clone(), move || {
-        load_samples(source, items_rx, samples_tx, limit, cancel)
+    let worker = control.spawn_worker(samples_tx, move |samples_tx, control| {
+        load_samples(source, items_rx, samples_tx, limit, control)
     });
 
     DatagoEngine {
@@ -125,29 +122,33 @@ fn load_samples<S: Source>(
     items_rx: kanal::Receiver<S::Item>,
     samples_tx: kanal::Sender<Option<Sample>>,
     limit: usize,
-    cancel: CancellationToken,
+    control: &PipelineControl,
 ) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
-        .enable_all()
-        .build()
-        .map_err(|error| format!("cannot start the worker runtime: {error}"))?;
+    let runtime = worker_runtime()?;
     let max_tasks = source.max_tasks();
     let result = runtime.block_on(run_worker(
-        items_rx,
+        &items_rx,
         samples_tx,
         max_tasks,
         limit,
-        cancel,
+        control.cancellation(),
+        None,
         move |item| {
             let source = source.clone();
             async move { source.load(item).await }
         },
     ));
-    // A blocking syscall already in progress is not cancellable. Do not make
-    // this thread's join wait indefinitely for Tokio's blocking pool.
+    match result {
+        Ok(report) => {
+            control.finish_worker(Ok(report.end));
+            debug!("{} source: {} samples delivered", S::NAME, report.delivered);
+        }
+        Err(error) => control.finish_worker(Err(error)),
+    }
+    // Wake any feeder blocked on a send before waiting for native IO.
+    drop(items_rx);
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
-    result.map(|delivered| debug!("{} source: {delivered} samples delivered", S::NAME))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -158,6 +159,7 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     const READ_TIMEOUT: Duration = Duration::from_secs(5);
 

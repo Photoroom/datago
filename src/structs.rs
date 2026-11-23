@@ -9,6 +9,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::thread;
 
+/// Work queue handle retained for Rust callers of the legacy source workers.
+#[derive(Clone, Debug)]
+pub enum MetadataReceiver {
+    Json(kanal::Receiver<serde_json::Value>),
+    Tarball(kanal::Receiver<TarballSample>),
+}
+
+impl MetadataReceiver {
+    pub fn close(&self) {
+        match self {
+            Self::Json(receiver) => {
+                let _ = receiver.close();
+            }
+            Self::Tarball(receiver) => {
+                let _ = receiver.close();
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct DatagoEngine {
     pub(crate) control: crate::pipeline::PipelineControl,
@@ -18,8 +38,7 @@ pub struct DatagoEngine {
 }
 
 impl DatagoEngine {
-    /// Cancel before closing queues so retiring producers cannot record a late
-    /// failure. Closing is explicit because the supervisor retains receivers.
+    /// Cancel the producers and discard any buffered output.
     pub fn close(&self) {
         self.control.stop();
     }
@@ -151,7 +170,6 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn dropping_engine_releases_producers_blocked_on_full_queues() {
@@ -159,41 +177,32 @@ mod tests {
         let (metadata_tx, metadata_rx) = kanal::bounded(1);
         samples_tx.send(None).unwrap();
         metadata_tx.send(serde_json::Value::Null).unwrap();
-        let control = crate::pipeline::PipelineControl::new(
-            samples_rx.clone(),
-            metadata_rx,
-            CancellationToken::new(),
-        );
+        let control = crate::pipeline::PipelineControl::new(samples_rx.clone());
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let feeder_finished = finished_tx.clone();
-        let feeder = control.spawn_feeder(metadata_tx.clone(), move || {
+        let feeder = control.spawn_feeder(metadata_tx, move |metadata_tx, _| {
             assert!(metadata_tx.send(serde_json::Value::Null).is_err());
             feeder_finished.send(()).unwrap();
             Ok(())
         });
-        let worker = control.spawn_worker(samples_tx.clone(), move || {
+        let worker = control.spawn_worker(samples_tx, move |samples_tx, _| {
             assert!(samples_tx.send(None).is_err());
+            drop(metadata_rx);
             finished_tx.send(()).unwrap();
             Ok(())
         });
         let engine = DatagoEngine {
-            control: control.clone(),
+            control,
             samples_rx: samples_rx.clone(),
             feeder: Some(feeder),
             worker: Some(worker),
         };
         drop(engine);
-        let first = finished_rx.recv_timeout(std::time::Duration::from_secs(5));
-        // Clean up even when running against the broken implementation: this
-        // regression must not leak the deliberately blocked producer threads.
-        control.stop();
-        assert!(
-            first.is_ok(),
-            "dropping the engine did not cancel its producers"
-        );
-        finished_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        for _ in 0..2 {
+            finished_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("dropping the engine did not cancel its producers");
+        }
     }
 
     #[test]
