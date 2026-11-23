@@ -1,8 +1,6 @@
-use crate::client::DatagoClient;
-use crate::error::DatagoError;
 use crate::image_processing::{ARAwareTransform, ImageEncoding};
 use crate::source::{Source, SourceContext};
-use crate::structs::{DatagoEngine, Sample};
+use crate::structs::Sample;
 use crate::worker_files;
 use log::warn;
 use rand::seq::SliceRandom;
@@ -167,11 +165,6 @@ impl Source for FileSource {
     async fn load(&self, item: Self::Item) -> Result<Sample, ()> {
         worker_files::pull_sample(item, self.image_transform.clone(), self.encoding).await
     }
-}
-
-/// Start a filesystem pass through the shared engine.
-pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
-    client.launch::<FileSource>()
 }
 
 #[cfg(test)]

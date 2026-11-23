@@ -1,12 +1,10 @@
 use crate::generator_wds::key_and_field;
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, BinaryFile, ImagePayload, Sample, TarballSample};
-use crate::worker_utils::{max_tasks_from_env, run_legacy_worker};
 use log::{debug, warn};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
 // List all the types we'll support
 pub const TEXT_TYPES: [&str; 3] = ["cls", "json", "txt"];
@@ -91,36 +89,6 @@ pub(crate) async fn process_sample(
         latents: HashMap::new(),
         duplicate_state: 0,
     })
-}
-
-/// Run the WebDataset worker for Rust callers supplying unpacked samples.
-pub fn deserialize_samples(
-    samples_metadata_rx: kanal::Receiver<TarballSample>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    extension_reference_image: String,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let image_transform = Arc::new(image_transform);
-    let cpus = num_cpus::get();
-    run_legacy_worker(
-        samples_metadata_rx,
-        samples_tx,
-        max_tasks_from_env(cpus).min(cpus * 4),
-        limit,
-        cancel,
-        TarballSample::is_empty,
-        |item| {
-            process_sample(
-                item,
-                image_transform.clone(),
-                encoding,
-                extension_reference_image.clone(),
-            )
-        },
-    )
 }
 
 #[cfg(test)]

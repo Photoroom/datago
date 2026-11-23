@@ -3,8 +3,6 @@
 
 use crate::structs::Sample;
 use std::future::Future;
-use std::time::Duration;
-use tokio::runtime::{Builder, Runtime};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -27,17 +25,6 @@ fn parse_max_tasks(value: Option<String>, default: usize) -> usize {
     value
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(default)
-}
-
-/// A blocking operation already in progress may outlive runtime shutdown.
-pub(crate) const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
-
-pub(crate) fn worker_runtime() -> Result<Runtime, String> {
-    Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
-        .enable_all()
-        .build()
-        .map_err(|error| format!("cannot start the worker runtime: {error}"))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -67,7 +54,6 @@ pub(crate) async fn run_worker<M, F, Fut>(
     max_tasks: usize,
     limit: usize,
     cancel: &CancellationToken,
-    legacy_end: Option<fn(&M) -> bool>,
     process: F,
 ) -> Result<WorkerReport, String>
 where
@@ -118,10 +104,6 @@ where
             received = &mut metadata,
                 if !input_finished && tasks.len() < max_tasks.min(limit - delivered) => {
                 match received {
-                    Ok(item) if legacy_end.is_some_and(|is_end| is_end(&item)) => {
-                        input_finished = true;
-                        let _ = metadata_rx.close();
-                    }
                     Ok(item) => {
                         metadata.set(metadata_rx.as_async().recv());
                         tasks.spawn(process(item));
@@ -135,37 +117,6 @@ where
     // Dropping the JoinSet aborts unfinished tasks. The owner can now retire
     // the feeder before waiting for runtime shutdown.
     Ok(WorkerReport { delivered, end })
-}
-
-/// Compatibility entry point for public source workers that accept a marker.
-pub(crate) fn run_legacy_worker<M, F, Fut>(
-    metadata_rx: kanal::Receiver<M>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    max_tasks: usize,
-    limit: usize,
-    cancel: CancellationToken,
-    is_end: fn(&M) -> bool,
-    process: F,
-) -> Result<(), String>
-where
-    M: Send + 'static,
-    F: Fn(M) -> Fut,
-    Fut: Future<Output = Result<Sample, ()>> + Send + 'static,
-{
-    let runtime = worker_runtime()?;
-    let result = runtime.block_on(run_worker(
-        &metadata_rx,
-        samples_tx,
-        max_tasks,
-        limit,
-        &cancel,
-        Some(is_end),
-        process,
-    ));
-    // Legacy callers may hold another receiver.
-    let _ = metadata_rx.close();
-    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
-    result.map(|_| ())
 }
 
 #[cfg(test)]
@@ -204,7 +155,6 @@ mod tests {
             4,
             5,
             &CancellationToken::new(),
-            None,
             |id| async move {
                 if id % 3 == 0 {
                     Err(())
@@ -243,7 +193,6 @@ mod tests {
             8,
             2,
             &CancellationToken::new(),
-            None,
             |id| {
                 started.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 async move { Ok(sample(id)) }
@@ -269,7 +218,6 @@ mod tests {
             4,
             10,
             &cancel,
-            None,
             |_: usize| std::future::pending::<Result<Sample, ()>>(),
         ));
         // Poll through the buffered item and end of input, leaving one load pending.
@@ -293,18 +241,10 @@ mod tests {
         let worker_cancel = cancel.clone();
         let (started_tx, started_rx) = kanal::bounded(1);
         let worker = tokio::spawn(async move {
-            run_worker(
-                &metadata_rx,
-                samples_tx,
-                1,
-                10,
-                &worker_cancel,
-                None,
-                move |id| {
-                    started_tx.send(()).unwrap();
-                    async move { Ok(sample(id)) }
-                },
-            )
+            run_worker(&metadata_rx, samples_tx, 1, 10, &worker_cancel, move |id| {
+                started_tx.send(()).unwrap();
+                async move { Ok(sample(id)) }
+            })
             .await
         });
         started_rx.as_async().recv().await.unwrap();
@@ -326,23 +266,15 @@ mod tests {
         let prepared = std::sync::Arc::new(tokio::sync::Notify::new());
         let cancel = CancellationToken::new();
         metadata_tx.send(0).unwrap();
-        let mut worker = Box::pin(run_worker(
-            &metadata_rx,
-            samples_tx,
-            2,
-            10,
-            &cancel,
-            None,
-            |id| {
-                let prepared = prepared.clone();
-                async move {
-                    if id == 0 {
-                        prepared.notify_one();
-                    }
-                    Ok(sample(id))
+        let mut worker = Box::pin(run_worker(&metadata_rx, samples_tx, 2, 10, &cancel, |id| {
+            let prepared = prepared.clone();
+            async move {
+                if id == 0 {
+                    prepared.notify_one();
                 }
-            },
-        ));
+                Ok(sample(id))
+            }
+        }));
 
         // Start the first task and leave the coordinator awaiting more metadata.
         assert!(futures::poll!(worker.as_mut()).is_pending());
@@ -377,7 +309,6 @@ mod tests {
             4,
             10,
             &cancel,
-            None,
             |id: usize| {
                 processed.lock().unwrap().push(id);
                 std::future::pending::<Result<Sample, ()>>()

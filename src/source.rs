@@ -17,9 +17,7 @@ use crate::error::DatagoError;
 use crate::image_processing::{ARAwareTransform, ImageEncoding};
 use crate::pipeline::PipelineControl;
 use crate::structs::{DatagoEngine, Sample};
-use crate::worker_utils::{
-    max_tasks_from_env, run_worker, worker_runtime, RUNTIME_SHUTDOWN_TIMEOUT,
-};
+use crate::worker_utils::{max_tasks_from_env, run_worker};
 use log::{debug, info};
 use serde::de::DeserializeOwned;
 use std::future::Future;
@@ -103,9 +101,26 @@ fn start_engine<S: Source>(source: Arc<S>, samples_buffer: usize, limit: usize) 
         let source = source.clone();
         move |items_tx, cancel| source.enumerate(items_tx, cancel)
     });
-    let worker = control.spawn_worker(samples_tx, move |samples_tx, control| {
-        load_samples(source, items_rx, samples_tx, limit, control)
-    });
+    let worker = control.spawn_worker(
+        items_rx,
+        samples_tx,
+        move |runtime, items, samples, cancel| {
+            let max_tasks = source.max_tasks();
+            let report = runtime.block_on(run_worker(
+                items,
+                samples,
+                max_tasks,
+                limit,
+                cancel,
+                move |item| {
+                    let source = source.clone();
+                    async move { source.load(item).await }
+                },
+            ))?;
+            debug!("{} source: {} samples delivered", S::NAME, report.delivered);
+            Ok(report.end)
+        },
+    );
 
     DatagoEngine {
         control,
@@ -113,42 +128,6 @@ fn start_engine<S: Source>(source: Arc<S>, samples_buffer: usize, limit: usize) 
         feeder: Some(feeder),
         worker: Some(worker),
     }
-}
-
-/// The worker thread: load items concurrently until the limit is reached, the
-/// items run out, or the pass is cancelled.
-fn load_samples<S: Source>(
-    source: Arc<S>,
-    items_rx: kanal::Receiver<S::Item>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    limit: usize,
-    control: &PipelineControl,
-) -> Result<(), String> {
-    let runtime = worker_runtime()?;
-    let max_tasks = source.max_tasks();
-    let result = runtime.block_on(run_worker(
-        &items_rx,
-        samples_tx,
-        max_tasks,
-        limit,
-        control.cancellation(),
-        None,
-        move |item| {
-            let source = source.clone();
-            async move { source.load(item).await }
-        },
-    ));
-    match result {
-        Ok(report) => {
-            control.finish_worker(Ok(report.end));
-            debug!("{} source: {} samples delivered", S::NAME, report.delivered);
-        }
-        Err(error) => control.finish_worker(Err(error)),
-    }
-    // Wake any feeder blocked on a send before waiting for native IO.
-    drop(items_rx);
-    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
-    Ok(())
 }
 
 #[cfg(test)]

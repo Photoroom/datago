@@ -216,7 +216,7 @@ impl DatagoClient {
     }
 
     /// Start one pass over source `S` with this client's settings.
-    pub(crate) fn launch<S: Source>(&self) -> Result<DatagoEngine, DatagoError> {
+    fn launch<S: Source>(&self) -> Result<DatagoEngine, DatagoError> {
         let context = SourceContext {
             image_transform: Arc::new(self.image_transform.clone()),
             encoding: ImageEncoding {
@@ -1142,7 +1142,10 @@ mod error_contract_tests {
     ) {
         let (samples_tx, samples_rx) = kanal::bounded(1);
         let control = PipelineControl::new(samples_rx.clone());
-        let worker = Some(control.spawn_worker(samples_tx, |_, _| work()));
+        let (_, items_rx) = kanal::bounded::<()>(1);
+        let worker = Some(control.spawn_worker(items_rx, samples_tx, |_, _, _, _| {
+            work().map(|_| crate::worker_utils::WorkerEnd::Exhausted)
+        }));
         client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
             control,
             samples_rx,

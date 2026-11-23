@@ -1,5 +1,3 @@
-use crate::client::DatagoClient;
-use crate::error::DatagoError;
 use crate::image_processing::{ARAwareTransform, ImageEncoding};
 use crate::source::{Source, SourceContext};
 use crate::worker_http;
@@ -12,7 +10,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::structs::{new_shared_client, DatagoEngine, Sample, SharedClient};
+use crate::structs::{new_shared_client, Sample, SharedClient};
 use kanal::Sender;
 use tokio_util::sync::CancellationToken;
 
@@ -402,30 +400,13 @@ async fn async_pull_and_dispatch_pages(
     Ok(())
 }
 
-/// Enumerate DB pages for a legacy worker, sending its end marker on exhaustion.
-/// The worker counts successful deliveries, so the limit argument is unused.
+/// Enumerate until exhaustion, cancellation or queue closure. Only the worker
+/// counts successful deliveries.
 pub fn pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
     samples_metadata_tx: Sender<serde_json::Value>,
     source_config: SourceDBConfig,
-    _limit: usize,
     cancel: CancellationToken,
-) -> Result<(), String> {
-    dispatch_pages(
-        shared_client,
-        samples_metadata_tx,
-        source_config,
-        &cancel,
-        true,
-    )
-}
-
-fn dispatch_pages(
-    shared_client: &Arc<SharedClient>,
-    samples_metadata_tx: Sender<serde_json::Value>,
-    source_config: SourceDBConfig,
-    cancel: &CancellationToken,
-    legacy_end_marker: bool,
 ) -> Result<(), String> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -435,17 +416,11 @@ fn dispatch_pages(
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => Ok(()),
-                result = async {
-                    async_pull_and_dispatch_pages(
-                        shared_client,
-                        samples_metadata_tx.clone(),
-                        source_config,
-                    ).await?;
-                    if legacy_end_marker {
-                        let _ = samples_metadata_tx.as_async().send(serde_json::Value::Null).await;
-                    }
-                    Ok(())
-                } => result
+                result = async_pull_and_dispatch_pages(
+                    shared_client,
+                    samples_metadata_tx.clone(),
+                    source_config,
+                ) => result
             }
         })
 }
@@ -482,7 +457,7 @@ impl Source for DbSource {
         items: Sender<Self::Item>,
         cancel: &CancellationToken,
     ) -> Result<(), String> {
-        dispatch_pages(&self.http, items, self.config.clone(), cancel, false)
+        pull_and_dispatch_pages(&self.http, items, self.config.clone(), cancel.clone())
     }
 
     async fn load(&self, item: Self::Item) -> Result<Sample, ()> {
@@ -500,11 +475,6 @@ impl Source for DbSource {
         // More tasks than connections would only queue on the connection pool.
         max_tasks_from_env(num_cpus::get().min(self.http.max_connections))
     }
-}
-
-/// Start a Dataroom pass through the shared engine.
-pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
-    client.launch::<DbSource>()
 }
 
 #[cfg(test)]

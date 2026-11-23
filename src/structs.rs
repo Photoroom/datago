@@ -9,26 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::thread;
 
-/// Work queue handle retained for Rust callers of the legacy source workers.
-#[derive(Clone, Debug)]
-pub enum MetadataReceiver {
-    Json(kanal::Receiver<serde_json::Value>),
-    Tarball(kanal::Receiver<TarballSample>),
-}
-
-impl MetadataReceiver {
-    pub fn close(&self) {
-        match self {
-            Self::Json(receiver) => {
-                let _ = receiver.close();
-            }
-            Self::Tarball(receiver) => {
-                let _ = receiver.close();
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct DatagoEngine {
     pub(crate) control: crate::pipeline::PipelineControl,
@@ -185,11 +165,10 @@ mod tests {
             feeder_finished.send(()).unwrap();
             Ok(())
         });
-        let worker = control.spawn_worker(samples_tx, move |samples_tx, _| {
+        let worker = control.spawn_worker(metadata_rx, samples_tx, move |_, _, samples_tx, _| {
             assert!(samples_tx.send(None).is_err());
-            drop(metadata_rx);
             finished_tx.send(()).unwrap();
-            Ok(())
+            Ok(crate::worker_utils::WorkerEnd::Cancelled)
         });
         let engine = DatagoEngine {
             control,

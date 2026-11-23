@@ -7,7 +7,11 @@ use crate::worker_utils::WorkerEnd;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
+use tokio::runtime::{Builder, Runtime};
 use tokio_util::sync::CancellationToken;
+
+const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 enum Outcome {
@@ -34,10 +38,6 @@ impl PipelineControl {
         }
     }
 
-    pub(crate) fn cancellation(&self) -> &CancellationToken {
-        &self.cancel
-    }
-
     pub(crate) fn error(&self) -> Option<DatagoError> {
         match &*self.outcome.lock().unwrap() {
             Outcome::Failed(error) => Some(error.clone()),
@@ -52,7 +52,7 @@ impl PipelineControl {
         let _ = self.samples_rx.close();
     }
 
-    pub(crate) fn finish_worker(&self, result: Result<WorkerEnd, String>) {
+    fn finish_worker(&self, result: Result<WorkerEnd, String>) {
         match result {
             Ok(WorkerEnd::Exhausted) => self.transition(Outcome::Exhausted),
             Ok(WorkerEnd::LimitReached) => self.transition(Outcome::LimitReached),
@@ -84,39 +84,60 @@ impl PipelineControl {
         sender: kanal::Sender<T>,
         work: impl FnOnce(kanal::Sender<T>, &CancellationToken) -> Result<(), String> + Send + 'static,
     ) -> JoinHandle<()> {
-        self.spawn(
-            sender,
-            move |items, control| work(items, control.cancellation()),
-            DatagoError::Source,
-        )
+        let control = self.clone();
+        thread::spawn(move || {
+            if let Err(message) = catch_stage(|| work(sender.clone(), &control.cancel)) {
+                control.transition(Outcome::Failed(DatagoError::Source(message)));
+            }
+            // Publish any failure before the worker can observe end of input.
+            drop(sender);
+        })
     }
 
-    pub(crate) fn spawn_worker(
+    pub(crate) fn spawn_worker<T: Send + 'static>(
         &self,
-        sender: kanal::Sender<Option<Sample>>,
-        work: impl FnOnce(kanal::Sender<Option<Sample>>, &Self) -> Result<(), String> + Send + 'static,
-    ) -> JoinHandle<()> {
-        self.spawn(sender, work, DatagoError::Worker)
-    }
-
-    fn spawn<T: Send + 'static>(
-        &self,
-        keep_alive: kanal::Sender<T>,
-        work: impl FnOnce(kanal::Sender<T>, &Self) -> Result<(), String> + Send + 'static,
-        classify: fn(String) -> DatagoError,
+        items: kanal::Receiver<T>,
+        samples: kanal::Sender<Option<Sample>>,
+        work: impl FnOnce(
+                &Runtime,
+                &kanal::Receiver<T>,
+                kanal::Sender<Option<Sample>>,
+                &CancellationToken,
+            ) -> Result<WorkerEnd, String>
+            + Send
+            + 'static,
     ) -> JoinHandle<()> {
         let control = self.clone();
         thread::spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| work(keep_alive.clone(), &control)))
-                .unwrap_or_else(|panic| Err(format!("panicked: {}", panic_message(panic))));
-            if let Err(message) = result {
-                control.transition(Outcome::Failed(classify(message)));
+            let runtime = catch_stage(|| {
+                Builder::new_multi_thread()
+                    .worker_threads(num_cpus::get())
+                    .enable_all()
+                    .build()
+                    .map_err(|error| format!("cannot start the worker runtime: {error}"))
+            });
+            let result = match &runtime {
+                Ok(runtime) => {
+                    catch_stage(|| work(runtime, &items, samples.clone(), &control.cancel))
+                }
+                Err(error) => Err(error.clone()),
+            };
+            control.finish_worker(result);
+
+            // Release blocked sends and signal end of output before waiting for
+            // native operations that may outlive cancellation.
+            drop(items);
+            drop(samples);
+            if let Ok(runtime) = runtime {
+                runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
             }
-            // Hold a sender until the producer's result is recorded. Dropping
-            // its last sender then wakes readers on a successful end-of-stream.
-            drop(keep_alive);
         })
     }
+}
+
+fn catch_stage<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(work))
+        .unwrap_or_else(|panic| Err(format!("panicked: {}", panic_message(panic))))
 }
 
 #[cfg(test)]
