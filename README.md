@@ -545,7 +545,7 @@ This benchmark is using low resolution images. It's accessed through the webdata
 Of note is also that this can be bottlenecked by your external bandwidth to the remote storage where WDS is hosted, in which case both solution would yield comparable numbers.
 
 ### AMD Zen3 laptop - webdataset - no processing
-![AMD EPYC 9454](assets/zen3_wds_fakein.png)
+![AMD Zen3 laptop](assets/zen3_wds_fakein.png)
 
 
 ## Webdataset: PD12M
@@ -558,8 +558,8 @@ Of note is also that this can be bottlenecked by your external bandwidth to the 
 ![AMD Zen3 laptop](assets/zen3_wds_pd12m.png)
 
 
-### AMD EPYC 9454 - pd12m - webdataset - no processing
-![AMD EPYC 9454](assets/epyc_wds_pd12m.png)
+### AMD EPYC 7R13 (2x48 cores) - pd12m - webdataset - no processing
+![AMD EPYC 7R13](assets/epyc_wds_pd12m.png)
 
 
 ### AMD Zen3 laptop - webdataset - processing
