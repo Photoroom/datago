@@ -374,7 +374,12 @@ async fn async_pull_and_dispatch_pages(
             .and_then(serde_json::Value::as_array)
             .ok_or("metadata page must contain a results array")?;
         for sample in results {
-            if samples_metadata_tx.send(sample.clone()).is_err() {
+            if samples_metadata_tx
+                .as_async()
+                .send(sample.clone())
+                .await
+                .is_err()
+            {
                 return Ok(());
             }
         }

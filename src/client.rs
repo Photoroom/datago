@@ -588,7 +588,6 @@ mod tests {
     fn drop_does_not_wait_for_busy_workers() {
         let client = DatagoClient::new("{}".to_string());
         let (_samples_tx, samples_rx) = kanal::bounded(1);
-        let (_metadata_tx, metadata_rx) = kanal::bounded::<()>(1);
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
@@ -596,11 +595,7 @@ mod tests {
             finished_tx.send(()).unwrap();
         });
         client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
-            control: PipelineControl::new(
-                samples_rx.clone(),
-                metadata_rx,
-                tokio_util::sync::CancellationToken::new(),
-            ),
+            control: PipelineControl::new(samples_rx.clone()),
             samples_rx,
             feeder: None,
             worker: Some(worker),
@@ -623,15 +618,10 @@ mod tests {
     fn stale_reader_cleanup_cannot_take_a_restarted_engine() {
         let client = DatagoClient::new("{}".to_string());
         let (_samples_tx, samples_rx) = kanal::bounded(1);
-        let (_metadata_tx, metadata_rx) = kanal::bounded::<()>(1);
         {
             let mut state = client.state();
             state.lifecycle = ClientLifecycle::Running(DatagoEngine {
-                control: PipelineControl::new(
-                    samples_rx.clone(),
-                    metadata_rx,
-                    tokio_util::sync::CancellationToken::new(),
-                ),
+                control: PipelineControl::new(samples_rx.clone()),
                 samples_rx,
                 feeder: None,
                 worker: None,
@@ -1151,10 +1141,11 @@ mod error_contract_tests {
         work: impl FnOnce() -> Result<(), String> + Send + 'static,
     ) {
         let (samples_tx, samples_rx) = kanal::bounded(1);
-        let (_metadata_tx, metadata_rx) = kanal::bounded::<()>(1);
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = PipelineControl::new(samples_rx.clone(), metadata_rx, cancel);
-        let worker = Some(control.spawn_worker(samples_tx, work));
+        let control = PipelineControl::new(samples_rx.clone());
+        let (_, items_rx) = kanal::bounded::<()>(1);
+        let worker = Some(control.spawn_worker(items_rx, samples_tx, |_, _, _, _| {
+            work().map(|_| crate::worker_utils::WorkerEnd::Exhausted)
+        }));
         client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
             control,
             samples_rx,
