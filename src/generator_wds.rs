@@ -65,25 +65,40 @@ pub(crate) fn key_and_field(path: &str) -> Option<(&str, &str)> {
     Some((&path[..path.len() - field.len() - 1], field))
 }
 
+struct ShardOutput<'a> {
+    sender: &'a kanal::AsyncSender<TarballSample>,
+    published: usize,
+    skip: usize,
+}
+
+impl ShardOutput<'_> {
+    async fn send(&mut self, sample: TarballSample) -> bool {
+        if self.skip > 0 {
+            self.skip -= 1;
+            return true;
+        }
+        if self.sender.send(sample).await.is_err() {
+            return false;
+        }
+        self.published += 1;
+        true
+    }
+}
+
 async fn pull_tarballs(
-    shared_client: Arc<SharedClient>,
-    url: serde_json::Value,
-    samples_metadata_tx: kanal::Sender<TarballSample>,
-    config: SourceWebDatasetConfig,
+    shared_client: &SharedClient,
+    url: &str,
+    config: &SourceWebDatasetConfig,
+    output: &mut ShardOutput<'_>,
 ) -> Result<(), String> {
     // Given the url to a given tarball, we'll download it and submit the samples on the fly to the worker pool
-    debug!(
-        "dispatch_shards: downloading a new TarballSample {:?}",
-        url.as_str()
-    );
+    debug!("dispatch_shards: downloading shard {url}");
 
     let auth_token = if config.auth_token.is_empty() {
         None
     } else {
         Some(config.auth_token.as_str())
     };
-    let url = url.as_str().unwrap();
-
     // We use a shared client to make it possible to limit the number of outstanding connections
     let _permit = shared_client.semaphore.acquire().await;
     let mut request_builder = shared_client.client.get(url);
@@ -171,9 +186,7 @@ async fn pull_tarballs(
                 })
             });
 
-            if samples_metadata_tx.send(current_files_for_sample).is_err() {
-                debug!("dispatch_shards (streaming): samples_metadata_tx channel closed.");
-                let _ = samples_metadata_tx.close(); // Make sure that we close on both ends
+            if !output.send(current_files_for_sample).await {
                 return Ok(());
             }
 
@@ -198,11 +211,14 @@ async fn pull_tarballs(
         );
     }
     // Send the last collected sample if any
-    if !current_files_for_sample.content.is_empty()
-        && samples_metadata_tx.send(current_files_for_sample).is_err()
-        && !samples_metadata_tx.is_disconnected()
-    {
-        return Err("Failed to send last sample".into());
+    if !current_files_for_sample.is_empty() && !output.send(current_files_for_sample).await {
+        return Ok(());
+    }
+    if output.skip > 0 {
+        return Err(format!(
+            "shard ended before replaying {} previously queued samples",
+            output.skip
+        ));
     }
 
     debug!("dispatch_shards (streaming): finished processing TarballSample {url}");
@@ -216,33 +232,26 @@ async fn pull_tarballs_task(
     samples_metadata_tx: kanal::Sender<TarballSample>,
     config: SourceWebDatasetConfig,
 ) -> Result<(), String> {
-    let mut attempt = 0;
+    let url = url.as_str().ok_or("shard URL must be a string")?;
+    let mut output = ShardOutput {
+        sender: samples_metadata_tx.as_async(),
+        published: 0,
+        skip: 0,
+    };
     let mut last_error = String::new();
 
-    while attempt < retries {
-        match pull_tarballs(
-            shared_client.clone(),
-            url.clone(),
-            samples_metadata_tx.clone(),
-            config.clone(),
-        )
-        .await
-        {
-            Ok(_) => {
-                return Ok(()); // Successfully pulled the tarball
-            }
-            Err(e) => {
-                attempt += 1;
-                debug!("Error pulling TarballSample: {e}. Attempt {attempt}/{retries}");
-                last_error = e;
-                if samples_metadata_tx.is_disconnected() {
-                    debug!(
-                        "dispatch_shards: samples_metadata_tx channel closed, stopping retries."
-                    );
-                    return Err("Channel closed".into());
-                }
-            }
+    for attempt in 1..=retries {
+        if output.sender.is_disconnected() {
+            return Ok(());
         }
+        // A retry walks the same ordered shard, including the same rank filter.
+        // Count successful queue sends, including work the decoder may skip.
+        output.skip = output.published;
+        let Err(error) = pull_tarballs(&shared_client, url, &config, &mut output).await else {
+            return Ok(());
+        };
+        debug!("Error pulling shard {url} on attempt {attempt}/{retries}: {error}");
+        last_error = error;
     }
     Err(format!(
         "Failed to pull TarballSample {url} after {retries} attempts: {last_error}"
@@ -514,6 +523,7 @@ mod tests {
     use serde_json::json;
     use std::collections::HashSet;
     use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -854,6 +864,45 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retries_truncated_shards_without_replaying_queued_samples() {
+        let full = shard(0, 4);
+        let truncated = |entry_index| {
+            let offset = tar::Archive::new(full.as_slice())
+                .entries()
+                .unwrap()
+                .nth(entry_index)
+                .unwrap()
+                .unwrap()
+                .raw_file_position() as usize;
+            full[..offset + 8].to_vec() // Cut off the JPEG's payload.
+        };
+        // The first two attempts each queue a longer prefix before failing.
+        let responses = [truncated(2), truncated(6), full];
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/listing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"mediaLink": format!("{}/shard.tar", server.uri())}]
+            })))
+            .mount(&server)
+            .await;
+        let attempts = AtomicUsize::new(0);
+        Mock::given(method("GET"))
+            .and(path("/shard.tar"))
+            .respond_with(move |_: &wiremock::Request| {
+                let attempt = attempts.fetch_add(1, Ordering::Relaxed);
+                ResponseTemplate::new(200).set_body_bytes(responses[attempt].clone())
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let client = client(format!("{}/listing", server.uri()), false, 0, 1);
+        let expected = (0..4).map(|id| format!("{id:04}")).collect();
+        assert_eq!(ids(&collect(&client)), expected);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn compound_extensions_stay_in_their_sample() {
         let server = compound_extension_fixture().await;
         let config = SourceWebDatasetConfig {
@@ -866,9 +915,10 @@ mod tests {
             auth_token: String::new(),
         };
         let (sender, receiver) = kanal::bounded(8);
-        pull_tarballs(
+        pull_tarballs_task(
             Arc::new(new_shared_client(1)),
             json!(format!("{}/compound.tar", server.uri())),
+            1,
             sender.clone(),
             config,
         )
