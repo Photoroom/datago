@@ -1,5 +1,5 @@
 use crate::image_processing::{ARAwareTransform, ImageEncoding};
-use crate::source::{Source, SourceContext};
+use crate::source::{check_partition, default_world_size, Source, SourceContext};
 use crate::worker_http;
 use crate::worker_utils::{max_retries_from_env, max_tasks_from_env};
 use log::{debug, warn};
@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use crate::structs::{new_shared_client, Sample, SharedClient};
 use kanal::Sender;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDBConfig {
@@ -85,7 +84,7 @@ pub struct SourceDBConfig {
     #[serde(default)]
     pub rank: usize,
 
-    #[serde(default)]
+    #[serde(default = "default_world_size")]
     pub world_size: usize,
 }
 
@@ -271,12 +270,6 @@ fn build_request(source_config: SourceDBConfig) -> DbRequest {
         fields.push_str(",duplicate_state");
     }
 
-    assert!(
-        (source_config.rank == 0 && source_config.world_size == 0)
-            || (source_config.rank < source_config.world_size),
-        "Rank cannot be greater than or equal to world size"
-    );
-
     debug!("Fields: {fields}");
     debug!(
         "Rank: {}, World size: {}",
@@ -352,7 +345,9 @@ async fn get_response(
     serde_json::from_str(&text).map_err(|error| format!("invalid metadata JSON: {error}"))
 }
 
-async fn async_pull_and_dispatch_pages(
+/// Page through the API until exhaustion or queue closure. Only the worker
+/// counts successful deliveries.
+async fn pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
@@ -400,31 +395,6 @@ async fn async_pull_and_dispatch_pages(
     Ok(())
 }
 
-/// Enumerate until exhaustion, cancellation or queue closure. Only the worker
-/// counts successful deliveries.
-pub fn pull_and_dispatch_pages(
-    shared_client: &Arc<SharedClient>,
-    samples_metadata_tx: Sender<serde_json::Value>,
-    source_config: SourceDBConfig,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => Ok(()),
-                result = async_pull_and_dispatch_pages(
-                    shared_client,
-                    samples_metadata_tx.clone(),
-                    source_config,
-                ) => result
-            }
-        })
-}
-
 /// Samples listed by the Dataroom API: a page of metadata per request, then
 /// one download per image, mask or latent.
 pub(crate) struct DbSource {
@@ -441,23 +411,20 @@ impl Source for DbSource {
     /// The metadata of one sample, as returned by the API.
     type Item = serde_json::Value;
 
-    fn new(config: Self::Config, context: &SourceContext) -> Self {
-        Self {
+    fn new(config: Self::Config, context: &SourceContext) -> Result<Self, String> {
+        check_partition(config.rank, config.world_size)?;
+        Ok(Self {
             config,
             // Metadata pages and payload downloads share one connection budget.
             http: Arc::new(new_shared_client(context.max_connections)),
             image_transform: context.image_transform.clone(),
             encoding: context.encoding,
             retries: max_retries_from_env(),
-        }
+        })
     }
 
-    fn enumerate(
-        &self,
-        items: Sender<Self::Item>,
-        cancel: &CancellationToken,
-    ) -> Result<(), String> {
-        pull_and_dispatch_pages(&self.http, items, self.config.clone(), cancel.clone())
+    async fn enumerate(&self, items: Sender<Self::Item>) -> Result<(), String> {
+        pull_and_dispatch_pages(&self.http, items, self.config.clone()).await
     }
 
     async fn load(&self, item: Self::Item) -> Result<Sample, ()> {
@@ -671,7 +638,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Rank cannot be greater than or equal to world size")]
     fn test_broken_ranks() {
         let config = SourceDBConfig {
             sources: "source1".to_string(),
@@ -701,6 +667,14 @@ mod tests {
             world_size: 1,
         };
 
-        let _request = build_request(config);
+        let context = SourceContext {
+            image_transform: Arc::new(None),
+            encoding: ImageEncoding::default(),
+            max_connections: 1,
+        };
+        assert_eq!(
+            DbSource::new(config, &context).err().unwrap(),
+            "rank 2 must be less than world_size 1"
+        );
     }
 }

@@ -1,5 +1,5 @@
 use crate::image_processing::{ARAwareTransform, ImageEncoding};
-use crate::source::{Source, SourceContext};
+use crate::source::{check_partition, default_world_size, Source, SourceContext};
 use crate::structs::{new_shared_client, BinaryFile, Sample, SharedClient, TarballSample};
 use crate::worker_utils::{max_retries_from_env, max_tasks_from_env};
 use crate::worker_wds;
@@ -19,7 +19,6 @@ use std::path::Path;
 use tokio::io::BufReader;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::StreamReader;
-use tokio_util::sync::CancellationToken; // For grouping, if more complex grouping is needed
 
 fn default_reference_image_type() -> String {
     "jpg".to_string()
@@ -44,7 +43,7 @@ pub struct SourceWebDatasetConfig {
     #[serde(default)]
     pub rank: usize,
 
-    #[serde(default)]
+    #[serde(default = "default_world_size")]
     pub world_size: usize,
 }
 
@@ -326,7 +325,7 @@ async fn tasks_from_shards(
     samples_metadata_tx: kanal::Sender<TarballSample>,
     config: &SourceWebDatasetConfig,
     retries: u8,
-) -> Result<serde_json::Value, String> {
+) -> Result<(), String> {
     match get_url_list(&shared_client, config).await {
         Ok(mut task_list) => {
             // Shuffle the items if needed
@@ -336,7 +335,6 @@ async fn tasks_from_shards(
 
             // Now submit all the tasks, making sure that not too many of them are in flight
             let mut tasks = tokio::task::JoinSet::new();
-            let response_json = serde_json::Value::Null;
             let mut count = 0;
 
             info!("WDS: Using {} download tasks", config.concurrent_downloads);
@@ -406,48 +404,13 @@ async fn tasks_from_shards(
             }
             debug!("Served {count} items from the bucket");
 
-            Ok(response_json)
+            Ok(())
         }
         Err(e) => {
             warn!("Failed to get URL list: {e}");
             Err(e) // Return a JoinError with the error message
         }
     }
-}
-
-fn query_shards_and_dispatch(
-    shared_client: Arc<SharedClient>,
-    samples_metadata_tx: kanal::Sender<TarballSample>,
-    source_config: SourceWebDatasetConfig,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    // List all the shards from the bucket
-    // for each of them, start an async task to download the TarballSample and unpack it in memory
-    // Then, for each sample in the tarball (multiple payloads typically), send it to the processing channel
-
-    let max_retries = max_retries_from_env();
-
-    // Use more threads for the download runtime to handle increased concurrency
-    let download_threads = std::cmp::max(4, source_config.concurrent_downloads);
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(download_threads)
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => Ok(()),
-                result = tasks_from_shards(
-                    shared_client.clone(),
-                    samples_metadata_tx,
-                    &source_config,
-                    max_retries,
-                ) => {
-                    result.map(|_| ())
-                }
-            }
-        })
 }
 
 const DEFAULT_CONCURRENT_DOWNLOADS: usize = 8;
@@ -458,6 +421,7 @@ pub(crate) struct WebDatasetSource {
     http: Arc<SharedClient>,
     image_transform: Arc<Option<ARAwareTransform>>,
     encoding: ImageEncoding,
+    retries: u8,
 }
 
 impl Source for WebDatasetSource {
@@ -466,30 +430,29 @@ impl Source for WebDatasetSource {
     /// The files of one sample, already downloaded and untarred.
     type Item = TarballSample;
 
-    fn new(mut config: Self::Config, context: &SourceContext) -> Self {
+    fn new(mut config: Self::Config, context: &SourceContext) -> Result<Self, String> {
+        check_partition(config.rank, config.world_size)?;
         if config.concurrent_downloads == 0 {
             info!("WDS: Defaulting to {DEFAULT_CONCURRENT_DOWNLOADS} concurrent_downloads");
             config.concurrent_downloads = DEFAULT_CONCURRENT_DOWNLOADS;
         }
-        Self {
+        Ok(Self {
             config,
             http: Arc::new(new_shared_client(context.max_connections)),
             image_transform: context.image_transform.clone(),
             encoding: context.encoding,
-        }
+            retries: max_retries_from_env(),
+        })
     }
 
-    fn enumerate(
-        &self,
-        items: kanal::Sender<Self::Item>,
-        cancel: &CancellationToken,
-    ) -> Result<(), String> {
-        query_shards_and_dispatch(
-            self.http.clone(),
-            items,
-            self.config.clone(),
-            cancel.clone(),
-        )
+    /// List the shards, then download and untar several of them at once.
+    async fn enumerate(&self, items: kanal::Sender<Self::Item>) -> Result<(), String> {
+        tasks_from_shards(self.http.clone(), items, &self.config, self.retries).await
+    }
+
+    fn enumeration_threads(&self) -> usize {
+        // Untarring is CPU work: one thread per concurrent download.
+        self.config.concurrent_downloads.max(4)
     }
 
     async fn load(&self, item: Self::Item) -> Result<Sample, ()> {
@@ -779,11 +742,8 @@ mod tests {
             };
             let http = Arc::new(new_shared_client(2));
             let (sender, receiver) = kanal::bounded(2);
-            let cancel = CancellationToken::new();
-            let feeder_cancel = cancel.clone();
-            let feeder = std::thread::spawn(move || {
-                query_shards_and_dispatch(http, sender, config, feeder_cancel)
-            });
+            let feeder =
+                tokio::spawn(async move { tasks_from_shards(http, sender, &config, 1).await });
             let received = (0..SAMPLE_COUNT)
                 .map(|_| receiver.recv_timeout(READ_TIMEOUT))
                 .collect::<Result<Vec<_>, _>>();
@@ -792,9 +752,8 @@ mod tests {
                 .ok()
                 .map(|_| receiver.recv_timeout(READ_TIMEOUT));
             // Always shut down and join before asserting, including on failure.
-            cancel.cancel();
             receiver.close().unwrap();
-            feeder.join().unwrap().expect("fixture feeder failed");
+            feeder.await.unwrap().expect("fixture feeder failed");
             // The feeder returning drops the last sender, which closes the
             // queue: there is no marker item, and no wait for the timeout.
             use kanal::ReceiveErrorTimeout::{Closed, SendClosed};

@@ -1,12 +1,11 @@
 use crate::image_processing::{ARAwareTransform, ImageEncoding};
-use crate::source::{Source, SourceContext};
+use crate::source::{check_partition, default_world_size, Source, SourceContext};
 use crate::structs::Sample;
 use crate::worker_files;
 use log::warn;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
@@ -20,10 +19,6 @@ pub struct SourceFileConfig {
 
     #[serde(default = "default_world_size")]
     pub world_size: usize,
-}
-
-fn default_world_size() -> usize {
-    1
 }
 
 fn get_data_slice_multirank(quorum: usize, rank: usize, world_size: usize) -> (usize, usize) {
@@ -146,20 +141,21 @@ impl Source for FileSource {
     /// The path of one image, as a JSON string.
     type Item = serde_json::Value;
 
-    fn new(config: Self::Config, context: &SourceContext) -> Self {
-        Self {
+    fn new(config: Self::Config, context: &SourceContext) -> Result<Self, String> {
+        check_partition(config.rank, config.world_size)?;
+        Ok(Self {
             config,
             image_transform: context.image_transform.clone(),
             encoding: context.encoding,
-        }
+        })
     }
 
-    fn enumerate(
-        &self,
-        items: kanal::Sender<Self::Item>,
-        _cancel: &CancellationToken, // The walk stops when `items` closes.
-    ) -> Result<(), String> {
-        enumerate_files(items, self.config.clone())
+    async fn enumerate(&self, items: kanal::Sender<Self::Item>) -> Result<(), String> {
+        // The walk blocks; it stops on its own once `items` closes.
+        let config = self.config.clone();
+        tokio::task::spawn_blocking(move || enumerate_files(items, config))
+            .await
+            .map_err(|error| format!("file walk failed: {error}"))?
     }
 
     async fn load(&self, item: Self::Item) -> Result<Sample, ()> {

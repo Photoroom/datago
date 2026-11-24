@@ -4,6 +4,7 @@
 use crate::error::{panic_message, DatagoError};
 use crate::structs::Sample;
 use crate::worker_utils::WorkerEnd;
+use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -79,14 +80,35 @@ impl PipelineControl {
         }
     }
 
-    pub(crate) fn spawn_feeder<T: Send + 'static>(
+    /// Run `work` on its own runtime of `threads` threads until it returns or
+    /// the pass is cancelled, whichever comes first.
+    pub(crate) fn spawn_feeder<T, F>(
         &self,
         sender: kanal::Sender<T>,
-        work: impl FnOnce(kanal::Sender<T>, &CancellationToken) -> Result<(), String> + Send + 'static,
-    ) -> JoinHandle<()> {
+        threads: usize,
+        work: impl FnOnce(kanal::Sender<T>) -> F + Send + 'static,
+    ) -> JoinHandle<()>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<(), String>>,
+    {
         let control = self.clone();
         thread::spawn(move || {
-            if let Err(message) = catch_stage(|| work(sender.clone(), &control.cancel)) {
+            let result = catch_stage(|| {
+                let runtime = build_runtime(threads, "feeder")?;
+                let result = runtime.block_on(async {
+                    tokio::select! {
+                        biased;
+                        _ = control.cancel.cancelled() => Ok(()),
+                        result = work(sender.clone()) => result,
+                    }
+                });
+                // Blocking work it spawned may still be finishing (a file walk
+                // notices the closed queue on its next send).
+                runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+                result
+            });
+            if let Err(message) = result {
                 control.transition(Outcome::Failed(DatagoError::Source(message)));
             }
             // Publish any failure before the worker can observe end of input.
@@ -98,6 +120,7 @@ impl PipelineControl {
         &self,
         items: kanal::Receiver<T>,
         samples: kanal::Sender<Option<Sample>>,
+        threads: usize,
         work: impl FnOnce(
                 &Runtime,
                 &kanal::Receiver<T>,
@@ -109,13 +132,7 @@ impl PipelineControl {
     ) -> JoinHandle<()> {
         let control = self.clone();
         thread::spawn(move || {
-            let runtime = catch_stage(|| {
-                Builder::new_multi_thread()
-                    .worker_threads(num_cpus::get())
-                    .enable_all()
-                    .build()
-                    .map_err(|error| format!("cannot start the worker runtime: {error}"))
-            });
+            let runtime = catch_stage(|| build_runtime(threads, "worker"));
             let result = match &runtime {
                 Ok(runtime) => {
                     catch_stage(|| work(runtime, &items, samples.clone(), &control.cancel))
@@ -135,6 +152,14 @@ impl PipelineControl {
     }
 }
 
+fn build_runtime(threads: usize, stage: &str) -> Result<Runtime, String> {
+    Builder::new_multi_thread()
+        .worker_threads(threads.max(1))
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start the {stage} runtime: {error}"))
+}
+
 fn catch_stage<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     catch_unwind(AssertUnwindSafe(work))
         .unwrap_or_else(|panic| Err(format!("panicked: {}", panic_message(panic))))
@@ -149,7 +174,9 @@ mod tests {
         let (_samples_tx, samples_rx) = kanal::bounded(1);
         let (metadata_tx, _metadata_rx) = kanal::bounded::<()>(1);
         let control = PipelineControl::new(samples_rx);
-        let feeder = control.spawn_feeder(metadata_tx, |_, _| panic!("injected feeder panic"));
+        let feeder = control.spawn_feeder(metadata_tx, 1, |_| async {
+            panic!("injected feeder panic")
+        });
         assert!(control
             .samples_rx
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -167,7 +194,9 @@ mod tests {
         let (metadata_tx, _metadata_rx) = kanal::bounded::<()>(1);
         let control = PipelineControl::new(samples_rx);
         control.stop();
-        let feeder = control.spawn_feeder(metadata_tx, |_, _| Err("late feeder failure".into()));
+        let feeder = control.spawn_feeder(metadata_tx, 1, |_| async {
+            Err("late feeder failure".into())
+        });
         feeder.join().unwrap();
         assert!(control.error().is_none());
     }
@@ -180,7 +209,9 @@ mod tests {
         samples_tx.send(None).unwrap();
 
         control.finish_worker(Ok(WorkerEnd::LimitReached));
-        let feeder = control.spawn_feeder(metadata_tx, |_, _| Err("late metadata error".into()));
+        let feeder = control.spawn_feeder(metadata_tx, 1, |_| async {
+            Err("late metadata error".into())
+        });
         feeder.join().unwrap();
         assert!(control.error().is_none());
         assert!(control.cancel.is_cancelled());
@@ -196,8 +227,9 @@ mod tests {
         let control = PipelineControl::new(samples_rx);
         // Queue closure alone must not suppress a source error.
         drop(metadata_rx);
-        let feeder =
-            control.spawn_feeder(metadata_tx, |_, _| Err("metadata request failed".into()));
+        let feeder = control.spawn_feeder(metadata_tx, 1, |_| async {
+            Err("metadata request failed".into())
+        });
         feeder.join().unwrap();
         assert!(matches!(control.error(), Some(DatagoError::Source(message))
             if message == "metadata request failed"));

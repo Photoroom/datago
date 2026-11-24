@@ -79,22 +79,6 @@ impl DatagoClientConfig {
         if config.limit == 0 {
             return Err("limit must be greater than 0".into());
         }
-        let world_size = config
-            .source_config
-            .get("world_size")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(1);
-        let rank = config
-            .source_config
-            .get("rank")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        if world_size == 0 {
-            return Err("world_size must be greater than 0".into());
-        }
-        if rank >= world_size {
-            return Err("rank must be less than world_size".into());
-        }
         Ok(config)
     }
 }

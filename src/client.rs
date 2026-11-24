@@ -1143,7 +1143,7 @@ mod error_contract_tests {
         let (samples_tx, samples_rx) = kanal::bounded(1);
         let control = PipelineControl::new(samples_rx.clone());
         let (_, items_rx) = kanal::bounded::<()>(1);
-        let worker = Some(control.spawn_worker(items_rx, samples_tx, |_, _, _, _| {
+        let worker = Some(control.spawn_worker(items_rx, samples_tx, 1, |_, _, _, _| {
             work().map(|_| crate::worker_utils::WorkerEnd::Exhausted)
         }));
         client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {

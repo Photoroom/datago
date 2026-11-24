@@ -6,9 +6,12 @@
 //! cancellation and failure reporting, identically for every source.
 //!
 //! ```text
-//!  feeder thread                worker thread (tokio runtime)        reader
+//!  feeder thread (runtime)      worker thread (runtime)              reader
 //!  Source::enumerate ─ items ─► Source::load × max_tasks ─ samples ─► client
 //! ```
+//!
+//! Both stages are async and run on runtimes the engine builds, so a source
+//! never picks a runtime flavor, sizes one, or watches for cancellation.
 //!
 //! Adding a source means implementing the trait in one file and adding one
 //! `SourceType` variant; nothing in this module needs to change.
@@ -22,7 +25,6 @@ use log::{debug, info};
 use serde::de::DeserializeOwned;
 use std::future::Future;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
 /// What the client configuration hands to every source.
 pub(crate) struct SourceContext {
@@ -44,17 +46,18 @@ pub(crate) trait Source: Send + Sync + Sized + 'static {
     /// One unit of work: enumerated by the feeder, loaded by a worker task.
     type Item: Send + 'static;
 
-    fn new(config: Self::Config, context: &SourceContext) -> Self;
+    /// Check the configuration and build the source. An error rejects the
+    /// configuration before any queue or thread exists.
+    fn new(config: Self::Config, context: &SourceContext) -> Result<Self, String>;
 
-    /// Send every candidate item, then return. Runs on the feeder thread and
-    /// may block. When `cancel` fires, retire any in-flight work. A failed
-    /// send also means the worker has retired. An enumeration error fails
-    /// the pass while it is still running.
+    /// Send every candidate item, then return. A failed send means the worker
+    /// has retired: return `Ok`. An error fails the pass while it is still
+    /// running. The engine drops this future once the pass is cancelled, so
+    /// blocking work must go to `spawn_blocking` and stop on a failed send.
     fn enumerate(
         &self,
         items: kanal::Sender<Self::Item>,
-        cancel: &CancellationToken,
-    ) -> Result<(), String>;
+    ) -> impl Future<Output = Result<(), String>> + Send;
 
     /// Prepare one sample. `Err(())` skips this item without failing the pass
     /// or counting toward the limit; log the reason before returning it.
@@ -65,10 +68,34 @@ pub(crate) trait Source: Send + Sync + Sized + 'static {
         max_tasks_from_env(num_cpus::get())
     }
 
+    /// Threads of the runtime running `enumerate`. One is plenty to page
+    /// through an API; raise it when enumeration does CPU work of its own.
+    fn enumeration_threads(&self) -> usize {
+        1
+    }
+
     /// How many enumerated items may wait for a loading task.
     fn queue_capacity(samples_buffer: usize) -> usize {
         samples_buffer * 2
     }
+}
+
+/// Sources shard their samples over `world_size` ranks; one rank by default.
+pub(crate) fn default_world_size() -> usize {
+    1
+}
+
+/// Reject a `rank` outside of `0..world_size`.
+pub(crate) fn check_partition(rank: usize, world_size: usize) -> Result<(), String> {
+    if world_size == 0 {
+        return Err("world_size must be greater than 0".into());
+    }
+    if rank >= world_size {
+        return Err(format!(
+            "rank {rank} must be less than world_size {world_size}"
+        ));
+    }
+    Ok(())
 }
 
 /// Start one pass over `S`, or reject its configuration before any queue or
@@ -79,14 +106,13 @@ pub(crate) fn launch<S: Source>(
     samples_buffer: usize,
     limit: usize,
 ) -> Result<DatagoEngine, DatagoError> {
+    let rejected =
+        |error: String| DatagoError::Configuration(format!("{} source: {error}", S::NAME));
     let config = serde_json::from_value(source_config.clone())
-        .map_err(|error| DatagoError::Configuration(format!("{} source: {error}", S::NAME)))?;
+        .map_err(|error| rejected(error.to_string()))?;
+    let source = S::new(config, context).map_err(rejected)?;
     info!("Using {} as source", S::NAME);
-    Ok(start_engine(
-        Arc::new(S::new(config, context)),
-        samples_buffer,
-        limit,
-    ))
+    Ok(start_engine(Arc::new(source), samples_buffer, limit))
 }
 
 /// Wire the pipeline: a feeder thread enumerating items and a worker thread
@@ -97,15 +123,18 @@ fn start_engine<S: Source>(source: Arc<S>, samples_buffer: usize, limit: usize) 
     let (samples_tx, samples_rx) = kanal::bounded(samples_buffer);
     let control = PipelineControl::new(samples_rx.clone());
 
-    let feeder = control.spawn_feeder(items_tx, {
+    let feeder = control.spawn_feeder(items_tx, source.enumeration_threads(), {
         let source = source.clone();
-        move |items_tx, cancel| source.enumerate(items_tx, cancel)
+        move |items_tx| async move { source.enumerate(items_tx).await }
     });
+    // Loading is mostly CPU work: no point in more threads than tasks.
+    let max_tasks = source.max_tasks();
+    let worker_threads = num_cpus::get().min(max_tasks);
     let worker = control.spawn_worker(
         items_rx,
         samples_tx,
+        worker_threads,
         move |runtime, items, samples, cancel| {
-            let max_tasks = source.max_tasks();
             let report = runtime.block_on(run_worker(
                 items,
                 samples,
@@ -148,6 +177,7 @@ mod tests {
         count: usize,
         fail_enumeration: bool,
         panic_on: Option<usize>,
+        reject: bool,
     }
 
     /// Enumerates `0..count`; multiples of three are unreadable.
@@ -166,21 +196,20 @@ mod tests {
         type Config = CountingConfig;
         type Item = usize;
 
-        fn new(config: Self::Config, _context: &SourceContext) -> Self {
-            Self {
+        fn new(config: Self::Config, _context: &SourceContext) -> Result<Self, String> {
+            if config.reject {
+                return Err("injected configuration error".into());
+            }
+            Ok(Self {
                 config,
                 in_flight: AtomicUsize::new(0),
                 most_in_flight: AtomicUsize::new(0),
-            }
+            })
         }
 
-        fn enumerate(
-            &self,
-            items: kanal::Sender<usize>,
-            _cancel: &CancellationToken,
-        ) -> Result<(), String> {
+        async fn enumerate(&self, items: kanal::Sender<usize>) -> Result<(), String> {
             for item in 0..self.config.count {
-                if items.send(item).is_err() {
+                if items.as_async().send(item).await.is_err() {
                     return Ok(());
                 }
             }
@@ -303,12 +332,22 @@ mod tests {
     }
 
     #[test]
+    fn a_source_can_reject_its_configuration() {
+        let error =
+            launch::<CountingSource>(&json!({"reject": true}), &context(), 2, 1).unwrap_err();
+        assert_eq!(
+            error,
+            DatagoError::Configuration("counting source: injected configuration error".into())
+        );
+    }
+
+    #[test]
     fn concurrency_is_bounded_by_the_source() {
         let config = CountingConfig {
             count: 300,
             ..Default::default()
         };
-        let source = Arc::new(CountingSource::new(config, &context()));
+        let source = Arc::new(CountingSource::new(config, &context()).unwrap());
         let engine = start_engine(source.clone(), 2, 1000);
         assert_eq!(drain(&engine).len(), 200);
         let most_in_flight = source.most_in_flight.load(Ordering::SeqCst);
