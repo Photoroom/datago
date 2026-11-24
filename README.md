@@ -179,6 +179,13 @@ The existing Rust `get_sample()` remains a compatibility wrapper: it logs failur
 and returns `None`. Use `try_get_sample()` when failure must be distinguished from
 normal exhaustion. Python propagates failures through its existing read methods.
 
+### Release notes: unreleased
+
+- **Breaking change:** filesystem sample IDs are the plain image path
+  (`/data/train/x.jpg`), like the IDs of the other sources. They used to be the
+  path as a quoted JSON string (`"/data/train/x.jpg"`); drop any `json.loads`
+  applied to them.
+
 ### Release notes: 2026.11.1
 
 - **Breaking change:** encoded image conversion now produces an eagerly decoded

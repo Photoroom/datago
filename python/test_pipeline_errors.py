@@ -287,7 +287,7 @@ def test_unreadable_root_is_fatal_but_nested_directory_is_skipped(
                 client.get_sample(timeout=3)
         else:
             sample = client.get_sample(timeout=3)
-            assert json.loads(sample.id) == str(tmp_path / "good.png")
+            assert sample.id == str(tmp_path / "good.png")
         assert client.get_sample(timeout=3) is None
     finally:
         blocked.chmod(permissions)

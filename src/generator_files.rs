@@ -5,6 +5,7 @@ use crate::worker_files;
 use log::warn;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +43,7 @@ fn get_data_slice_multirank(quorum: usize, rank: usize, world_size: usize) -> (u
 }
 
 fn enumerate_files(
-    samples_metadata_tx: kanal::Sender<serde_json::Value>,
+    samples_metadata_tx: kanal::Sender<PathBuf>,
     source_config: SourceFileConfig,
 ) -> Result<(), String> {
     // Get an iterator over regular files only. Besides skipping directories with
@@ -114,11 +115,7 @@ fn enumerate_files(
     // The worker alone counts successful samples and closes this queue when
     // satisfied. Candidate failures must never exhaust an arbitrary allowance.
     for entry in entries {
-        let path = entry.path().to_string_lossy().into_owned();
-        if samples_metadata_tx
-            .send(serde_json::Value::String(path))
-            .is_err()
-        {
+        if samples_metadata_tx.send(entry.into_path()).is_err() {
             return Ok(());
         }
     }
@@ -138,8 +135,8 @@ pub(crate) struct FileSource {
 impl Source for FileSource {
     const NAME: &'static str = "file";
     type Config = SourceFileConfig;
-    /// The path of one image, as a JSON string.
-    type Item = serde_json::Value;
+    /// The path of one image.
+    type Item = PathBuf;
 
     fn new(config: Self::Config, context: &SourceContext) -> Result<Self, String> {
         check_partition(config.rank, config.world_size)?;
@@ -294,11 +291,14 @@ mod tests {
             assert_eq!(payload.width, 1);
             assert_eq!(payload.height, 1);
         }
-        // The identifier is the path of the image, as a JSON string.
+        // The identifier is the path of the image.
         let mut ids: Vec<_> = samples.iter().map(|sample| sample.id.clone()).collect();
         ids.sort();
         let expected: Vec<_> = (0..3)
-            .map(|i| serde_json::json!(temp_dir.path().join(format!("test_{i}.png"))).to_string())
+            .map(|i| {
+                let path = temp_dir.path().join(format!("test_{i}.png"));
+                path.to_string_lossy().into_owned()
+            })
             .collect();
         assert_eq!(ids, expected);
     }
@@ -354,7 +354,7 @@ mod tests {
 
         let mut received_files = Vec::new();
         while let Ok(value) = rx.recv() {
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 received_files.push(path.to_string());
             }
         }
@@ -398,10 +398,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            receiver.recv().unwrap(),
-            serde_json::Value::String(image_link.to_string_lossy().into_owned())
-        );
+        assert_eq!(receiver.recv().unwrap(), image_link);
         // Returning drops the sender: exhaustion is the queue closing.
         assert!(receiver.recv().is_err());
     }
@@ -427,7 +424,7 @@ mod tests {
 
         let mut received_files = Vec::new();
         while let Ok(value) = rx.recv() {
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 received_files.push(path.to_string());
             }
         }
@@ -471,14 +468,14 @@ mod tests {
 
         let mut files_rank0 = Vec::new();
         while let Ok(value) = rx1.recv() {
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 files_rank0.push(path.to_string());
             }
         }
 
         let mut files_rank1 = Vec::new();
         while let Ok(value) = rx2.recv() {
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 files_rank1.push(path.to_string());
             }
         }
@@ -528,14 +525,14 @@ mod tests {
 
         let mut files1 = Vec::new();
         while let Ok(value) = rx1.recv() {
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 files1.push(path.to_string());
             }
         }
 
         let mut files2 = Vec::new();
         while let Ok(value) = rx2.recv() {
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 files2.push(path.to_string());
             }
         }
@@ -568,7 +565,7 @@ mod tests {
 
         let mut received_files = Vec::new();
         while let Ok(value) = rx.recv() {
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 received_files.push(path.to_string());
             }
         }

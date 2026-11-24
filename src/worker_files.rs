@@ -2,9 +2,10 @@ use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
 use log::{debug, error};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
+async fn image_from_path(path: &Path) -> Result<image::DynamicImage, image::ImageError> {
     // The image decoder and std file reads are blocking. Keep them off Tokio's
     // async worker threads so cancellation/channel handling can still progress.
     let path = path.to_owned();
@@ -28,7 +29,7 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
 }
 
 async fn image_payload_from_path(
-    path: &str,
+    path: &Path,
     img_tfm: &Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
@@ -41,40 +42,26 @@ async fn image_payload_from_path(
 }
 
 pub(crate) async fn pull_sample(
-    sample_json: serde_json::Value,
+    path: PathBuf,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encoding: image_processing::ImageEncoding,
 ) -> Result<Sample, ()> {
-    let path = sample_json.as_str().unwrap();
-    debug!("Starting to process file: {}", path);
-
-    match image_payload_from_path(path, &img_tfm, encoding).await {
-        Ok(image) => {
-            debug!("Successfully processed file: {}", path);
-            let sample = Sample {
-                id: sample_json.to_string(),
-                source: "filesystem".to_string(),
-                image: to_python_image_payload(image),
-                attributes: HashMap::new(),
-                coca_embedding: vec![],
-                tags: vec![],
-                masks: HashMap::new(),
-                latents: HashMap::new(),
-                additional_images: HashMap::new(),
-                duplicate_state: 0,
-            };
-
-            Ok(sample)
-        }
-        Err(e) => {
-            error!("Failed to load image from path {}: {}", path, e);
-            // Add more specific error handling based on error type
-            if let image::ImageError::IoError(io_err) = e {
-                error!("IO Error for file {}: {}", path, io_err);
-            }
-            Err(())
-        }
-    }
+    debug!("Starting to process file: {}", path.display());
+    let image = image_payload_from_path(&path, &img_tfm, encoding)
+        .await
+        .map_err(|error| error!("Failed to load image from path {}: {error}", path.display()))?;
+    Ok(Sample {
+        id: path.to_string_lossy().into_owned(),
+        source: "filesystem".to_string(),
+        image: to_python_image_payload(image),
+        attributes: HashMap::new(),
+        coca_embedding: vec![],
+        tags: vec![],
+        masks: HashMap::new(),
+        latents: HashMap::new(),
+        additional_images: HashMap::new(),
+        duplicate_state: 0,
+    })
 }
 
 #[cfg(test)]
@@ -108,7 +95,7 @@ mod tests {
             let directory = TempDir::new().unwrap();
             let path = directory.path().join("good.png");
             create_test_image(&path);
-            image_from_path(path.to_str().unwrap()).await.unwrap()
+            image_from_path(&path).await.unwrap()
         });
         // A decoder panic must not escape as a JoinError on the sample task.
         let image = task.await.unwrap();
@@ -121,7 +108,7 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
-        let result = image_from_path(image_path.to_str().unwrap()).await;
+        let result = image_from_path(&image_path).await;
         assert!(result.is_ok());
 
         let img = result.unwrap();
@@ -131,7 +118,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_image_from_path_invalid_file() {
-        let result = image_from_path("/nonexistent/path.png").await;
+        let result = image_from_path(Path::new("/nonexistent/path.png")).await;
         assert!(result.is_err());
     }
 
@@ -141,7 +128,7 @@ mod tests {
         let file_path = temp_dir.path().join("not_an_image.txt");
         fs::write(&file_path, "This is not image data").unwrap();
 
-        let result = image_from_path(file_path.to_str().unwrap()).await;
+        let result = image_from_path(&file_path).await;
         assert!(result.is_err());
     }
 
@@ -152,7 +139,7 @@ mod tests {
         create_test_image(&image_path);
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding::default(),
         )
@@ -191,7 +178,7 @@ mod tests {
         let transform = Some(transform_config.get_ar_aware_transform());
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &transform,
             image_processing::ImageEncoding::default(),
         )
@@ -213,7 +200,7 @@ mod tests {
         create_test_image(&image_path);
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 encode_images: true,
@@ -242,7 +229,7 @@ mod tests {
         img.save(&image_path).unwrap();
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 img_to_rgb8: true,
@@ -271,7 +258,7 @@ mod tests {
         dyn_img.save(&image_path).unwrap();
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 img_to_rgb8: true,
@@ -331,7 +318,7 @@ mod tests {
         dyn_img.save(&image_path).unwrap();
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 img_to_rgb8: true,
@@ -362,7 +349,7 @@ mod tests {
         dyn_img.save(&image_path).unwrap();
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 img_to_rgb8: true,
@@ -387,10 +374,8 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
-        let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
-
         let result = pull_sample(
-            sample_json,
+            image_path.clone(),
             Arc::new(None),
             image_processing::ImageEncoding::default(),
         )
@@ -400,7 +385,7 @@ mod tests {
 
         let sample = result.unwrap();
         assert_eq!(sample.source, "filesystem");
-        assert!(!sample.id.is_empty());
+        assert_eq!(sample.id, image_path.to_str().unwrap());
         let payload = sample.image.get_payload();
         assert_eq!(payload.width, 1);
         assert_eq!(payload.height, 1);
@@ -415,10 +400,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_sample_invalid_path() {
-        let sample_json = serde_json::Value::String("/nonexistent/path.png".to_string());
-
         let result = pull_sample(
-            sample_json,
+            "/nonexistent/path.png".into(),
             Arc::new(None),
             image_processing::ImageEncoding::default(),
         )
@@ -447,7 +430,7 @@ mod tests {
         let image_path = temp_dir.path().join("test.jpg");
         create_test_jpeg_image(&image_path);
 
-        let result = image_from_path(image_path.to_str().unwrap()).await;
+        let result = image_from_path(&image_path).await;
         if let Err(e) = &result {
             eprintln!("Error loading JPEG: {}", e);
         }
@@ -464,7 +447,7 @@ mod tests {
         let image_path = temp_dir.path().join("test.webp");
         create_test_webp_image(&image_path);
 
-        let result = image_from_path(image_path.to_str().unwrap()).await;
+        let result = image_from_path(&image_path).await;
         assert!(result.is_ok());
 
         let img = result.unwrap();
@@ -479,7 +462,7 @@ mod tests {
         create_test_jpeg_image(&image_path);
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding::default(),
         )
@@ -501,7 +484,7 @@ mod tests {
         create_test_webp_image(&image_path);
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding::default(),
         )
@@ -522,10 +505,8 @@ mod tests {
         let image_path = temp_dir.path().join("test.webp");
         create_test_webp_image(&image_path);
 
-        let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
-
         let result = pull_sample(
-            sample_json,
+            image_path.clone(),
             Arc::new(None),
             image_processing::ImageEncoding::default(),
         )
@@ -535,7 +516,7 @@ mod tests {
 
         let sample = result.unwrap();
         assert_eq!(sample.source, "filesystem");
-        assert!(!sample.id.is_empty());
+        assert_eq!(sample.id, image_path.to_str().unwrap());
         let payload = sample.image.get_payload();
         assert_eq!(payload.width, 2);
         assert_eq!(payload.height, 2);
