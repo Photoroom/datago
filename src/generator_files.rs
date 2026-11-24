@@ -1,12 +1,12 @@
-use crate::client::DatagoClient;
-use crate::error::DatagoError;
-use crate::structs::{DatagoEngine, MetadataReceiver};
+use crate::image_processing::{ARAwareTransform, ImageEncoding};
+use crate::source::{check_partition, default_world_size, Source, SourceContext};
+use crate::structs::Sample;
 use crate::worker_files;
-use kanal::bounded;
-use log::{info, warn};
+use log::warn;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use tokio_util::sync::CancellationToken;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFileConfig {
@@ -20,10 +20,6 @@ pub struct SourceFileConfig {
 
     #[serde(default = "default_world_size")]
     pub world_size: usize,
-}
-
-fn default_world_size() -> usize {
-    1
 }
 
 fn get_data_slice_multirank(quorum: usize, rank: usize, world_size: usize) -> (usize, usize) {
@@ -47,7 +43,7 @@ fn get_data_slice_multirank(quorum: usize, rank: usize, world_size: usize) -> (u
 }
 
 fn enumerate_files(
-    samples_metadata_tx: kanal::Sender<serde_json::Value>,
+    samples_metadata_tx: kanal::Sender<PathBuf>,
     source_config: SourceFileConfig,
 ) -> Result<(), String> {
     // Get an iterator over regular files only. Besides skipping directories with
@@ -119,80 +115,49 @@ fn enumerate_files(
     // The worker alone counts successful samples and closes this queue when
     // satisfied. Candidate failures must never exhaust an arbitrary allowance.
     for entry in entries {
-        let path = entry.path().to_string_lossy().into_owned();
-        if samples_metadata_tx
-            .send(serde_json::Value::String(path))
-            .is_err()
-        {
+        if samples_metadata_tx.send(entry.into_path()).is_err() {
             return Ok(());
         }
     }
-    if let Some(error) = walk_error {
-        return Err(error);
+    match walk_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
-    let _ = samples_metadata_tx.send(serde_json::Value::Null);
-    Ok(())
 }
 
-pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
-    // Validate before creating any queues or starting producer threads.
-    let source_config: SourceFileConfig = serde_json::from_value(client.source_config.clone())
-        .map_err(|error| DatagoError::Configuration(format!("file source: {error}")))?;
-    // Start pulling the samples, which spread across two steps. The samples will land in the last kanal,
-    // all the threads pausing when the required buffer depth is reached.
-    // - A first thread will query the filesystem and get pages of filepaths back. It will dispatch the filepaths
-    // to the worker pool.
-    // - The worker pool will load the files, deserialize them, do the required pre-processing then commit to the ready queue.
+/// Images below a directory, one sample per file.
+pub(crate) struct FileSource {
+    config: SourceFileConfig,
+    image_transform: Arc<Option<ARAwareTransform>>,
+    encoding: ImageEncoding,
+}
 
-    // TODO: Pass over an Arc ref of the client instead of doing the current member copies
+impl Source for FileSource {
+    const NAME: &'static str = "file";
+    type Config = SourceFileConfig;
+    /// The path of one image.
+    type Item = PathBuf;
 
-    // Allocate all the message passing pipes
-    let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
-    let (samples_tx, samples_rx) = bounded(client.samples_buffer);
-    let cancel = CancellationToken::new();
-    let control = crate::pipeline::PipelineControl::new(
-        samples_rx.clone(),
-        MetadataReceiver::Json(samples_metadata_rx.clone()),
-        cancel.clone(),
-    );
+    fn new(config: Self::Config, context: &SourceContext) -> Result<Self, String> {
+        check_partition(config.rank, config.world_size)?;
+        Ok(Self {
+            config,
+            image_transform: context.image_transform.clone(),
+            encoding: context.encoding,
+        })
+    }
 
-    info!("Using file as source {}", source_config.root_path);
+    async fn enumerate(&self, items: kanal::Sender<Self::Item>) -> Result<(), String> {
+        // The walk blocks; it stops on its own once `items` closes.
+        let config = self.config.clone();
+        tokio::task::spawn_blocking(move || enumerate_files(items, config))
+            .await
+            .map_err(|error| format!("file walk failed: {error}"))?
+    }
 
-    // Create a thread which will generate work as it goes. We'll query the filesystem
-    // and send the filepaths to the worker pool as we go
-    let feeder = Some(control.spawn_feeder(samples_metadata_tx.clone(), move || {
-        enumerate_files(samples_metadata_tx, source_config)
-    }));
-
-    // Spawn a thread which will handle the async workers through a mutlithread tokio runtime
-    let image_transform = client.image_transform.clone();
-    let encoding = crate::image_processing::ImageEncoding {
-        encode_images: client.encode_images,
-        img_to_rgb8: client.img_to_rgb8,
-        encode_format: client.encode_format,
-        jpeg_quality: client.jpeg_quality,
-    };
-    let limit = client.limit;
-    let samples_metadata_rx_worker = samples_metadata_rx.clone();
-    let cancel_worker = cancel.clone();
-
-    let worker = Some(control.spawn_worker(samples_tx.clone(), move || {
-        worker_files::pull_samples(
-            samples_metadata_rx_worker,
-            samples_tx,
-            image_transform,
-            encoding,
-            limit,
-            cancel_worker,
-        )
-    }));
-
-    Ok(DatagoEngine {
-        control,
-        samples_rx,
-        feeder,
-        worker,
-    })
+    async fn load(&self, item: Self::Item) -> Result<Sample, ()> {
+        worker_files::pull_sample(item, self.image_transform.clone(), self.encoding).await
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +248,69 @@ mod tests {
         assert_eq!(config.world_size, 4);
     }
 
+    const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    fn create_decodable_images(dir: &Path, count: usize) {
+        for i in 0..count {
+            image::RgbImage::new(1, 1)
+                .save(dir.join(format!("test_{i}.png")))
+                .unwrap();
+        }
+    }
+
+    /// Run the whole pipeline over `root` and read it to exhaustion.
+    fn load_all(root: &Path, limit: usize) -> Vec<Sample> {
+        let context = SourceContext {
+            image_transform: Arc::new(None),
+            encoding: ImageEncoding::default(),
+            max_connections: 1,
+        };
+        let config = serde_json::json!({"root_path": root});
+        let engine = crate::source::launch::<FileSource>(&config, &context, 20, limit).unwrap();
+        let mut samples = Vec::new();
+        while let Ok(Some(sample)) = engine.samples_rx.recv_timeout(READ_TIMEOUT) {
+            samples.push(sample);
+        }
+        // A clean pass closes the output after its last sample.
+        assert!(engine.samples_rx.recv().is_err());
+        assert!(engine.control.error().is_none());
+        samples
+    }
+
+    #[test]
+    fn test_file_source_delivers_every_image() {
+        let temp_dir = TempDir::new().unwrap();
+        create_decodable_images(temp_dir.path(), 3);
+
+        let samples = load_all(temp_dir.path(), 10);
+
+        assert_eq!(samples.len(), 3);
+        for sample in &samples {
+            assert_eq!(sample.source, "filesystem");
+            let payload = sample.image.get_payload();
+            assert_eq!(payload.width, 1);
+            assert_eq!(payload.height, 1);
+        }
+        // The identifier is the path of the image.
+        let mut ids: Vec<_> = samples.iter().map(|sample| sample.id.clone()).collect();
+        ids.sort();
+        let expected: Vec<_> = (0..3)
+            .map(|i| {
+                let path = temp_dir.path().join(format!("test_{i}.png"));
+                path.to_string_lossy().into_owned()
+            })
+            .collect();
+        assert_eq!(ids, expected);
+    }
+
+    #[test]
+    fn test_file_source_with_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        create_decodable_images(temp_dir.path(), 10);
+
+        assert_eq!(load_all(temp_dir.path(), 3).len(), 3);
+    }
+
     fn create_test_images(dir: &Path, min_num_files: usize) -> Vec<String> {
         let extensions = ["jpg", "png", "bmp", "gif", "JPEG"];
         let mut files = Vec::new();
@@ -326,10 +354,7 @@ mod tests {
 
         let mut received_files = Vec::new();
         while let Ok(value) = rx.recv() {
-            if value == serde_json::Value::Null {
-                break;
-            }
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 received_files.push(path.to_string());
             }
         }
@@ -373,11 +398,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            receiver.recv().unwrap(),
-            serde_json::Value::String(image_link.to_string_lossy().into_owned())
-        );
-        assert_eq!(receiver.recv().unwrap(), serde_json::Value::Null);
+        assert_eq!(receiver.recv().unwrap(), image_link);
+        // Returning drops the sender: exhaustion is the queue closing.
         assert!(receiver.recv().is_err());
     }
 
@@ -402,10 +424,7 @@ mod tests {
 
         let mut received_files = Vec::new();
         while let Ok(value) = rx.recv() {
-            if value == serde_json::Value::Null {
-                break;
-            }
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 received_files.push(path.to_string());
             }
         }
@@ -449,20 +468,14 @@ mod tests {
 
         let mut files_rank0 = Vec::new();
         while let Ok(value) = rx1.recv() {
-            if value == serde_json::Value::Null {
-                break;
-            }
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 files_rank0.push(path.to_string());
             }
         }
 
         let mut files_rank1 = Vec::new();
         while let Ok(value) = rx2.recv() {
-            if value == serde_json::Value::Null {
-                break;
-            }
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 files_rank1.push(path.to_string());
             }
         }
@@ -512,20 +525,14 @@ mod tests {
 
         let mut files1 = Vec::new();
         while let Ok(value) = rx1.recv() {
-            if value == serde_json::Value::Null {
-                break;
-            }
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 files1.push(path.to_string());
             }
         }
 
         let mut files2 = Vec::new();
         while let Ok(value) = rx2.recv() {
-            if value == serde_json::Value::Null {
-                break;
-            }
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 files2.push(path.to_string());
             }
         }
@@ -558,10 +565,7 @@ mod tests {
 
         let mut received_files = Vec::new();
         while let Ok(value) = rx.recv() {
-            if value == serde_json::Value::Null {
-                break;
-            }
-            if let Some(path) = value.as_str() {
+            if let Some(path) = value.to_str() {
                 received_files.push(path.to_string());
             }
         }

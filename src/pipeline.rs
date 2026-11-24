@@ -2,15 +2,23 @@
 //! close, so readers cannot mistake a failed producer for normal exhaustion.
 
 use crate::error::{panic_message, DatagoError};
-use crate::structs::{MetadataReceiver, Sample};
+use crate::structs::Sample;
+use crate::worker_utils::WorkerEnd;
+use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
+use tokio::runtime::{Builder, Runtime};
 use tokio_util::sync::CancellationToken;
+
+const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 enum Outcome {
     Running,
+    Exhausted,
+    LimitReached,
     Stopped,
     Failed(DatagoError),
 }
@@ -19,21 +27,15 @@ enum Outcome {
 pub(crate) struct PipelineControl {
     outcome: Arc<Mutex<Outcome>>,
     samples_rx: kanal::Receiver<Option<Sample>>,
-    metadata_rx: MetadataReceiver,
     cancel: CancellationToken,
 }
 
 impl PipelineControl {
-    pub(crate) fn new(
-        samples_rx: kanal::Receiver<Option<Sample>>,
-        metadata_rx: MetadataReceiver,
-        cancel: CancellationToken,
-    ) -> Self {
+    pub(crate) fn new(samples_rx: kanal::Receiver<Option<Sample>>) -> Self {
         Self {
             outcome: Arc::new(Mutex::new(Outcome::Running)),
             samples_rx,
-            metadata_rx,
-            cancel,
+            cancel: CancellationToken::new(),
         }
     }
 
@@ -45,95 +47,136 @@ impl PipelineControl {
     }
 
     pub(crate) fn stop(&self) {
-        let mut outcome = self.outcome.lock().unwrap();
-        if matches!(*outcome, Outcome::Running) {
-            *outcome = Outcome::Stopped;
-        }
-        self.close();
+        self.transition(Outcome::Stopped);
+        // Explicit stop discards the buffer even if the worker already finished.
+        self.cancel.cancel();
+        let _ = self.samples_rx.close();
     }
 
-    fn fail(&self, error: DatagoError) {
-        // A worker reaching its limit closes metadata to retire the feeder.
-        // A resulting download/send failure is expected, not a failed pass.
-        if matches!(error, DatagoError::Source(_)) && self.metadata_rx.is_disconnected() {
-            return;
+    fn finish_worker(&self, result: Result<WorkerEnd, String>) {
+        match result {
+            Ok(WorkerEnd::Exhausted) => self.transition(Outcome::Exhausted),
+            Ok(WorkerEnd::LimitReached) => self.transition(Outcome::LimitReached),
+            Ok(WorkerEnd::Cancelled) => self.stop(),
+            Err(message) => self.transition(Outcome::Failed(DatagoError::Worker(message))),
         }
+    }
+
+    fn transition(&self, end: Outcome) {
         let mut outcome = self.outcome.lock().unwrap();
         if !matches!(*outcome, Outcome::Running) {
             return;
         }
-        *outcome = Outcome::Failed(error);
-        self.close();
+        *outcome = end;
+        match *outcome {
+            // On success the last sample sender drops normally so readers can
+            // still drain buffered samples.
+            Outcome::LimitReached => self.cancel.cancel(),
+            Outcome::Failed(_) => {
+                self.cancel.cancel();
+                let _ = self.samples_rx.close();
+            }
+            _ => {}
+        }
     }
 
-    fn close(&self) {
-        self.cancel.cancel();
-        self.metadata_rx.close();
-        let _ = self.samples_rx.close();
-    }
-
-    pub(crate) fn spawn_feeder<T: Send + 'static>(
+    /// Run `work` on its own runtime of `threads` threads until it returns or
+    /// the pass is cancelled, whichever comes first.
+    pub(crate) fn spawn_feeder<T, F>(
         &self,
-        keep_alive: kanal::Sender<T>,
-        work: impl FnOnce() -> Result<(), String> + Send + 'static,
-    ) -> JoinHandle<()> {
-        self.spawn(keep_alive, work, DatagoError::Source)
+        sender: kanal::Sender<T>,
+        threads: usize,
+        work: impl FnOnce(kanal::Sender<T>) -> F + Send + 'static,
+    ) -> JoinHandle<()>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<(), String>>,
+    {
+        let control = self.clone();
+        thread::spawn(move || {
+            let result = catch_stage(|| {
+                let runtime = build_runtime(threads, "feeder")?;
+                let result = runtime.block_on(async {
+                    tokio::select! {
+                        biased;
+                        _ = control.cancel.cancelled() => Ok(()),
+                        result = work(sender.clone()) => result,
+                    }
+                });
+                // Blocking work it spawned may still be finishing (a file walk
+                // notices the closed queue on its next send).
+                runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+                result
+            });
+            if let Err(message) = result {
+                control.transition(Outcome::Failed(DatagoError::Source(message)));
+            }
+            // Publish any failure before the worker can observe end of input.
+            drop(sender);
+        })
     }
 
-    pub(crate) fn spawn_worker(
+    pub(crate) fn spawn_worker<T: Send + 'static>(
         &self,
-        keep_alive: kanal::Sender<Option<Sample>>,
-        work: impl FnOnce() -> Result<(), String> + Send + 'static,
-    ) -> JoinHandle<()> {
-        self.spawn(keep_alive, work, DatagoError::Worker)
-    }
-
-    fn spawn<T: Send + 'static>(
-        &self,
-        keep_alive: kanal::Sender<T>,
-        work: impl FnOnce() -> Result<(), String> + Send + 'static,
-        classify: fn(String) -> DatagoError,
+        items: kanal::Receiver<T>,
+        samples: kanal::Sender<Option<Sample>>,
+        threads: usize,
+        work: impl FnOnce(
+                &Runtime,
+                &kanal::Receiver<T>,
+                kanal::Sender<Option<Sample>>,
+                &CancellationToken,
+            ) -> Result<WorkerEnd, String>
+            + Send
+            + 'static,
     ) -> JoinHandle<()> {
         let control = self.clone();
         thread::spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(work))
-                .unwrap_or_else(|panic| Err(format!("panicked: {}", panic_message(panic))));
-            if let Err(message) = result {
-                control.fail(classify(message));
+            let runtime = catch_stage(|| build_runtime(threads, "worker"));
+            let result = match &runtime {
+                Ok(runtime) => {
+                    catch_stage(|| work(runtime, &items, samples.clone(), &control.cancel))
+                }
+                Err(error) => Err(error.clone()),
+            };
+            control.finish_worker(result);
+
+            // Release blocked sends and signal end of output before waiting for
+            // native operations that may outlive cancellation.
+            drop(items);
+            drop(samples);
+            if let Ok(runtime) = runtime {
+                runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
             }
-            // Hold a sender until the producer's result is recorded. Dropping
-            // its last sender then wakes readers on a successful end-of-stream.
-            drop(keep_alive);
         })
     }
+}
+
+fn build_runtime(threads: usize, stage: &str) -> Result<Runtime, String> {
+    Builder::new_multi_thread()
+        .worker_threads(threads.max(1))
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start the {stage} runtime: {error}"))
+}
+
+fn catch_stage<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(work))
+        .unwrap_or_else(|panic| Err(format!("panicked: {}", panic_message(panic))))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn control() -> (
-        PipelineControl,
-        kanal::Sender<serde_json::Value>,
-        kanal::Sender<Option<Sample>>,
-    ) {
-        let (samples_tx, samples_rx) = kanal::bounded(1);
-        let (metadata_tx, metadata_rx) = kanal::bounded(1);
-        (
-            PipelineControl::new(
-                samples_rx,
-                MetadataReceiver::Json(metadata_rx),
-                CancellationToken::new(),
-            ),
-            metadata_tx,
-            samples_tx,
-        )
-    }
-
     #[test]
     fn feeder_panics_are_recorded_before_readers_wake() {
-        let (control, metadata_tx, _samples_tx) = control();
-        let feeder = control.spawn_feeder(metadata_tx, || panic!("injected feeder panic"));
+        let (_samples_tx, samples_rx) = kanal::bounded(1);
+        let (metadata_tx, _metadata_rx) = kanal::bounded::<()>(1);
+        let control = PipelineControl::new(samples_rx);
+        let feeder = control.spawn_feeder(metadata_tx, 1, |_| async {
+            panic!("injected feeder panic")
+        });
         assert!(control
             .samples_rx
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -147,41 +190,46 @@ mod tests {
 
     #[test]
     fn explicit_stop_wins_over_a_later_failure() {
-        let (control, metadata_tx, _samples_tx) = control();
+        let (_samples_tx, samples_rx) = kanal::bounded(1);
+        let (metadata_tx, _metadata_rx) = kanal::bounded::<()>(1);
+        let control = PipelineControl::new(samples_rx);
         control.stop();
-        let feeder = control.spawn_feeder(metadata_tx, || Err("late feeder failure".into()));
+        let feeder = control.spawn_feeder(metadata_tx, 1, |_| async {
+            Err("late feeder failure".into())
+        });
         feeder.join().unwrap();
         assert!(control.error().is_none());
     }
 
     #[test]
     fn feeder_error_after_worker_limit_is_not_a_failure() {
-        let (control, metadata_tx, samples_tx) = control();
-        // Model the worker reaching its delivery limit while the feeder is
-        // still preparing its next metadata item. Synchronize without sleeps.
-        let (retired_tx, retired_rx) = std::sync::mpsc::channel();
-        let metadata_rx = control.metadata_rx.clone();
-        let feeder = control.spawn_feeder(metadata_tx.clone(), move || {
-            retired_rx.recv().unwrap();
-            assert!(metadata_tx.send(serde_json::Value::Null).is_err());
-            Err("metadata queue closed after worker limit".into())
-        });
-        let worker = control.spawn_worker(samples_tx, move || {
-            metadata_rx.close();
-            retired_tx.send(()).unwrap();
-            Ok(())
+        let (samples_tx, samples_rx) = kanal::bounded(1);
+        let (metadata_tx, _metadata_rx) = kanal::bounded::<()>(1);
+        let control = PipelineControl::new(samples_rx);
+        samples_tx.send(None).unwrap();
+
+        control.finish_worker(Ok(WorkerEnd::LimitReached));
+        let feeder = control.spawn_feeder(metadata_tx, 1, |_| async {
+            Err("late metadata error".into())
         });
         feeder.join().unwrap();
-        worker.join().unwrap();
         assert!(control.error().is_none());
-        assert!(!control.cancel.is_cancelled());
+        assert!(control.cancel.is_cancelled());
+        drop(samples_tx);
+        assert!(matches!(control.samples_rx.recv(), Ok(None)));
         assert!(control.samples_rx.recv().is_err());
     }
 
     #[test]
     fn feeder_error_before_worker_limit_is_a_failure() {
-        let (control, metadata_tx, _samples_tx) = control();
-        let feeder = control.spawn_feeder(metadata_tx, || Err("metadata request failed".into()));
+        let (_samples_tx, samples_rx) = kanal::bounded(1);
+        let (metadata_tx, metadata_rx) = kanal::bounded::<()>(1);
+        let control = PipelineControl::new(samples_rx);
+        // Queue closure alone must not suppress a source error.
+        drop(metadata_rx);
+        let feeder = control.spawn_feeder(metadata_tx, 1, |_| async {
+            Err("metadata request failed".into())
+        });
         feeder.join().unwrap();
         assert!(matches!(control.error(), Some(DatagoError::Source(message))
             if message == "metadata request failed"));

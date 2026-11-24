@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import time
 
@@ -60,6 +61,10 @@ def benchmark(
     image_format: str = typer.Option(
         "pil", help="Materialized image type for both loaders: 'pil' or 'numpy'"
     ),
+    torch_start_method: str = typer.Option(
+        "fork",
+        help="How Torch starts its workers: 'fork' (fast startup), 'forkserver' or 'spawn'",
+    ),
 ):
     if limit < 1 or num_workers < 0:
         raise typer.BadParameter(
@@ -68,6 +73,10 @@ def benchmark(
     image_format = image_format.lower()
     if image_format not in ("pil", "numpy"):
         raise typer.BadParameter("image_format must be 'pil' or 'numpy'")
+    if torch_start_method not in multiprocessing.get_all_start_methods():
+        raise typer.BadParameter(
+            f"torch_start_method {torch_start_method!r} is not available on this platform"
+        )
 
     if sweep:
         results_sweep = {}
@@ -81,6 +90,7 @@ def benchmark(
                 num_workers,
                 False,
                 image_format,
+                torch_start_method,
             )
             num_workers *= 2
 
@@ -230,6 +240,9 @@ def benchmark(
             shuffle=False,
             num_workers=num_workers,
             collate_fn=_passthrough,
+            # Python 3.14 defaults to "forkserver", whose workers each import
+            # torch again: startup would dominate a short benchmark.
+            multiprocessing_context=torch_start_method if num_workers > 0 else None,
         )
 
         # Iterate over the DataLoader
@@ -269,7 +282,7 @@ def benchmark(
         print(
             f"Torch - FPS {fps:.2f} - MP/s {megapixels_per_second:.2f} - BW {bandwidth_mbps:.1f} MB/s - "
             f"startup {timing['startup_seconds']:.3f}s - steady FPS {timing['steady_fps']} - "
-            f"workers {num_workers} - image_format {image_format}"
+            f"workers {num_workers} ({torch_start_method}) - image_format {image_format}"
         )
 
     return results

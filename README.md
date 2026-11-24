@@ -116,9 +116,13 @@ a finite source may end before reaching the limit. File and DB feeders keep
 supplying candidates until that limit is satisfied or their source is exhausted;
 there is no fixed allowance for bad images. In-flight tasks are also capped
 by the remaining delivery budget, so a small limit does not start a full worker pool.
+Reaching the limit cancels pending source requests and lets readers drain samples
+already in the output queue.
 WebDataset samples require a readable reference image (`reference_image_type`);
 missing or corrupt references are skipped. Additional images use the reference
 image's target aspect ratio, regardless of their order in the archive.
+If a shard download fails partway through, retries read the same shard from
+the beginning and skip samples already queued.
 WebDataset keys retain directory prefixes (for example, `train/0000.seg.png`
 belongs to `train/0000`). `reference_image_type` selects the full field name,
 case-insensitively: `png` selects `0000.png`, while `right.png` selects
@@ -174,6 +178,13 @@ finally:
 The existing Rust `get_sample()` remains a compatibility wrapper: it logs failures
 and returns `None`. Use `try_get_sample()` when failure must be distinguished from
 normal exhaustion. Python propagates failures through its existing read methods.
+
+### Release notes: unreleased
+
+- **Breaking change:** filesystem sample IDs are the plain image path
+  (`/data/train/x.jpg`), like the IDs of the other sources. They used to be the
+  path as a quoted JSON string (`"/data/train/x.jpg"`); drop any `json.loads`
+  applied to them.
 
 ### Release notes: 2026.11.1
 
@@ -416,17 +427,24 @@ rustflags = [
 ## Code organization
 
 - `client.rs` owns the engine lifecycle, Python signal polling, and cleanup.
-- `generator_*.rs` enumerate source metadata; `worker_*.rs` prepare individual samples.
+- `source.rs` is the seam between front ends and the back end: the `Source` trait a
+  front end implements, and `launch`, which wires any source into the same pipeline.
+- `generator_*.rs` enumerate the work items of a source and implement `Source` for it;
+  `worker_*.rs` prepare individual samples.
 - `worker_utils.rs` coordinates bounded concurrency, publication, sample limits, and cancellation.
+- `pipeline.rs` records how a pass ended, so a failure is never mistaken for exhaustion.
 - `image_payload.rs` owns shared pixels and validates their layout for image access.
 - `python_buffer.rs` contains the buffer protocol boundary and its ownership invariants.
 - `python_conversion.rs` converts samples into Python dictionaries and propagates errors.
 - `config.rs` and `http_client.rs` contain configuration and connection policy.
 - `structs.rs` holds pipeline data types and re-exports the original public type paths.
 
-Tasks return prepared samples to the coordinator. Only the coordinator writes to
-the output queue, so counting, cancellation, and end-of-stream behavior are shared
-by all sources. Encoded bytes and raw pixel layouts are interpreted separately;
+A source only says where samples come from: `enumerate` sends work items from a
+feeder thread and returns when there are no more, and `load` prepares one sample
+per item. Adding a source means implementing `Source` in one file and adding a
+`SourceType` variant. Tasks return prepared samples to the coordinator. Only the
+coordinator writes to the output queue, so counting, cancellation, and
+end-of-stream behavior are shared by all sources. Encoded bytes and raw pixel layouts are interpreted separately;
 public payload fields remain compatible, with validation before pixel conversion.
 
 ## DB benchmark CLI

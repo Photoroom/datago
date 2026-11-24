@@ -1,7 +1,8 @@
-use crate::client::DatagoClient;
-use crate::error::DatagoError;
+use crate::image_processing::{ARAwareTransform, ImageEncoding};
+use crate::source::{check_partition, default_world_size, Source, SourceContext};
 use crate::worker_http;
-use log::{debug, info, warn};
+use crate::worker_utils::{max_retries_from_env, max_tasks_from_env};
+use log::{debug, warn};
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
@@ -9,10 +10,8 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::structs::{new_shared_client, DatagoEngine, MetadataReceiver, SharedClient};
-use kanal::bounded;
+use crate::structs::{new_shared_client, Sample, SharedClient};
 use kanal::Sender;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDBConfig {
@@ -85,7 +84,7 @@ pub struct SourceDBConfig {
     #[serde(default)]
     pub rank: usize,
 
-    #[serde(default)]
+    #[serde(default = "default_world_size")]
     pub world_size: usize,
 }
 
@@ -271,12 +270,6 @@ fn build_request(source_config: SourceDBConfig) -> DbRequest {
         fields.push_str(",duplicate_state");
     }
 
-    assert!(
-        (source_config.rank == 0 && source_config.world_size == 0)
-            || (source_config.rank < source_config.world_size),
-        "Rank cannot be greater than or equal to world size"
-    );
-
     debug!("Fields: {fields}");
     debug!(
         "Rank: {}, World size: {}",
@@ -352,7 +345,9 @@ async fn get_response(
     serde_json::from_str(&text).map_err(|error| format!("invalid metadata JSON: {error}"))
 }
 
-async fn async_pull_and_dispatch_pages(
+/// Page through the API until exhaustion or queue closure. Only the worker
+/// counts successful deliveries.
+async fn pull_and_dispatch_pages(
     shared_client: &Arc<SharedClient>,
     samples_metadata_tx: kanal::Sender<serde_json::Value>,
     source_config: SourceDBConfig,
@@ -374,7 +369,12 @@ async fn async_pull_and_dispatch_pages(
             .and_then(serde_json::Value::as_array)
             .ok_or("metadata page must contain a results array")?;
         for sample in results {
-            if samples_metadata_tx.send(sample.clone()).is_err() {
+            if samples_metadata_tx
+                .as_async()
+                .send(sample.clone())
+                .await
+                .is_err()
+            {
                 return Ok(());
             }
         }
@@ -392,106 +392,56 @@ async fn async_pull_and_dispatch_pages(
             }
         }
     }
-    let _ = samples_metadata_tx.send(serde_json::Value::Null);
     Ok(())
 }
 
-/// Enumerate until exhaustion or queue closure. The legacy `limit` argument is
-/// retained for Rust callers; only the worker counts successful deliveries.
-pub fn pull_and_dispatch_pages(
-    shared_client: &Arc<SharedClient>,
-    samples_metadata_tx: Sender<serde_json::Value>,
-    source_config: SourceDBConfig,
-    _limit: usize,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => Ok(()),
-                result = async_pull_and_dispatch_pages(
-                    shared_client,
-                    samples_metadata_tx.clone(),
-                    source_config,
-                ) => result
-            }
-        })
+/// Samples listed by the Dataroom API: a page of metadata per request, then
+/// one download per image, mask or latent.
+pub(crate) struct DbSource {
+    config: SourceDBConfig,
+    http: Arc<SharedClient>,
+    image_transform: Arc<Option<ARAwareTransform>>,
+    encoding: ImageEncoding,
+    retries: u8,
 }
 
-pub fn orchestrate(client: &DatagoClient) -> Result<DatagoEngine, DatagoError> {
-    let source_db_config: SourceDBConfig = serde_json::from_value(client.source_config.clone())
-        .map_err(|error| DatagoError::Configuration(format!("DB source: {error}")))?;
-    // Start pulling the samples, which spread across two steps. The samples will land in the last kanal,
-    // all the threads pausing when the required buffer depth is reached.
+impl Source for DbSource {
+    const NAME: &'static str = "DB";
+    type Config = SourceDBConfig;
+    /// The metadata of one sample, as returned by the API.
+    type Item = serde_json::Value;
 
-    // A first thread will ping the DB and get pages back, meaning documents with a lot of per-sample meta data.
-    // This meta data is then dispatched to a worker pool, which will download the payloads, deserialize them,
-    // do the required pre-processing then commit to the ready queue.
+    fn new(config: Self::Config, context: &SourceContext) -> Result<Self, String> {
+        check_partition(config.rank, config.world_size)?;
+        Ok(Self {
+            config,
+            // Metadata pages and payload downloads share one connection budget.
+            http: Arc::new(new_shared_client(context.max_connections)),
+            image_transform: context.image_transform.clone(),
+            encoding: context.encoding,
+            retries: max_retries_from_env(),
+        })
+    }
 
-    let http_client = Arc::new(new_shared_client(client.max_connections));
+    async fn enumerate(&self, items: Sender<Self::Item>) -> Result<(), String> {
+        pull_and_dispatch_pages(&self.http, items, self.config.clone()).await
+    }
 
-    // Allocate all the message passing pipes
-    let (samples_metadata_tx, samples_metadata_rx) = bounded(client.samples_buffer * 2);
-    let (samples_tx, samples_rx) = bounded(client.samples_buffer);
-    let cancel = CancellationToken::new();
-    let control = crate::pipeline::PipelineControl::new(
-        samples_rx.clone(),
-        MetadataReceiver::Json(samples_metadata_rx.clone()),
-        cancel.clone(),
-    );
-
-    info!("Using DB as source");
-    let source_config = source_db_config.clone();
-    let limit = client.limit;
-    let shared_client = http_client.clone();
-    let cancel_feeder = cancel.clone();
-
-    // Spawn a thread which will ping the DB
-    let feeder = Some(control.spawn_feeder(samples_metadata_tx.clone(), move || {
-        pull_and_dispatch_pages(
-            &shared_client,
-            samples_metadata_tx,
-            source_config,
-            limit,
-            cancel_feeder,
+    async fn load(&self, item: Self::Item) -> Result<Sample, ()> {
+        worker_http::pull_sample(
+            self.http.clone(),
+            item,
+            self.image_transform.clone(),
+            self.retries,
+            self.encoding,
         )
-    }));
+        .await
+    }
 
-    // Spawn a thread which will handle the async workers
-    let image_transform = client.image_transform.clone();
-    let encoding = crate::image_processing::ImageEncoding {
-        encode_images: client.encode_images,
-        img_to_rgb8: client.img_to_rgb8,
-        encode_format: client.encode_format,
-        jpeg_quality: client.jpeg_quality,
-    };
-    let limit = client.limit;
-    let samples_tx_worker = samples_tx.clone();
-    let samples_metadata_rx_worker = samples_metadata_rx.clone();
-    let cancel_worker = cancel.clone();
-
-    let worker = Some(control.spawn_worker(samples_tx.clone(), move || {
-        worker_http::pull_samples(
-            &http_client,
-            samples_metadata_rx_worker,
-            samples_tx_worker,
-            image_transform,
-            encoding,
-            limit,
-            cancel_worker,
-        )
-    }));
-
-    Ok(DatagoEngine {
-        control,
-        samples_rx,
-        feeder,
-        worker,
-    })
+    fn max_tasks(&self) -> usize {
+        // More tasks than connections would only queue on the connection pool.
+        max_tasks_from_env(num_cpus::get().min(self.http.max_connections))
+    }
 }
 
 #[cfg(test)]
@@ -688,7 +638,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Rank cannot be greater than or equal to world size")]
     fn test_broken_ranks() {
         let config = SourceDBConfig {
             sources: "source1".to_string(),
@@ -718,6 +667,14 @@ mod tests {
             world_size: 1,
         };
 
-        let _request = build_request(config);
+        let context = SourceContext {
+            image_transform: Arc::new(None),
+            encoding: ImageEncoding::default(),
+            max_connections: 1,
+        };
+        assert_eq!(
+            DbSource::new(config, &context).err().unwrap(),
+            "rank 2 must be less than world_size 1"
+        );
     }
 }

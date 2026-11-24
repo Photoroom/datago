@@ -1,13 +1,11 @@
 use crate::image_processing;
 use crate::structs::{to_python_image_payload, ImagePayload, Sample};
-use crate::worker_utils::{max_tasks_from_env, run_worker};
 use log::{debug, error};
-use std::cmp::min;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
-async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::ImageError> {
+async fn image_from_path(path: &Path) -> Result<image::DynamicImage, image::ImageError> {
     // The image decoder and std file reads are blocking. Keep them off Tokio's
     // async worker threads so cancellation/channel handling can still progress.
     let path = path.to_owned();
@@ -31,7 +29,7 @@ async fn image_from_path(path: &str) -> Result<image::DynamicImage, image::Image
 }
 
 async fn image_payload_from_path(
-    path: &str,
+    path: &Path,
     img_tfm: &Option<image_processing::ARAwareTransform>,
     encoding: image_processing::ImageEncoding,
 ) -> Result<ImagePayload, image::ImageError> {
@@ -43,93 +41,27 @@ async fn image_payload_from_path(
     }
 }
 
-async fn pull_sample(
-    sample_json: serde_json::Value,
+pub(crate) async fn pull_sample(
+    path: PathBuf,
     img_tfm: Arc<Option<image_processing::ARAwareTransform>>,
     encoding: image_processing::ImageEncoding,
 ) -> Result<Sample, ()> {
-    let path = sample_json.as_str().unwrap();
-    debug!("Starting to process file: {}", path);
-
-    match image_payload_from_path(path, &img_tfm, encoding).await {
-        Ok(image) => {
-            debug!("Successfully processed file: {}", path);
-            let sample = Sample {
-                id: sample_json.to_string(),
-                source: "filesystem".to_string(),
-                image: to_python_image_payload(image),
-                attributes: HashMap::new(),
-                coca_embedding: vec![],
-                tags: vec![],
-                masks: HashMap::new(),
-                latents: HashMap::new(),
-                additional_images: HashMap::new(),
-                duplicate_state: 0,
-            };
-
-            Ok(sample)
-        }
-        Err(e) => {
-            error!("Failed to load image from path {}: {}", path, e);
-            // Add more specific error handling based on error type
-            if let image::ImageError::IoError(io_err) = e {
-                error!("IO Error for file {}: {}", path, io_err);
-            }
-            Err(())
-        }
-    }
-}
-
-async fn async_pull_samples(
-    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let image_transform = Arc::new(image_transform);
-    let result = run_worker(
-        samples_metadata_rx,
-        samples_tx,
-        min(max_tasks_from_env(num_cpus::get()), limit),
-        limit,
-        cancel,
-        |item| *item == serde_json::Value::Null,
-        move |item| pull_sample(item, image_transform.clone(), encoding),
-    )
-    .await;
-    result.map(|count| debug!("file_worker: samples delivered: {count}"))
-}
-
-pub fn pull_samples(
-    samples_metadata_rx: kanal::Receiver<serde_json::Value>,
-    samples_tx: kanal::Sender<Option<Sample>>,
-    image_transform: Option<image_processing::ARAwareTransform>,
-    encoding: image_processing::ImageEncoding,
-    limit: usize,
-    cancel: CancellationToken,
-) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(num_cpus::get())
-        .enable_all()
-        .build()
-        .unwrap();
-    let result = runtime.block_on(async {
-        async_pull_samples(
-            samples_metadata_rx,
-            samples_tx,
-            image_transform,
-            encoding,
-            limit,
-            cancel,
-        )
+    debug!("Starting to process file: {}", path.display());
+    let image = image_payload_from_path(&path, &img_tfm, encoding)
         .await
-    });
-    // A blocking filesystem syscall already in progress is not cancellable.
-    // Do not make this worker's join wait indefinitely for Tokio's blocking pool.
-    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
-    result
+        .map_err(|error| error!("Failed to load image from path {}: {error}", path.display()))?;
+    Ok(Sample {
+        id: path.to_string_lossy().into_owned(),
+        source: "filesystem".to_string(),
+        image: to_python_image_payload(image),
+        attributes: HashMap::new(),
+        coca_embedding: vec![],
+        tags: vec![],
+        masks: HashMap::new(),
+        latents: HashMap::new(),
+        additional_images: HashMap::new(),
+        duplicate_state: 0,
+    })
 }
 
 #[cfg(test)]
@@ -163,7 +95,7 @@ mod tests {
             let directory = TempDir::new().unwrap();
             let path = directory.path().join("good.png");
             create_test_image(&path);
-            image_from_path(path.to_str().unwrap()).await.unwrap()
+            image_from_path(&path).await.unwrap()
         });
         // A decoder panic must not escape as a JoinError on the sample task.
         let image = task.await.unwrap();
@@ -176,7 +108,7 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
-        let result = image_from_path(image_path.to_str().unwrap()).await;
+        let result = image_from_path(&image_path).await;
         assert!(result.is_ok());
 
         let img = result.unwrap();
@@ -186,7 +118,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_image_from_path_invalid_file() {
-        let result = image_from_path("/nonexistent/path.png").await;
+        let result = image_from_path(Path::new("/nonexistent/path.png")).await;
         assert!(result.is_err());
     }
 
@@ -196,7 +128,7 @@ mod tests {
         let file_path = temp_dir.path().join("not_an_image.txt");
         fs::write(&file_path, "This is not image data").unwrap();
 
-        let result = image_from_path(file_path.to_str().unwrap()).await;
+        let result = image_from_path(&file_path).await;
         assert!(result.is_err());
     }
 
@@ -207,7 +139,7 @@ mod tests {
         create_test_image(&image_path);
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding::default(),
         )
@@ -246,7 +178,7 @@ mod tests {
         let transform = Some(transform_config.get_ar_aware_transform());
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &transform,
             image_processing::ImageEncoding::default(),
         )
@@ -268,7 +200,7 @@ mod tests {
         create_test_image(&image_path);
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 encode_images: true,
@@ -297,7 +229,7 @@ mod tests {
         img.save(&image_path).unwrap();
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 img_to_rgb8: true,
@@ -326,7 +258,7 @@ mod tests {
         dyn_img.save(&image_path).unwrap();
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 img_to_rgb8: true,
@@ -386,7 +318,7 @@ mod tests {
         dyn_img.save(&image_path).unwrap();
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 img_to_rgb8: true,
@@ -417,7 +349,7 @@ mod tests {
         dyn_img.save(&image_path).unwrap();
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding {
                 img_to_rgb8: true,
@@ -442,10 +374,8 @@ mod tests {
         let image_path = temp_dir.path().join("test.png");
         create_test_image(&image_path);
 
-        let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
-
         let result = pull_sample(
-            sample_json,
+            image_path.clone(),
             Arc::new(None),
             image_processing::ImageEncoding::default(),
         )
@@ -455,7 +385,7 @@ mod tests {
 
         let sample = result.unwrap();
         assert_eq!(sample.source, "filesystem");
-        assert!(!sample.id.is_empty());
+        assert_eq!(sample.id, image_path.to_str().unwrap());
         let payload = sample.image.get_payload();
         assert_eq!(payload.width, 1);
         assert_eq!(payload.height, 1);
@@ -470,118 +400,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_sample_invalid_path() {
-        let sample_json = serde_json::Value::String("/nonexistent/path.png".to_string());
-
         let result = pull_sample(
-            sample_json,
+            "/nonexistent/path.png".into(),
             Arc::new(None),
             image_processing::ImageEncoding::default(),
         )
         .await;
 
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_async_pull_samples_basic() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create multiple test images
-        let mut image_paths = Vec::new();
-        for i in 0..3 {
-            let image_path = temp_dir.path().join(format!("test_{i}.png"));
-            create_test_image(&image_path);
-            image_paths.push(image_path.to_str().unwrap().to_string());
-        }
-
-        let (metadata_tx, metadata_rx) = kanal::bounded(10);
-        let (samples_tx, samples_rx) = kanal::bounded(10);
-
-        // Send image paths
-        for path in &image_paths {
-            metadata_tx
-                .send(serde_json::Value::String(path.clone()))
-                .unwrap();
-        }
-        metadata_tx.send(serde_json::Value::Null).unwrap(); // End marker
-
-        async_pull_samples(
-            metadata_rx,
-            samples_tx,
-            None,
-            image_processing::ImageEncoding::default(),
-            10,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-
-        // Check received samples
-        let mut received_samples = Vec::new();
-        while let Ok(sample_opt) = samples_rx.recv() {
-            if let Some(sample) = sample_opt {
-                received_samples.push(sample);
-            } else {
-                break; // End marker
-            }
-        }
-
-        assert_eq!(received_samples.len(), image_paths.len());
-        for sample in &received_samples {
-            assert_eq!(sample.source, "filesystem");
-            let payload = sample.image.get_payload();
-            assert_eq!(payload.width, 1);
-            assert_eq!(payload.height, 1);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_async_pull_samples_with_limit() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create more images than the limit
-        for i in 0..10 {
-            let image_path = temp_dir.path().join(format!("test_{i}.png"));
-            create_test_image(&image_path);
-        }
-
-        let (metadata_tx, metadata_rx) = kanal::bounded(20);
-        let (samples_tx, samples_rx) = kanal::bounded(20);
-
-        // Send more paths than the limit
-        for i in 0..10 {
-            let path = temp_dir.path().join(format!("test_{i}.png"));
-            metadata_tx
-                .send(serde_json::Value::String(
-                    path.to_str().unwrap().to_string(),
-                ))
-                .unwrap();
-        }
-        metadata_tx.send(serde_json::Value::Null).unwrap();
-
-        let limit = 3;
-        async_pull_samples(
-            metadata_rx,
-            samples_tx,
-            None,
-            image_processing::ImageEncoding::default(),
-            limit,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-
-        // Count received samples
-        let mut count = 0;
-        while let Ok(sample_opt) = samples_rx.recv() {
-            if sample_opt.is_some() {
-                count += 1;
-            } else {
-                break;
-            }
-        }
-
-        assert_eq!(count, limit);
     }
 
     fn create_test_webp_image(path: &std::path::Path) {
@@ -604,7 +430,7 @@ mod tests {
         let image_path = temp_dir.path().join("test.jpg");
         create_test_jpeg_image(&image_path);
 
-        let result = image_from_path(image_path.to_str().unwrap()).await;
+        let result = image_from_path(&image_path).await;
         if let Err(e) = &result {
             eprintln!("Error loading JPEG: {}", e);
         }
@@ -621,7 +447,7 @@ mod tests {
         let image_path = temp_dir.path().join("test.webp");
         create_test_webp_image(&image_path);
 
-        let result = image_from_path(image_path.to_str().unwrap()).await;
+        let result = image_from_path(&image_path).await;
         assert!(result.is_ok());
 
         let img = result.unwrap();
@@ -636,7 +462,7 @@ mod tests {
         create_test_jpeg_image(&image_path);
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding::default(),
         )
@@ -658,7 +484,7 @@ mod tests {
         create_test_webp_image(&image_path);
 
         let result = image_payload_from_path(
-            image_path.to_str().unwrap(),
+            &image_path,
             &None,
             image_processing::ImageEncoding::default(),
         )
@@ -679,10 +505,8 @@ mod tests {
         let image_path = temp_dir.path().join("test.webp");
         create_test_webp_image(&image_path);
 
-        let sample_json = serde_json::Value::String(image_path.to_str().unwrap().to_string());
-
         let result = pull_sample(
-            sample_json,
+            image_path.clone(),
             Arc::new(None),
             image_processing::ImageEncoding::default(),
         )
@@ -692,48 +516,9 @@ mod tests {
 
         let sample = result.unwrap();
         assert_eq!(sample.source, "filesystem");
-        assert!(!sample.id.is_empty());
+        assert_eq!(sample.id, image_path.to_str().unwrap());
         let payload = sample.image.get_payload();
         assert_eq!(payload.width, 2);
         assert_eq!(payload.height, 2);
-    }
-
-    #[test]
-    fn test_pull_samples_sync_wrapper() {
-        let temp_dir = TempDir::new().unwrap();
-        let image_path = temp_dir.path().join("test.png");
-        create_test_image(&image_path);
-
-        let (metadata_tx, metadata_rx) = kanal::bounded(10);
-        let (samples_tx, samples_rx) = kanal::bounded(10);
-
-        // Send one image path
-        metadata_tx
-            .send(serde_json::Value::String(
-                image_path.to_str().unwrap().to_string(),
-            ))
-            .unwrap();
-        metadata_tx.send(serde_json::Value::Null).unwrap();
-
-        // Test the sync wrapper
-        pull_samples(
-            metadata_rx,
-            samples_tx,
-            None,
-            image_processing::ImageEncoding::default(),
-            1,
-            CancellationToken::new(),
-        )
-        .unwrap();
-
-        // Check that a sample was received
-        let sample_opt = samples_rx.recv().unwrap();
-        assert!(sample_opt.is_some());
-
-        let sample = sample_opt.unwrap();
-        assert_eq!(sample.source, "filesystem");
-
-        // A clean producer exit closes the output after its last sample.
-        assert!(samples_rx.recv().is_err());
     }
 }

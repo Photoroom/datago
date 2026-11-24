@@ -1,9 +1,10 @@
 use crate::error::DatagoError;
-use crate::generator_files;
-use crate::generator_http;
-use crate::generator_wds;
-use crate::image_processing::ARAwareTransform;
+use crate::generator_files::FileSource;
+use crate::generator_http::DbSource;
+use crate::generator_wds::WebDatasetSource;
+use crate::image_processing::{ARAwareTransform, ImageEncoding};
 use crate::pipeline::PipelineControl;
+use crate::source::{self, Source, SourceContext};
 use crate::structs::{DatagoClientConfig, ImageFormat, Sample, SourceType};
 
 use crate::structs::sample_to_python_types;
@@ -11,7 +12,7 @@ use crate::structs::DatagoEngine;
 use log::{error, warn};
 use pyo3::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -77,7 +78,6 @@ pub struct DatagoClient {
 /// blocking-pool tasks may outlive their runtime's shutdown timeout and are not
 /// included once the engine's feeder and worker threads have been joined.
 #[pyfunction]
-#[allow(dead_code)] // only referenced through the Python module in the lib target
 pub fn live_cleanup_threads() -> usize {
     LIVE_CLEANUP_THREADS.load(Ordering::SeqCst)
 }
@@ -205,14 +205,34 @@ impl DatagoClient {
             return Err(DatagoError::Configuration(error.clone()));
         }
         let engine = match self.source_type {
-            SourceType::File => generator_files::orchestrate(self),
-            SourceType::Db => generator_http::orchestrate(self),
-            SourceType::WebDataset => generator_wds::orchestrate(self),
+            SourceType::File => self.launch::<FileSource>(),
+            SourceType::Db => self.launch::<DbSource>(),
+            SourceType::WebDataset => self.launch::<WebDatasetSource>(),
             SourceType::Invalid => Err(DatagoError::Configuration("invalid source type".into())),
         }?;
         state.generation = state.generation.wrapping_add(1);
         state.lifecycle = ClientLifecycle::Running(engine);
         Ok(())
+    }
+
+    /// Start one pass over source `S` with this client's settings.
+    fn launch<S: Source>(&self) -> Result<DatagoEngine, DatagoError> {
+        let context = SourceContext {
+            image_transform: Arc::new(self.image_transform.clone()),
+            encoding: ImageEncoding {
+                encode_images: self.encode_images,
+                img_to_rgb8: self.img_to_rgb8,
+                encode_format: self.encode_format,
+                jpeg_quality: self.jpeg_quality,
+            },
+            max_connections: self.max_connections,
+        };
+        source::launch::<S>(
+            &self.source_config,
+            &context,
+            self.samples_buffer,
+            self.limit,
+        )
     }
 
     /// Snapshot one engine generation; stale readers cannot stop a newer pass.
@@ -568,7 +588,6 @@ mod tests {
     fn drop_does_not_wait_for_busy_workers() {
         let client = DatagoClient::new("{}".to_string());
         let (_samples_tx, samples_rx) = kanal::bounded(1);
-        let (_metadata_tx, metadata_rx) = kanal::bounded(1);
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
@@ -576,11 +595,7 @@ mod tests {
             finished_tx.send(()).unwrap();
         });
         client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
-            control: PipelineControl::new(
-                samples_rx.clone(),
-                crate::structs::MetadataReceiver::Json(metadata_rx.clone()),
-                tokio_util::sync::CancellationToken::new(),
-            ),
+            control: PipelineControl::new(samples_rx.clone()),
             samples_rx,
             feeder: None,
             worker: Some(worker),
@@ -603,15 +618,10 @@ mod tests {
     fn stale_reader_cleanup_cannot_take_a_restarted_engine() {
         let client = DatagoClient::new("{}".to_string());
         let (_samples_tx, samples_rx) = kanal::bounded(1);
-        let (_metadata_tx, metadata_rx) = kanal::bounded(1);
         {
             let mut state = client.state();
             state.lifecycle = ClientLifecycle::Running(DatagoEngine {
-                control: PipelineControl::new(
-                    samples_rx.clone(),
-                    crate::structs::MetadataReceiver::Json(metadata_rx.clone()),
-                    tokio_util::sync::CancellationToken::new(),
-                ),
+                control: PipelineControl::new(samples_rx.clone()),
                 samples_rx,
                 feeder: None,
                 worker: None,
@@ -1113,7 +1123,6 @@ mod tests {
 #[cfg(test)]
 mod error_contract_tests {
     use super::*;
-    use crate::structs::MetadataReceiver;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1132,11 +1141,11 @@ mod error_contract_tests {
         work: impl FnOnce() -> Result<(), String> + Send + 'static,
     ) {
         let (samples_tx, samples_rx) = kanal::bounded(1);
-        let (_metadata_tx, metadata_rx) = kanal::bounded(1);
-        let metadata_rx = MetadataReceiver::Json(metadata_rx);
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = PipelineControl::new(samples_rx.clone(), metadata_rx.clone(), cancel.clone());
-        let worker = Some(control.spawn_worker(samples_tx, work));
+        let control = PipelineControl::new(samples_rx.clone());
+        let (_, items_rx) = kanal::bounded::<()>(1);
+        let worker = Some(control.spawn_worker(items_rx, samples_tx, 1, |_, _, _, _| {
+            work().map(|_| crate::worker_utils::WorkerEnd::Exhausted)
+        }));
         client.state().lifecycle = ClientLifecycle::Running(DatagoEngine {
             control,
             samples_rx,
